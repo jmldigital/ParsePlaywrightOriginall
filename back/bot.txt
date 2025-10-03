@@ -1,0 +1,152 @@
+mport logging import os from pathlib import Path from telegram import Update from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes from dotenv import load_dotenv import subprocess import traceback
+
+load_dotenv()
+
+Конфигурация
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8364237483:AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s') ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '-4688651319')) INPUT_DIR = Path('input') INPUT_FILE = INPUT_DIR / 'наличие.xls'
+
+Настройка логирования
+logging.basicConfig( level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s' ) logger = logging.getLogger(name)
+
+Создаем директорию input если её нет
+INPUT_DIR.mkdir(exist_ok=True)
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE): """Обработчик команды /start""" await update.message.reply_text( "👋 Привет! Я бот для обработки прайс-листов автозапчастей.\n\n" "📋 Доступные команды:\n" "/start - Показать это сообщение\n" "/наличие - Отправить файл для обработки\n\n" "📎 Чтобы загрузить новый файл, отправьте команду /parse " "и прикрепите файл .xls или .xlsx" )
+
+async def nalichie_command(update: Update, context: ContextTypes.DEFAULT_TYPE): """Обработчик команды /parse""" await update.message.reply_text( "📎 Отправьте файл наличие.xls или наличие.xlsx\n" "Файл будет сохранён и использован для следующей обработки." )
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+"""Обработчик загрузки документов"""
+try:
+document = update.message.document
+# Проверяем расширение файла
+file_name = document.file_name.lower()
+if not (file_name.endswith('.xls') or file_name.endswith('.xlsx')):
+await update.message.reply_text(
+"❌ Ошибка: принимаются только файлы .xls или .xlsx"
+)
+return
+# Скачиваем файл
+await update.message.reply_text("⏳ Загружаю файл...")
+file = await context.bot.get_file(document.file_id)
+# Определяем расширение оригинального файла
+# original_ext = Path(file_name).suffix
+target_file = INPUT_DIR / 'наличие.xls'
+await file.download_to_drive(target_file)
+logger.info(f"Файл сохранён: {target_file}")
+await update.message.reply_text(
+f"✅ Файл успешно загружен!\n"
+f"📁 Сохранён как: {target_file.name}\n"
+f"📊 Размер: {document.file_size / 1024:.2f} KB\n\n"
+f"Файл будет использован при следующем запуске парсера."
+)
+# subprocess.Popen(['python', 'main-parser.py'])
+subprocess.Popen([r'env\Scripts\python.exe', 'main-parser.py'])
+await update.message.reply_text("🚀 Запущен парсер, ожидайте результаты.")
+except Exception as e:
+logger.error(f"Ошибка при обработке файла: {e}\n{traceback.format_exc()}")
+await update.message.reply_text(
+f"❌ Ошибка при загрузке файла: {str(e)}"
+)
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE): """Обработчик загрузки документов""" try: document = update.message.document
+
+    file_name = document.file_name.lower()
+    if not (file_name.endswith(&#39;.xls&#39;) or file_name.endswith(&#39;.xlsx&#39;)):
+        await update.message.reply_text(&quot;❌ Ошибка: принимаются только .xls или .xlsx&quot;)
+        return
+    
+    await update.message.reply_text(&quot;⏳ Загружаю файл...&quot;)
+    file = await context.bot.get_file(document.file_id)
+    target_file = INPUT_DIR / &#39;наличие.xls&#39;
+    await file.download_to_drive(target_file)
+    logger.info(f&quot;Файл сохранён: {target_file}&quot;)
+
+    await update.message.reply_text(
+        f&quot;✅ Файл загружен!\n&quot;
+        f&quot;📁 Сохранён как: {target_file.name}\n&quot;
+        f&quot;🚀 Запускаю парсер...&quot;
+    )
+
+    # === Запускаем парсер и ЖДЁМ завершения ===
+    result = subprocess.run(
+        [r&#39;env\Scripts\python.exe&#39;, &#39;main-parser.py&#39;],
+        capture_output=True,
+        text=True,
+        encoding=&#39;utf-8&#39;
+    )
+
+    if result.returncode == 0:
+        logger.info(&quot;✅ Парсер завершился успешно&quot;)
+        await update.message.reply_text(&quot;✅ Парсер завершён. Ищу результат...&quot;)
+        
+        output_file = &#39;output/наличие_with_competitors.xlsx&#39;
+        if Path(output_file).exists():
+            # Отправляем результат
+            await send_result_file(
+                BOT_TOKEN,
+                update.effective_chat.id,  # Отправляем в тот же чат
+                output_file,
+                caption=&quot;✅ Результат обработки&quot;
+            )
+        else:
+            await update.message.reply_text(&quot;❌ Файл результата не найден!&quot;)
+    else:
+        logger.error(f&quot;❌ Ошибка парсера: {result.stderr}&quot;)
+        await update.message.reply_text(
+            f&quot;❌ Ошибка парсера:\n&quot;,
+            parse_mode=&#39;Markdown&#39;
+        )
+
+except Exception as e:
+    logger.error(f&quot;Ошибка при обработке файла: {e}\n{traceback.format_exc()}&quot;)
+    await update.message.reply_text(f&quot;❌ Ошибка: {str(e)}&quot;)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE): """Обработчик текстовых сообщений""" text = update.message.text.lower().strip()
+
+if text == &quot;parse&quot;:
+    await nalichie_command(update, context)
+else:
+    await update.message.reply_text(
+        &quot;ℹ️ Используйте /start для списка команд&quot;
+    )
+async def send_result_file(bot_token: str, chat_id: int, file_path: str, caption: str = None): """ Отправка результирующего файла в Telegram чат
+
+Args:
+    bot_token: Токен бота
+    chat_id: ID чата для отправки
+    file_path: Путь к файлу
+    caption: Подпись к файлу
+&quot;&quot;&quot;
+from telegram import Bot
+
+try:
+    bot = Bot(token=bot_token)
+    
+    with open(file_path, &#39;rb&#39;) as file:
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file,
+            caption=caption or f&quot;✅ Обработка завершена\n📄 Файл: {Path(file_path).name}&quot;,
+            filename=Path(file_path).name
+        )
+    
+    logger.info(f&quot;Файл {file_path} отправлен в чат {chat_id}&quot;)
+    return True
+    
+except Exception as e:
+    logger.error(f&quot;Ошибка при отправке файла в Telegram: {e}&quot;)
+    return False
+def main(): """Запуск бота""" logger.info("🤖 Запуск Telegram бота...")
+
+# Создаём приложение
+application = Application.builder().token(BOT_TOKEN).build()
+
+# Регистрируем обработчики
+application.add_handler(CommandHandler(&quot;start&quot;, start_command))
+application.add_handler(CommandHandler(&quot;parse&quot;, nalichie_command))
+application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+application.add_handler(MessageHandler(filters.TEXT &amp; ~filters.COMMAND, handle_text))
+
+# Запускаем бота
+logger.info(&quot;✅ Бот запущен и готов к работе&quot;)
+application.run_polling(allowed_updates=Update.ALL_TYPES)
+if name == "main": main()

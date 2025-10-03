@@ -1,0 +1,184 @@
+import time
+import re
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from twocaptcha import TwoCaptcha  # библиотека 2captcha-python
+from anticaptchaofficial.imagecaptcha import imagecaptcha
+
+
+
+# API ключ 2Captcha — вставьте свой
+API_KEY_2CAPTCHA = "fedd764a51201126949cdb8800a9f6bb"
+API_KEY_ANTICAPTCHA = "952629bd78028fdd523c50b47e55b53d"
+solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+INPUT_FILE = 'наличие.xls'  # исходный файл с деталями
+OUTPUT_FILE = 'наличие_with_competitors.xlsx'  # файл с результатами
+MAX_ROWS = 50  # количество записей для обработки (можно менять)
+
+
+
+def setup_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=False")  # можно True для фонового режима
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/115.0.0.0 Safari/537.36"
+    )
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(60)
+    return driver
+
+
+def parse_price(text):
+    if not text:
+        return None
+    clean = re.sub(r"[^\d,\.]", "", text).strip()
+    if clean.count(",") and clean.count(".") == 0:
+        clean = clean.replace(",", ".")
+    clean = clean.replace(" ", "")
+    try:
+        return float(clean)
+    except:
+        return None
+
+
+def solve_image_captcha(driver):
+    base_url = "https://stparts.ru"
+    solver = imagecaptcha()
+    solver.set_verbose(1)
+    solver.set_key(API_KEY_ANTICAPTCHA)
+
+    try:
+        img_el = driver.find_element(By.CSS_SELECTOR, "img.captchaImg")
+        captcha_src = img_el.get_attribute("src")
+        # Если src полный URL — используем как есть
+        if captcha_src.startswith("http://") or captcha_src.startswith("https://"):
+            captcha_url = captcha_src
+        else:
+            captcha_url = base_url + captcha_src
+
+        # Скачиваем картинку капчи
+        import requests
+        img_content = requests.get(captcha_url).content
+        with open("captcha_for_solve.jpg", "wb") as f:
+            f.write(img_content)
+
+        # Отправляем в anti-captcha
+        print(f"Отправляем картинку {captcha_url} в anti-captcha")
+        captcha_text = solver.solve_and_return_solution("captcha_for_solve.jpg")
+        if captcha_text == 0:
+            print(f"Anti-captcha ошибка: {solver.error_code}")
+            return False
+
+        print(f"Капча распознана: {captcha_text}")
+
+        # Ввод капчи и отправка формы
+        input_el = driver.find_element(By.CSS_SELECTOR, "input[name='captcha']")
+        input_el.clear()
+        input_el.send_keys(captcha_text)
+        submit_btn = driver.find_element(By.ID, "captchaSubmitBtn")
+        submit_btn.click()
+        time.sleep(5)
+        return True
+    except Exception as e:
+        print(f"Ошибка решения капчи: {e}")
+        return False
+
+
+
+def scrape_first_row(driver, brand, part):
+    url = f"https://stparts.ru/search/{brand}/{part}"
+    driver.get(url)
+
+    # Проверка и решение капчи при её появлении
+    if len(driver.find_elements(By.CSS_SELECTOR, "img.captchaImg")) > 0:
+        print("Обнаружена картинка капчи, пытаемся решить...")
+        if not solve_image_captcha(driver):
+            raise Exception("Не удалось решить капчу")
+
+    wait = WebDriverWait(driver, 15)
+
+    try:
+        wait.until(EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "table.globalResult.searchResultsSecondStep")))
+        table = driver.find_element(By.CSS_SELECTOR, "table.globalResult.searchResultsSecondStep")
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR,
+                                                 "table.globalResult.searchResultsSecondStep tr.resultTr2")) > 0)
+        rows = table.find_elements(By.CSS_SELECTOR, "tr.resultTr2")
+        if not rows:
+            return None, None
+
+        print(f"Найдено строк: {len(rows)} для бренда {brand} и детали {part}")
+
+        for row in rows:
+            brand_td = row.find_element(By.CSS_SELECTOR, "td.resultBrand")
+            brand_in_row = brand_td.text.strip().lower()
+            if brand.lower() not in brand_in_row:
+                continue
+
+            delivery_td = row.find_element(By.CSS_SELECTOR, "td.resultDeadline")
+            delivery_min = delivery_td.text.strip()
+
+            if re.match(r"^1(\D|$)", delivery_min):
+                print('нашли в наличие', delivery_min)
+                price_text = row.find_element(By.CSS_SELECTOR, "td.resultPrice").text
+                price = parse_price(price_text)
+                if price is not None:
+                    return price, delivery_min
+
+        # Если не нашли подходящих строк (срок не от 1 дня)
+        return None, None
+
+    except Exception as e:
+        print(f"Ошибка парсинга для бренда '{brand}' и детали '{part}': {e}")
+        return None, None
+
+
+def main():
+    df = pd.read_excel(INPUT_FILE)
+    df['competitors'] = ""
+    df['competitors_delivery'] = ""
+
+    driver = setup_driver()
+
+    try:
+        for idx, row in df.head(MAX_ROWS).iterrows():
+            part = str(row[1]).strip()
+            brand = str(row[3]).strip()
+            if not part or not brand:
+                continue
+
+            print(f"Ищем для бренда '{brand}', детали '{part}'")
+
+            try:
+                price, delivery = scrape_first_row(driver, brand, part)
+            except Exception as e:
+                print(f"Ошибка или капча не решена: {e}")
+                break  # можно здесь реализовать смену прокси или повтор
+
+            if price is not None:
+                df.at[idx, 'competitors'] = f"{price:.2f} ₽"
+            if delivery is not None:
+                df.at[idx, 'competitors_delivery'] = delivery
+
+            time.sleep(1.5)
+
+    finally:
+        driver.quit()
+
+    df.to_excel(OUTPUT_FILE, index=False)
+    print(f"Результаты сохранены в {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()

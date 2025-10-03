@@ -1,0 +1,318 @@
+import time
+import re
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from twocaptcha import TwoCaptcha  # библиотека 2captcha-python
+
+# API ключ 2Captcha — вставьте свой
+API_KEY_2CAPTCHA = "fedd764a51201126949cdb8800a9f6bb"
+solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+INPUT_FILE = 'наличие.xls'  # исходный файл с деталями
+OUTPUT_FILE = 'наличие_with_competitors.xlsx'  # файл с результатами
+MAX_ROWS = 333  # количество записей для обработки (можно менять)
+
+
+def setup_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=False")  # можно True для фонового режима
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/115.0.0.0 Safari/537.36"
+    )
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(60)
+    return driver
+
+
+def parse_price(text):
+    if not text:
+        return None
+    clean = re.sub(r"[^\d,\.]", "", text).strip()
+    if clean.count(",") and clean.count(".") == 0:
+        clean = clean.replace(",", ".")
+    clean = clean.replace(" ", "")
+    try:
+        return float(clean)
+    except:
+        return None
+    
+
+import os
+import mimetypes
+
+def save_captcha_image(response_content, response_headers):
+    content_type = response_headers.get('Content-Type', '').lower()
+    ext = mimetypes.guess_extension(content_type)
+    if ext is None:
+        ext = '.png'  # по умолчанию
+    filename = f'captcha{ext}'
+    with open(filename, 'wb') as f:
+        f.write(response_content)
+    return filename
+
+
+
+def solve_image_captcha(driver):
+    try:
+        # Получаем base64 скриншот капчи
+        img_el = driver.find_element(By.CSS_SELECTOR, 'img.captchaImg')
+        captcha_base64 = img_el.screenshot_as_base64
+
+        print("Отправляем капчу на распознавание")
+        result = solver.normal(captcha_base64)
+        captcha_text = result['code']
+        print(f"Капча распознана: {captcha_text}")
+
+        # Вводим ответ
+        input_el = driver.find_element(By.CSS_SELECTOR, "input[name='captcha']")
+        input_el.clear()
+        input_el.send_keys(captcha_text)
+
+        submit_btn = driver.find_element(By.ID, "captchaSubmitBtn")
+        submit_btn.click()
+        time.sleep(5)
+
+        return True
+    except Exception as e:
+        print(f"Ошибка решения капчи: {e}")
+        return False
+
+
+def normalize_brand(brand_str):
+    return re.sub(r'[^a-z0-9]', '', brand_str.lower())
+
+def scrape_first_row(driver, brand, part):
+    url = f"https://stparts.ru/search/{brand}/{part}"
+    driver.get(url)
+
+    if len(driver.find_elements(By.CSS_SELECTOR, "img.captchaImg")) > 0:
+        print("Обнаружена картинка капчи, пытаемся решить...")
+        if not solve_image_captcha(driver):
+            raise Exception("Не удалось решить капчу")
+
+    wait = WebDriverWait(driver, 15)
+    norm_brand = normalize_brand(brand)
+
+    try:
+        wait.until(EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "table.globalResult.searchResultsSecondStep")))
+        table = driver.find_element(By.CSS_SELECTOR, "table.globalResult.searchResultsSecondStep")
+        wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR,
+                                                 "table.globalResult.searchResultsSecondStep tr.resultTr2")) > 0)
+        rows = table.find_elements(By.CSS_SELECTOR, "tr.resultTr2")
+        if not rows:
+            return None, None
+
+        print(f"Найдено строк: {len(rows)} для бренда {brand} и детали {part}")
+
+        # Сначала ищем строки со сроком доставки, начинающимся с "1"
+        for row in rows:
+            brand_td = row.find_element(By.CSS_SELECTOR, "td.resultBrand")
+            brand_in_row = normalize_brand(brand_td.text)
+            if norm_brand not in brand_in_row:
+                continue
+
+            delivery_td = row.find_element(By.CSS_SELECTOR, "td.resultDeadline")
+            delivery_min = delivery_td.text.strip()
+
+            if re.match(r"^1(\D|$)", delivery_min):
+                print('нашли в наличие', delivery_min)
+                price_text = row.find_element(By.CSS_SELECTOR, "td.resultPrice").text
+                price = parse_price(price_text)
+                if price is not None:
+                    return price, delivery_min
+
+        # Если не нашли срок от 1 дня, ищем любую строку для бренда
+        for row in rows:
+            brand_td = row.find_element(By.CSS_SELECTOR, "td.resultBrand")
+            brand_in_row = normalize_brand(brand_td.text)
+            if norm_brand not in brand_in_row:
+                continue
+
+            delivery_td = row.find_element(By.CSS_SELECTOR, "td.resultDeadline")
+            delivery_min = delivery_td.text.strip()
+
+            price_text = row.find_element(By.CSS_SELECTOR, "td.resultPrice").text
+            price = parse_price(price_text)
+            if price is not None:
+                print(f"Не нашли сроки от 1 дня, берём срок '{delivery_min}'")
+                return price, delivery_min
+
+        return None, None
+
+    except Exception as e:
+        print(f"Ошибка парсинга для бренда '{brand}' и детали '{part}': {e}")
+        return None, None
+
+
+
+def login_avtoformula(driver, login, password):
+    login_url = "https://www.avtoformula.ru"
+    driver.get(login_url)
+    wait = WebDriverWait(driver, 15)
+
+    print("Ожидаем поле для логина")
+    login_el = wait.until(EC.element_to_be_clickable((By.ID, "userlogin")))
+    print("Поле логина найдено")
+    login_el.clear()
+    login_el.send_keys(login)
+    print("Логин введён")
+
+    password_el = driver.find_element(By.ID, "userpassword")
+    print("Поле пароля найдено")
+    password_el.clear()
+    password_el.send_keys(password)
+    print("Пароль введён")
+
+    submit_btn = driver.find_element(By.CSS_SELECTOR, "input[type='submit'][name='login']")
+    print("Нажимаем кнопку входа")
+    submit_btn.click()
+
+    try:
+        wait.until(EC.invisibility_of_element((By.ID, "userlogin")))
+        wait.until(EC.invisibility_of_element((By.ID, "userpassword")))
+        print("Авторизация прошла успешно")
+    except:
+        print("Не удалось авторизоваться — поля логина остались видимы")
+        raise Exception("Авторизация не удалась")
+    
+    print("Устанавливаем опцию 'без аналогов'")
+    driver.get("https://www.avtoformula.ru")  # Страница поиска
+
+    wait = WebDriverWait(driver, 15)
+    wait.until(EC.element_to_be_clickable((By.ID, "smode")))
+    smode_select = driver.find_element(By.ID, "smode")
+    for option in smode_select.find_elements(By.TAG_NAME, "option"):
+        if option.get_attribute("value") == "A0":
+            option.click()
+            print("Опция 'без аналогов' выбрана один раз после логина")
+            break
+
+
+
+def scrape_avtoformula_search(driver, brand, part):
+    wait = WebDriverWait(driver, 15)
+    driver.get("https://www.avtoformula.ru")
+
+    wait.until(EC.element_to_be_clickable((By.ID, "article"))).clear()
+    driver.find_element(By.ID, "article").send_keys(part)
+    print(f"Введён артикул: {part}")
+
+    # Клик по кнопке "искать"
+    search_btn = driver.find_element(By.CSS_SELECTOR, 'input[name="search"][data-action="ajaxSearch"]')
+    print("Нажимаем кнопку поиска")
+    search_btn.click()
+
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "table.web_ar_datagrid.search_results")))
+    rows = driver.find_elements(By.CSS_SELECTOR, "table.web_ar_datagrid.search_results tr")
+    if not rows or len(rows) < 2:
+        print(f"Результаты не найдены для бренда {brand} и детали {part}")
+        return None, None
+
+    norm_brand = normalize_brand(brand)
+    min_delivery = None
+    min_price = None
+
+    for row in rows[1:]:
+        try:
+            brand_td = row.find_element(By.CSS_SELECTOR, "td.td_prd_info_link")
+            brand_in_row = normalize_brand(brand_td.text.strip())
+            if norm_brand not in brand_in_row:
+                continue
+
+            delivery_td = row.find_element(By.CSS_SELECTOR, "td.td_term")
+            try:
+                delivery_days = int(delivery_td.text.strip().split('/')[0].strip())
+            except ValueError:
+                continue
+
+            price_td = row.find_element(By.CSS_SELECTOR, "td.td_final_price")
+            price = parse_price(price_td.text.strip())
+            if price is None:
+                continue
+
+            if min_delivery is None or delivery_days < min_delivery:
+                min_delivery = delivery_days
+                min_price = price
+        except Exception:
+            continue
+
+    if min_delivery is None:
+        print(f"Не удалось найти подходящие данные для бренда {brand} и детали {part}")
+        return None, None
+
+    print(f"Найден минимальный срок доставки {min_delivery} дней и цена {min_price} ₽ для бренда {brand} и детали {part}")
+    return min_price, f"{min_delivery} дней"
+
+
+
+def main():
+    df = pd.read_excel(INPUT_FILE)
+    df['stparts'] = ""
+    df['stparts_delivery'] = ""
+    df['avtoformula_price'] = ""
+    df['avtoformula_delivery'] = ""
+
+    login = "avtoportt"
+    password = "6313565"
+
+    driver = setup_driver()
+
+    try:
+        login_avtoformula(driver, login, password)
+
+        for idx, row in df.head(MAX_ROWS).iterrows():
+            part = str(row[1]).strip()
+            brand = str(row[3]).strip()
+            if not part or not brand:
+                continue
+
+            print(f"Ищем для бренда '{brand}', детали '{part}' на stparts.ru")
+            try:
+                price, delivery = scrape_first_row(driver, brand, part)
+            except Exception as e:
+                print(f"Ошибка или капча не решена: {e}")
+                break
+
+            if price is not None:
+                df.at[idx, 'stparts'] = round(price, 2)
+
+            if delivery is not None:
+                df.at[idx, 'stparts_delivery'] = delivery
+
+            print(f"Ищем для бренда '{brand}', детали '{part}' на avtoformula.ru")
+            try:
+                price_avto, delivery_avto = scrape_avtoformula_search(driver, brand, part)
+            except Exception as e:
+                print(f"Ошибка при поиске на avtoformula: {e}")
+                price_avto, delivery_avto = None, None
+
+            if price_avto is not None:
+                df.at[idx, 'avtoformula_price'] = round(price_avto, 2)
+
+            if delivery_avto is not None:
+                df.at[idx, 'avtoformula_delivery'] = delivery_avto
+
+            time.sleep(1.5)
+
+    finally:
+        driver.quit()
+
+    df.to_excel(OUTPUT_FILE, index=False)
+    print(f"Результаты сохранены в {OUTPUT_FILE}")
+
+
+
+
+if __name__ == "__main__":
+    main()

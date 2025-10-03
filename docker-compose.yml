@@ -1,0 +1,32 @@
+
+version: '3.8'
+
+services:
+  price-parser:
+    build: .
+    container_name: price-parser-bot
+    volumes:
+      - .:/app                             # ← вся папка проекта (горячая правка!)
+      - ./output:/app/output               # ← результаты
+      - ./input:/app/input                 # ← входные файлы
+      - ./temp:/app/temp                   # ← временные файлы
+      - ~/.wdm:/root/.wdm                   # ← кэш webdriver-manager (быстрее запуск)
+      - ./logs:/app/logs                 # ← если хочешь вынести логи (опционально)
+
+    environment:
+      - TZ=Europe/Moscow
+
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+
+    # Логи Docker (не путать с parser.log)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Перезапуск (опционально)
+    restart: unless-stopped
