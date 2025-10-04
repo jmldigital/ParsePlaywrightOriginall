@@ -10,7 +10,7 @@ services:
       - ./output:/app/output               # ← результаты
       - ./input:/app/input                 # ← входные файлы
       - ./temp:/app/temp                   # ← временные файлы
-      - ~/.wdm:/root/.wdm                   # ← кэш webdriver-manager (быстрее запуск)
+      # - ~/.wdm:/root/.wdm                   # ← кэш webdriver-manager (быстрее запуск)
       - ./logs:/app/logs                 # ← если хочешь вынести логи (опционально)
 
     environment:

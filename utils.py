@@ -96,19 +96,34 @@ def parse_price(text):
         return None
 
 
+# def preprocess_dataframe(df):
+#     try:
+#         brand_col_idx = 2
+#         if len(df.columns) > brand_col_idx:
+#             df.iloc[:, brand_col_idx] = (
+#                 df.iloc[:, brand_col_idx]
+#                 .astype(str)
+#                 .str.replace('/', '', regex=False)
+#                 .str.replace('\\', '', regex=False)
+#                 .str.strip()
+#             )
+#     except Exception as e:
+#         logger.error(f"Ошибка при предобработке данных: {e}")
+#     return df
+
 def preprocess_dataframe(df):
-    try:
-        brand_col_idx = 2
-        if len(df.columns) > brand_col_idx:
-            df.iloc[:, brand_col_idx] = (
-                df.iloc[:, brand_col_idx]
-                .astype(str)
-                .str.replace('/', '', regex=False)
-                .str.replace('\\', '', regex=False)
-                .str.strip()
-            )
-    except Exception as e:
-        logger.error(f"Ошибка при предобработке данных: {e}")
+    from config import INPUT_COL_BRAND  # ← импортируем здесь
+
+    if INPUT_COL_BRAND in df.columns:
+        df[INPUT_COL_BRAND] = (
+            df[INPUT_COL_BRAND]
+            .astype(str)
+            .str.replace('/', '', regex=False)
+            .str.replace('\\', '', regex=False)
+            .str.strip()
+        )
+    else:
+        logger.warning(f"⚠️ Столбец '{INPUT_COL_BRAND}' не найден при предобработке")
     return df
 
 
@@ -117,10 +132,9 @@ def normalize_brand(brand_str):
         return ""
     return re.sub(r'[^a-z0-9]', '', str(brand_str).lower())
 
-
 def brand_matches(search_brand, result_brand):
     if not search_brand or not result_brand:
         return False
     norm_search = normalize_brand(search_brand)
     norm_result = normalize_brand(result_brand)
-    return norm_search == norm_result
+    return norm_search in norm_result or norm_result in norm_search

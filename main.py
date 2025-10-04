@@ -18,6 +18,7 @@ from config import (
     INPUT_FILE, OUTPUT_FILE, TEMP_FILE, MAX_ROWS, SAVE_INTERVAL,
     competitor1, competitor1_delivery, competitor2, competitor2_delivery,
     input_price, corrected_price,
+    INPUT_COL_ARTICLE, INPUT_COL_BRAND,  
     AVTO_LOGIN, AVTO_PASSWORD, BOT_TOKEN, ADMIN_CHAT_ID, SEND_TO_TELEGRAM
 )
 from utils import logger, preprocess_dataframe
@@ -32,26 +33,140 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import asyncio
 
-def setup_driver():
-    """Настройка и создание WebDriver"""
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    from config import PAGE_LOAD_TIMEOUT
 
+# для винды
+# def setup_driver():
+#     """Настройка и создание WebDriver"""
+#     from selenium.webdriver.chrome.service import Service
+#     from webdriver_manager.chrome import ChromeDriverManager
+#     from config import PAGE_LOAD_TIMEOUT
+
+#     options = webdriver.ChromeOptions()
+#     options.add_argument("--headless=new")
+#     options.add_argument("--no-sandbox")
+#     options.add_argument("--disable-dev-shm-usage")
+#     options.add_experimental_option("excludeSwitches", ["enable-automation"])
+#     options.add_experimental_option('useAutomationExtension', False)
+#     options.add_argument(
+#         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+#         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+#     )
+#     service = Service(ChromeDriverManager().install())
+#     driver = webdriver.Chrome(service=service, options=options)
+#     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+#     return driver
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import os
+import stat
+
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+
+
+
+# ддля докера
+def setup_driver():
+    """Настройка WebDriver с приоритетом на системный ChromeDriver"""
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    import shutil
+    import os
+    
+    # Пытаемся найти системный chromedriver
+    chromedriver_path = shutil.which('chromedriver')
+    
+    if chromedriver_path:
+        # logger.info(f"✅ Используем системный ChromeDriver: {chromedriver_path}")
+        service = Service(chromedriver_path)
+    else:
+        # Проверяем стандартные пути
+        standard_paths = [
+            '/usr/local/bin/chromedriver',
+            '/usr/bin/chromedriver',
+            '/app/chromedriver'
+        ]
+        
+        for path in standard_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                # logger.info(f"✅ Найден ChromeDriver: {path}")
+                chromedriver_path = path
+                service = Service(chromedriver_path)
+                break
+        else:
+            # Последняя попытка: webdriver-manager
+            # logger.warning("⚠️ Системный ChromeDriver не найден, используем webdriver-manager")
+            from webdriver_manager.chrome import ChromeDriverManager
+            
+            try:
+                manager_path = ChromeDriverManager().install()
+                
+                # Ищем настоящий исполняемый файл
+                if os.path.isdir(manager_path):
+                    base_dir = manager_path
+                else:
+                    base_dir = os.path.dirname(manager_path)
+                
+                for root, dirs, files in os.walk(base_dir):
+                    for file in files:
+                        if file == 'chromedriver':
+                            full_path = os.path.join(root, file)
+                            # Проверяем, что это исполняемый файл (ELF)
+                            try:
+                                with open(full_path, 'rb') as f:
+                                    magic = f.read(4)
+                                    if magic == b'\x7fELF':
+                                        chromedriver_path = full_path
+                                        os.chmod(chromedriver_path, 0o755)
+                                        # logger.info(f"✅ Найден ChromeDriver через webdriver-manager: {chromedriver_path}")
+                                        break
+                            except:
+                                continue
+                    if chromedriver_path:
+                        break
+                
+                if not chromedriver_path:
+                    raise FileNotFoundError("ChromeDriver не найден ни одним из способов!")
+                
+                service = Service(chromedriver_path)
+                
+            except Exception as e:
+                logger.error(f"❌ Ошибка при поиске ChromeDriver: {e}")
+                raise
+    
+    # Настройки Chrome для Docker/headless режима
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-software-rasterizer")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-setuid-sandbox")
+    options.add_argument("--window-size=1920,1080")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     )
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-    return driver
+    
+    try:
+        driver = webdriver.Chrome(service=service, options=options)
+        # logger.info("✅ WebDriver успешно инициализирован")
+        return driver
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания WebDriver: {e}")
+        raise
+
+
+
+
+
+
 
 
 def login_manually(driver, login, password):
@@ -219,8 +334,11 @@ def main():
         if idx <= last_index:
             skipped += 1
             continue
-        part = str(row[1]).strip()
-        brand = str(row[3]).strip()
+        # part = str(row[1]).strip()
+        # brand = str(row[3]).strip()
+
+        part = str(row[INPUT_COL_ARTICLE]).strip()
+        brand = str(row[INPUT_COL_BRAND]).strip()
         if pd.isna(row[1]) or pd.isna(row[3]) or not part or not brand or part == 'nan':
             continue
         tasks.append((idx, brand, part, cache))
@@ -235,7 +353,7 @@ def main():
         return
 
     # Параллельная обработка
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_row, task) for task in tasks]
         for future in tqdm(as_completed(futures), total=len(futures), desc="🔍 Парсинг"):
             try:
@@ -271,6 +389,10 @@ def main():
         if Path(TEMP_FILE).exists():
             Path(TEMP_FILE).unlink()
             logger.info(f"🧹 Временный файл {TEMP_FILE} удалён")
+        
+        if processed_count >= MAX_ROWS:
+            logger.info("🔄 Все строки обработаны. Сбрасываем state для следующего запуска.")
+            save_state(-1, 0)
 
         logger.info(f"🎉 Обработка завершена: {processed_count} строк")
 

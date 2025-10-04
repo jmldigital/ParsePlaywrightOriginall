@@ -11,7 +11,7 @@ import traceback
 import asyncio
 from telegram import Bot
 import telegram
-
+import sys
 # Загружаем переменные окружения
 load_dotenv()
 
@@ -99,16 +99,63 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🚀 Запускаю парсер..."
         )
 
-        # Запуск парсера
-        result = subprocess.run(
-            [r'env\Scripts\python.exe', 'main.py'],
-            capture_output=True
-        )
-        stdout = result.stdout.decode('cp1251', errors='replace')  # Или ваша локальная кодировка
-        stderr = result.stderr.decode('cp1251', errors='replace')
 
+
+        # # Запуск парсера
+        # result = subprocess.run(
+        #     [sys.executable, 'main.py'],
+        #     capture_output=True,      # ← захватывает stdout и stderr
+        #     text=True,                # ← делает их строками, а не bytes
+        #     encoding='utf-8',         # ← поддержка кириллицы
+        
+        # )
+
+        # Запуск парсера с безопасным чтением вывода
+        try:
+            result = subprocess.run(
+                [sys.executable, 'main.py'],
+                capture_output=True,
+               
+                check=False   # не выбрасывать исключение при returncode != 0
+            )
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"❌ Парсер превысил время ожидания: {e}")
+            await update.message.reply_text("❌ Ошибка: парсер превысил время выполнения.")
+            return
+
+        # --- Безопасное декодирование stdout ---
+        try:
+            stdout = result.stdout.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                stdout = result.stdout.decode('cp1251')  # Windows-кодировка
+            except:
+                stdout = result.stdout.decode('latin1', errors='replace')  # fallback
+
+        # --- Безопасное декодирование stderr ---
+        try:
+            stderr = result.stderr.decode('utf-8')
+        except UnicodeDecodeError:
+            try:
+                stderr = result.stderr.decode('cp1251')
+            except:
+                stderr = result.stderr.decode('latin1', errors='replace')
+
+        # Логируем в консоль
+        print("----- STDOUT парсера -----")
         print(stdout)
+        print("----- STDERR парсера -----")
         print(stderr)
+
+        logger.info(f"✅ Парсер завершился (код: {result.returncode})")
+
+
+
+        # stdout = result.stdout.decode('cp1251', errors='replace')  # Или ваша локальная кодировка
+        # stderr = result.stderr.decode('cp1251', errors='replace')
+
+        # print(stdout)
+        # print(stderr)
 
         if result.returncode == 0:
             logger.info("✅ Парсер завершился успешно")

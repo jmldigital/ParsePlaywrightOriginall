@@ -35,15 +35,91 @@ def solve_image_captcha(driver):
         return False
 
 
-def scrape_stparts(driver, brand, part):
-    """Парсинг данных с stparts.ru"""
-    url = f"https://stparts.ru/search/{brand}/{part}"
+# def scrape_stparts(driver, brand, part):
+#     """Парсинг данных с stparts.ru"""
+#     url = f"https://stparts.ru/search/{brand}/{part}"
     
+#     try:
+#         driver.get(url)
+#         logger.info(f"Загружена страница: {url}")
+        
+#         # Проверка капчи
+#         try:
+#             WebDriverWait(driver, 10).until(
+#                 EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS['stparts']['captcha_img']))
+#             )
+#             logger.warning("Обнаружена капча на stparts.ru")
+#             if not solve_image_captcha(driver):
+#                 raise Exception("Не удалось решить капчу")
+#         except TimeoutException:
+#             pass  # Капчи нет — продолжаем
+
+#         wait = WebDriverWait(driver, 15)
+#         wait.until(EC.presence_of_element_located(
+#             (By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])))
+        
+#         table = driver.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])
+#         wait.until(lambda d: len(d.find_elements(
+#             By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])) > 0)
+        
+#         rows = table.find_elements(By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])
+        
+#         if not rows:
+#             logger.info(f"Результаты не найдены для {brand} / {part}")
+#             return None, None
+
+#         logger.info(f"Найдено {len(rows)} строк результатов")
+
+#         # Приоритет: сначала ищем "в наличии" (срок 1 день)
+#         for priority_search in [True, False]:
+#             for row in rows:
+#                 try:
+#                     brand_td = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['brand'])
+#                     brand_in_row = brand_td.text.strip()
+                    
+#                     if not brand_matches(brand, brand_in_row):
+#                         continue
+
+#                     delivery_td = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['delivery'])
+#                     delivery_min = delivery_td.text.strip()
+
+#                     if priority_search and not re.match(r"^1(\D|$)", delivery_min):
+#                         continue
+
+#                     price_text = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['price']).text
+#                     price = parse_price(price_text)
+                    
+#                     if price is not None:
+#                         if priority_search:
+#                             logger.info(f"Найдено в наличии (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
+#                         else:
+#                             logger.info(f"Найдено (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
+#                         return price, delivery_min
+                        
+#                 except NoSuchElementException:
+#                     continue
+
+#         logger.info(f"Подходящие результаты не найдены для {brand} / {part}")
+#         return None, None
+
+#     except TimeoutException:
+#         logger.error(f"Timeout при загрузке результатов для {brand} / {part}")
+#         return None, None
+#     except Exception as e:
+#         logger.error(f"Ошибка парсинга stparts для {brand} / {part}: {e}")
+#         return None, None
+
+
+def scrape_stparts(driver, brand, part):
+    """Парсинг данных с stparts.ru с fallback-поиском только по номеру детали"""
+    base_url = "https://stparts.ru"
     try:
+        # Основной поиск бренд + деталь
+        url = f"{base_url}/search/{brand}/{part}"
         driver.get(url)
         logger.info(f"Загружена страница: {url}")
-        
-        # Проверка капчи
+
+        # Проверка капчи и её решение (если есть)
         try:
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS['stparts']['captcha_img']))
@@ -52,31 +128,30 @@ def scrape_stparts(driver, brand, part):
             if not solve_image_captcha(driver):
                 raise Exception("Не удалось решить капчу")
         except TimeoutException:
-            pass  # Капчи нет — продолжаем
+            pass  # капчи нет - продолжаем
 
         wait = WebDriverWait(driver, 15)
         wait.until(EC.presence_of_element_located(
             (By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])))
-        
         table = driver.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])
         wait.until(lambda d: len(d.find_elements(
             By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])) > 0)
-        
+
         rows = table.find_elements(By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])
-        
+
         if not rows:
             logger.info(f"Результаты не найдены для {brand} / {part}")
             return None, None
 
         logger.info(f"Найдено {len(rows)} строк результатов")
 
-        # Приоритет: сначала ищем "в наличии" (срок 1 день)
+        # Приоритет: сначала "в наличии" с доставкой 1 день
         for priority_search in [True, False]:
             for row in rows:
                 try:
                     brand_td = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['brand'])
                     brand_in_row = brand_td.text.strip()
-                    
+
                     if not brand_matches(brand, brand_in_row):
                         continue
 
@@ -88,14 +163,14 @@ def scrape_stparts(driver, brand, part):
 
                     price_text = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['price']).text
                     price = parse_price(price_text)
-                    
+
                     if price is not None:
                         if priority_search:
                             logger.info(f"Найдено в наличии (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
                         else:
                             logger.info(f"Найдено (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
                         return price, delivery_min
-                        
+
                 except NoSuchElementException:
                     continue
 
@@ -104,7 +179,76 @@ def scrape_stparts(driver, brand, part):
 
     except TimeoutException:
         logger.error(f"Timeout при загрузке результатов для {brand} / {part}")
-        return None, None
+        # Попытка fallback поиска только по номеру детали
+        try:
+            fallback_url = f"{base_url}/search?pcode={part}"
+            driver.get(fallback_url)
+            logger.info(f"Fallback: загружена страница без бренда: {fallback_url}")
+
+            # Проверка капчи (аналогично)
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, SELECTORS['stparts']['captcha_img']))
+                )
+                logger.warning("Обнаружена капча на stparts.ru (fallback)")
+                if not solve_image_captcha(driver):
+                    raise Exception("Не удалось решить капчу (fallback)")
+            except TimeoutException:
+                pass
+
+            wait = WebDriverWait(driver, 15)
+            wait.until(EC.presence_of_element_located(
+                (By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])))
+            table = driver.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['results_table'])
+            wait.until(lambda d: len(d.find_elements(
+                By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])) > 0)
+
+            rows = table.find_elements(By.CSS_SELECTOR, SELECTORS['stparts']['result_row'])
+
+            if not rows:
+                logger.info(f"Fallback: результаты не найдены для {part}")
+                return None, None
+
+            logger.info(f"Fallback: найдено {len(rows)} строк результатов")
+
+            for priority_search in [True, False]:
+                for row in rows:
+                    try:
+                        brand_td = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['brand'])
+                        brand_in_row = brand_td.text.strip()
+
+                        # В fallback поиск по бренду как обычно - если совпадают, возвращаем
+                        if not brand_matches(brand, brand_in_row):
+                            continue
+
+                        delivery_td = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['delivery'])
+                        delivery_min = delivery_td.text.strip()
+
+                        if priority_search and not re.match(r"^1(\D|$)", delivery_min):
+                            continue
+
+                        price_text = row.find_element(By.CSS_SELECTOR, SELECTORS['stparts']['price']).text
+                        price = parse_price(price_text)
+
+                        if price is not None:
+                            if priority_search:
+                                logger.info(f"Fallback: найдено в наличии (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
+                            else:
+                                logger.info(f"Fallback: найдено (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽")
+                            return price, delivery_min
+                    except NoSuchElementException:
+                        continue
+
+            logger.info(f"Fallback: подходящие результаты не найдены для {part}")
+            return None, None
+
+        except TimeoutException:
+            logger.error(f"Fallback Timeout при загрузке результатов для {part}")
+            return None, None
+        except Exception as e:
+            logger.error(f"Fallback ошибка парсинга stparts для {part}: {e}")
+            return None, None
+
     except Exception as e:
         logger.error(f"Ошибка парсинга stparts для {brand} / {part}: {e}")
         return None, None
