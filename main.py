@@ -32,6 +32,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import asyncio
+import requests
 
 
 # для винды
@@ -164,7 +165,20 @@ def setup_driver():
 
 
 
-
+def send_telegram_error(msg):
+    """Отправка текстовой ошибки в Telegram"""
+    token = BOT_TOKEN
+    chat_id = ADMIN_CHAT_ID
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': f"❌ Parser Error:\n{msg}",
+        'parse_mode': 'html'
+    }
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Ошибка отправки ошибки в Telegram: {e}")
 
 
 
@@ -200,6 +214,7 @@ def login_manually(driver, login, password):
         save_cookies(driver)
         return True
     except Exception as e:
+        send_telegram_error(f"Ошибка ручного входа: {e}")
         logger.error(f"❌ Ошибка ручного входа: {e}")
         return False
 
@@ -247,6 +262,7 @@ def process_row(args):
 
     except Exception as e:
         logger.error(f"Ошибка в потоке {brand}/{part}: {e}")
+        send_telegram_error(f"Ошибка в потоке {brand}/{part}: {e}")
         return idx, None
     finally:
         if driver:
@@ -275,6 +291,7 @@ async def send_telegram_file(file_path, caption=None):
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка отправки в Telegram: {e}")
+        send_telegram_error(f"Ошибка отправки в Telegram: {e}")
         return False
 
 
@@ -308,6 +325,7 @@ def main():
         logger.info(f"📥 Загружено {len(df)} строк")
         df = preprocess_dataframe(df)
     except Exception as e:
+        send_telegram_error(f"Ошибка чтения файла: {e}")
         logger.error(f"❌ Ошибка чтения файла: {e}")
         return
 
@@ -339,8 +357,15 @@ def main():
 
         part = str(row[INPUT_COL_ARTICLE]).strip()
         brand = str(row[INPUT_COL_BRAND]).strip()
-        if pd.isna(row[1]) or pd.isna(row[3]) or not part or not brand or part == 'nan':
+        if (
+            pd.isna(row[INPUT_COL_ARTICLE])
+            or pd.isna(row[INPUT_COL_BRAND])
+            or not part
+            or not brand
+            or part == 'nan'
+        ):
             continue
+
         tasks.append((idx, brand, part, cache))
 
     logger.info(f"✅ Пропущено {skipped} строк (уже обработано)")
@@ -353,7 +378,7 @@ def main():
         return
 
     # Параллельная обработка
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(process_row, task) for task in tasks]
         for future in tqdm(as_completed(futures), total=len(futures), desc="🔍 Парсинг"):
             try:
@@ -372,6 +397,7 @@ def main():
                     logger.info(f"💾 Сохранён прогресс: строка {idx}")
 
             except Exception as e:
+                send_telegram_error(f"❌ Ошибка при обработке результата: {e}")
                 logger.error(f"❌ Ошибка при обработке результата: {e}")
 
     # Финальное сохранение
@@ -389,8 +415,12 @@ def main():
         if Path(TEMP_FILE).exists():
             Path(TEMP_FILE).unlink()
             logger.info(f"🧹 Временный файл {TEMP_FILE} удалён")
-        
-        if processed_count >= MAX_ROWS:
+
+
+
+        # logger.info(f"🔄 rows_to_process - {len(tasks)} --------processed_count - {processed_count}")
+
+        if processed_count >= len(tasks):
             logger.info("🔄 Все строки обработаны. Сбрасываем state для следующего запуска.")
             save_state(-1, 0)
 
@@ -398,7 +428,7 @@ def main():
 
     except Exception as e:
         logger.error(f"❌ Ошибка при финальном сохранении: {e}")
-
+        send_telegram_error(f"Ошибка при финальном сохранении: {e}")
 
 if __name__ == "__main__":
     main()

@@ -23,7 +23,7 @@ STATE_FILE = 'output/state.json'
 CACHE_FILE = 'output/cache.json'
 
 # === Параметры ===
-MAX_ROWS = 40
+MAX_ROWS = 4
 SAVE_INTERVAL = 10
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
