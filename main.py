@@ -348,6 +348,9 @@ def main():
     tasks = []
     skipped = 0
 
+
+
+
     for idx, row in rows_to_process.iterrows():
         if idx <= last_index:
             skipped += 1
@@ -371,6 +374,14 @@ def main():
     logger.info(f"✅ Пропущено {skipped} строк (уже обработано)")
     logger.info(f"📦 К обработке: {len(tasks)} позиций")
 
+    progress_checkpoints = [
+    int(len(tasks) * 0.25),
+    int(len(tasks) * 0.50),
+    int(len(tasks) * 0.75),
+    len(tasks)
+    ]
+    sent_progress = set()
+
     if not tasks:
         logger.info("✅ Нет данных для обработки — завершаем")
         adjust_prices_and_save(df, OUTPUT_FILE)
@@ -389,7 +400,14 @@ def main():
                     # Обновляем кэш
                     # cache[get_cache_key(df.iloc[idx, 3], df.iloc[idx, 1])] = result
 
+                        # Проверяем, не достигли ли очередной четверти
                 processed_count += 1
+                if processed_count in progress_checkpoints and processed_count not in sent_progress:
+                    percent = int(processed_count / len(tasks) * 100)
+                    send_telegram_error(f"Прогресс: {percent}% ({processed_count} из {len(tasks)})")
+                    sent_progress.add(processed_count)    
+
+                
                 if processed_count % SAVE_INTERVAL == 0:
                     df.to_excel(TEMP_FILE, index=False)
                     save_state(idx, processed_count)
