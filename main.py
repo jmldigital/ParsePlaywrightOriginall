@@ -9,22 +9,23 @@ import random
 import logging
 from dotenv import load_dotenv
 load_dotenv()  # ← ДО импорта config.py
-
+import atexit
 import selenium.webdriver as webdriver
 import json
 import asyncio  # ← нужен для asyncio.run()
+import platform
 
 from config import (
     INPUT_FILE, OUTPUT_FILE, TEMP_FILE, MAX_ROWS, SAVE_INTERVAL,
     competitor1, competitor1_delivery, competitor2, competitor2_delivery,
-    input_price, corrected_price,
+    MAX_WORKERS,
     INPUT_COL_ARTICLE, INPUT_COL_BRAND,  
     AVTO_LOGIN, AVTO_PASSWORD, BOT_TOKEN, ADMIN_CHAT_ID, SEND_TO_TELEGRAM
 )
 from utils import logger, preprocess_dataframe
 from state_manager import load_state, save_state
 from cache_manager import load_cache, save_cache, get_cache_key
-from auth import load_cookies, is_logged_in
+from auth import load_cookies, is_logged_in,save_cookies
 from scraper_stparts import scrape_stparts
 from scraper_avtoformula import scrape_avtoformula
 from price_adjuster import adjust_prices_and_save
@@ -33,29 +34,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import asyncio
 import requests
+import threading
 
 
-# для винды
-# def setup_driver():
-#     """Настройка и создание WebDriver"""
-#     from selenium.webdriver.chrome.service import Service
-#     from webdriver_manager.chrome import ChromeDriverManager
-#     from config import PAGE_LOAD_TIMEOUT
-
-#     options = webdriver.ChromeOptions()
-#     options.add_argument("--headless=new")
-#     options.add_argument("--no-sandbox")
-#     options.add_argument("--disable-dev-shm-usage")
-#     options.add_experimental_option("excludeSwitches", ["enable-automation"])
-#     options.add_experimental_option('useAutomationExtension', False)
-#     options.add_argument(
-#         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-#         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-#     )
-#     service = Service(ChromeDriverManager().install())
-#     driver = webdriver.Chrome(service=service, options=options)
-#     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
-#     return driver
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -63,90 +44,63 @@ from webdriver_manager.chrome import ChromeDriverManager
 import os
 import stat
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
+# Локальное хранилище драйвера для каждого потока
+thread_local = threading.local()
+# Глобальная переменная — путь к chromedriver
+CHROMEDRIVER_PATH = None
 
-
-# ддля докера
-def setup_driver():
-    """Настройка WebDriver с приоритетом на системный ChromeDriver"""
-    from selenium import webdriver
-    from selenium.webdriver.chrome.service import Service
-    import shutil
-    import os
-    
-    # Пытаемся найти системный chromedriver
-    chromedriver_path = shutil.which('chromedriver')
-    
-    if chromedriver_path:
-        # logger.info(f"✅ Используем системный ChromeDriver: {chromedriver_path}")
-        service = Service(chromedriver_path)
+def get_driver():
+    """Возвращает драйвер для текущего потока. Создаёт, если его нет."""
+    if not hasattr(thread_local, "driver"):
+        logger.info(f"🧵 Создаём драйвер для потока {threading.current_thread().name}")
+        driver = setup_driver()
+        thread_local.driver = driver
+        thread_local.logged_in = False  # флаг авторизации
     else:
-        # Проверяем стандартные пути
-        standard_paths = [
-            '/usr/local/bin/chromedriver',
-            '/usr/bin/chromedriver',
-            '/app/chromedriver'
-        ]
-        
-        for path in standard_paths:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                # logger.info(f"✅ Найден ChromeDriver: {path}")
-                chromedriver_path = path
-                service = Service(chromedriver_path)
-                break
+        driver = thread_local.driver
+
+    # Проверяем, залогинены ли мы
+    if not thread_local.logged_in:
+        if not load_cookies(driver) or not is_logged_in(driver):
+            logger.info("🔐 Куки не сработали — делаем ручной логин")
+            if login_manually(driver, AVTO_LOGIN, AVTO_PASSWORD):
+                save_cookies(driver)
+                thread_local.logged_in = True
+            else:
+                logger.error("❌ Не удалось залогиниться")
+                return None
         else:
-            # Последняя попытка: webdriver-manager
-            # logger.warning("⚠️ Системный ChromeDriver не найден, используем webdriver-manager")
-            from webdriver_manager.chrome import ChromeDriverManager
-            
-            try:
-                manager_path = ChromeDriverManager().install()
-                
-                # Ищем настоящий исполняемый файл
-                if os.path.isdir(manager_path):
-                    base_dir = manager_path
-                else:
-                    base_dir = os.path.dirname(manager_path)
-                
-                for root, dirs, files in os.walk(base_dir):
-                    for file in files:
-                        if file == 'chromedriver':
-                            full_path = os.path.join(root, file)
-                            # Проверяем, что это исполняемый файл (ELF)
-                            try:
-                                with open(full_path, 'rb') as f:
-                                    magic = f.read(4)
-                                    if magic == b'\x7fELF':
-                                        chromedriver_path = full_path
-                                        os.chmod(chromedriver_path, 0o755)
-                                        # logger.info(f"✅ Найден ChromeDriver через webdriver-manager: {chromedriver_path}")
-                                        break
-                            except:
-                                continue
-                    if chromedriver_path:
-                        break
-                
-                if not chromedriver_path:
-                    raise FileNotFoundError("ChromeDriver не найден ни одним из способов!")
-                
-                service = Service(chromedriver_path)
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка при поиске ChromeDriver: {e}")
-                raise
-    
-    # Настройки Chrome для Docker/headless режима
+            logger.info("✅ Авторизован по кукам")
+            thread_local.logged_in = True
+
+    return driver
+
+
+def quit_driver():
+    """Закрывает драйвер текущего потока"""
+    if hasattr(thread_local, "driver"):
+        logger.info(f"🛑 Закрываем драйвер потока {threading.current_thread().name}")
+        thread_local.driver.quit()
+        delattr(thread_local, "driver")
+        thread_local.logged_in = False
+
+
+
+
+
+# универсальный
+def setup_driver():
+    """Универсальная настройка WebDriver — для Windows и Linux"""
+    from selenium.webdriver.chrome.service import Service
+    from config import PAGE_LOAD_TIMEOUT
+    import logging
+
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-software-rasterizer")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-setuid-sandbox")
     options.add_argument("--window-size=1920,1080")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
@@ -154,14 +108,78 @@ def setup_driver():
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     )
-    
+
+    global CHROMEDRIVER_PATH
+
+    if CHROMEDRIVER_PATH is None:
+        raise RuntimeError("❌ CHROMEDRIVER_PATH не инициализирован")
+
     try:
+        service = Service(CHROMEDRIVER_PATH)
         driver = webdriver.Chrome(service=service, options=options)
-        # logger.info("✅ WebDriver успешно инициализирован")
+        driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+        logger.info(f"✅ WebDriver создан: {CHROMEDRIVER_PATH}")
         return driver
     except Exception as e:
-        logger.error(f"❌ Ошибка создания WebDriver: {e}")
+        logger.critical(f"❌ Ошибка создания WebDriver: {e}", exc_info=True)
+        send_telegram_error(f"💥 Ошибка драйвера: {e}")
         raise
+
+
+
+
+
+
+# ддля докера
+# def setup_driver():
+#     """Настройка WebDriver — только системный chromedriver (Docker)"""
+#     from selenium import webdriver
+#     from selenium.webdriver.chrome.service import Service
+#     import shutil
+#     import os
+
+#     # Ищем chromedriver
+#     chromedriver_path = shutil.which('chromedriver')
+    
+#     if not chromedriver_path:
+#         # Резервный путь (на случай, если which не нашёл)
+#         fallback_path = '/usr/local/bin/chromedriver'
+#         if os.path.isfile(fallback_path) and os.access(fallback_path, os.X_OK):
+#             chromedriver_path = fallback_path
+#         else:
+#             raise FileNotFoundError(
+#                 "❌ chromedriver не найден ни через 'which', ни по пути /usr/local/bin/chromedriver"
+#             )
+
+#     logger.info(f"✅ Используем chromedriver: {chromedriver_path}")
+
+#     # Настройки Chrome
+#     options = webdriver.ChromeOptions()
+#     options.add_argument("--headless=new")
+#     options.add_argument("--no-sandbox")
+#     options.add_argument("--disable-dev-shm-usage")
+#     options.add_argument("--disable-gpu")
+#     options.add_argument("--disable-software-rasterizer")
+#     options.add_argument("--disable-extensions")
+#     options.add_argument("--disable-setuid-sandbox")
+#     options.add_argument("--window-size=1920,1080")
+#     options.add_experimental_option("excludeSwitches", ["enable-automation"])
+#     options.add_experimental_option('useAutomationExtension', False)
+#     options.add_argument(
+#         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+#         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+#     )
+
+#     try:
+#         service = Service(chromedriver_path)
+#         driver = webdriver.Chrome(service=service, options=options)
+#         logger.info("✅ WebDriver успешно запущен в Docker")
+#         return driver
+#     except Exception as e:
+#         logger.critical(f"❌ Ошибка запуска WebDriver: {e}", exc_info=True)
+#         send_telegram_error(f"💥 Ошибка драйвера: {e}")
+#         raise
+
 
 
 
@@ -173,6 +191,22 @@ def send_telegram_error(msg):
     payload = {
         'chat_id': chat_id,
         'text': f"❌ Parser Error:\n{msg}",
+        'parse_mode': 'html'
+    }
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        logger.error(f"Ошибка отправки ошибки в Telegram: {e}")
+
+
+def send_telegram_process(msg):
+    """Отправка текстовой ошибки в Telegram"""
+    token = BOT_TOKEN
+    chat_id = ADMIN_CHAT_ID
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': f"🕐 Прогресс:\n{msg}",
         'parse_mode': 'html'
     }
     try:
@@ -210,8 +244,8 @@ def login_manually(driver, login, password):
                 option.click()
                 break
 
-        from auth import save_cookies
-        save_cookies(driver)
+        # from auth import save_cookies
+        # save_cookies(driver)
         return True
     except Exception as e:
         send_telegram_error(f"Ошибка ручного входа: {e}")
@@ -219,29 +253,19 @@ def login_manually(driver, login, password):
         return False
 
 
+
+
 def process_row(args):
     """
-    Обрабатывает одну строку: (idx, brand, part, cache)
+    Обрабатывает одну строку: (idx, brand, part)
     Возвращает: (idx, result_dict)
     """
-    idx, brand, part, cache = args
+    idx, brand, part = args  # cache больше не передаём
 
-    # Проверка кэша
-    # cache_key = get_cache_key(brand, part)
-    # if cache_key in cache:
-    #     logger.info(f"✅ Кэш: {brand}/{part} — пропускаем")
-    #     return idx, cache[cache_key]
-
-    driver = None
     try:
-        driver = setup_driver()
-
-        # Попытка входа по кукам
-        if not load_cookies(driver) or not is_logged_in(driver):
-            logger.info(f"→ Авторизация (ручная) для {brand}/{part}")
-            if not login_manually(driver, AVTO_LOGIN, AVTO_PASSWORD):
-                logger.warning(f"❌ Не удалось авторизоваться для {brand}/{part}")
-                return idx, None
+        driver = get_driver()
+        if driver is None:
+            return idx, None
 
         logger.info(f"→ Парсинг stparts: {brand}/{part}")
         price_st, delivery_st = scrape_stparts(driver, brand, part)
@@ -249,7 +273,6 @@ def process_row(args):
         logger.info(f"→ Парсинг avtoformula: {brand}/{part}")
         price_avto, delivery_avto = scrape_avtoformula(driver, brand, part)
 
-        # Формируем результат с именами из config
         result = {
             competitor1: round(price_st, 2) if price_st else None,
             competitor1_delivery: delivery_st,
@@ -264,9 +287,6 @@ def process_row(args):
         logger.error(f"Ошибка в потоке {brand}/{part}: {e}")
         send_telegram_error(f"Ошибка в потоке {brand}/{part}: {e}")
         return idx, None
-    finally:
-        if driver:
-            driver.quit()
 
 
 # === Telegram отправка (если нужна) ===
@@ -295,26 +315,49 @@ async def send_telegram_file(file_path, caption=None):
         return False
 
 
-# def send_result_to_telegram(file_path, processed_count=0, total_count=0):
-#     if not SEND_TO_TELEGRAM:
-#         logger.info("📤 Отправка в Telegram отключена")
-#         return
-#     caption = (
-#         f"✅ Обработка завершена!\n\n"
-#         f"📄 {Path(file_path).name}\n"
-#         f"📊 Обработано: {processed_count}/{total_count}\n"
-#         f"📦 Размер: {Path(file_path).stat().st_size / 1024:.2f} KB"
-#     )
-#     try:
-#         asyncio.run(send_telegram_file(file_path, caption))
-#     except Exception as e:
-#         logger.error(f"Ошибка при отправке в Telegram: {e}")
 
+
+def thread_initializer():
+    """Инициализирует драйвер при старте потока"""
+    get_driver()  # запустит setup_driver и login при первом вызове
+    # Регистрируем закрытие драйвера при выходе потока
+
+    atexit.register(quit_driver)
 
 def main():
+    global CHROMEDRIVER_PATH  # ← Обязательно!
     logger.info("=" * 60)
     logger.info("🚀 ЗАПУСК ПАРСЕРА (ПАРАЛЛЕЛЬНЫЙ + STATE + CACHE)")
     logger.info("=" * 60)
+
+ # 🔍 Определяем ОС
+    current_os = platform.system()
+    logger.info(f"🖥️  ОС: {current_os} ({platform.platform()})")
+
+    # 🌐 Только на Windows — скачиваем chromedriver
+    if current_os == "Windows":
+        logger.info("⏬ Инициализация: скачиваем chromedriver (Windows)...")
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            CHROMEDRIVER_PATH = ChromeDriverManager().install()
+            logger.info(f"✅ chromedriver установлен: {CHROMEDRIVER_PATH}")
+        except Exception as e:
+            logger.critical(f"❌ Ошибка при установке chromedriver: {e}", exc_info=True)
+            send_telegram_error(f"💥 Критическая ошибка: не удалось установить chromedriver\n{e}")
+            return
+    else:
+        # Linux / Docker: предполагаем, что chromedriver уже установлен
+        logger.info("🟢 OS: Linux/Docker — используем системный chromedriver")
+        # Можно дополнительно проверить, доступен ли chromedriver в PATH
+        import shutil
+        chromedriver_path = shutil.which('chromedriver')
+        if chromedriver_path:
+            CHROMEDRIVER_PATH = chromedriver_path
+            logger.info(f"✅ Найден системный chromedriver: {CHROMEDRIVER_PATH}")
+        else:
+            logger.critical("❌ chromedriver не найден в PATH (Linux/Docker)")
+            send_telegram_error("💥 Ошибка: chromedriver не найден в PATH")
+            return
 
     if not Path(INPUT_FILE).exists():
         logger.error(f"❌ Файл {INPUT_FILE} не найден!")
@@ -322,6 +365,8 @@ def main():
 
     try:
         df = pd.read_excel(INPUT_FILE)
+        # 🔥 Конвертируем имена столбцов: любые числа → строки без .0
+        df.columns = df.columns.astype(str).str.replace('.0', '', regex=False).str.strip()
         logger.info(f"📥 Загружено {len(df)} строк")
         df = preprocess_dataframe(df)
     except Exception as e:
@@ -369,7 +414,7 @@ def main():
         ):
             continue
 
-        tasks.append((idx, brand, part, cache))
+        tasks.append((idx, brand, part))
 
     logger.info(f"✅ Пропущено {skipped} строк (уже обработано)")
     logger.info(f"📦 К обработке: {len(tasks)} позиций")
@@ -389,7 +434,7 @@ def main():
         return
 
     # Параллельная обработка
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS, initializer=thread_initializer) as executor:
         futures = [executor.submit(process_row, task) for task in tasks]
         for future in tqdm(as_completed(futures), total=len(futures), desc="🔍 Парсинг"):
             try:
@@ -404,7 +449,7 @@ def main():
                 processed_count += 1
                 if processed_count in progress_checkpoints and processed_count not in sent_progress:
                     percent = int(processed_count / len(tasks) * 100)
-                    send_telegram_error(f"Прогресс: {percent}% ({processed_count} из {len(tasks)})")
+                    send_telegram_process(f"Прогресс: {percent}% ({processed_count} из {len(tasks)})")
                     sent_progress.add(processed_count)    
 
                 
@@ -420,10 +465,10 @@ def main():
 
     # Финальное сохранение
     try:
-        df.to_excel(OUTPUT_FILE, index=False)
+        adjust_prices_and_save(df, OUTPUT_FILE)
         logger.info(f"✅ Результат сохранён: {OUTPUT_FILE}")
 
-        adjust_prices_and_save(df, OUTPUT_FILE)
+        
 
         if Path(OUTPUT_FILE).exists():
             logger.info("📤 Отправка результата в Telegram...")
@@ -438,8 +483,11 @@ def main():
 
         # logger.info(f"🔄 rows_to_process - {len(tasks)} --------processed_count - {processed_count}")
 
-        if processed_count >= len(tasks):
-            logger.info("🔄 Все строки обработаны. Сбрасываем state для следующего запуска.")
+        new_tasks_count = len(tasks)
+        new_processed = processed_count - state['processed_count']
+
+        if new_tasks_count > 0 and new_processed >= new_tasks_count:
+            logger.info("🔄 Все новые строки обработаны. Сбрасываем state для следующего запуска.")
             save_state(-1, 0)
 
         logger.info(f"🎉 Обработка завершена: {processed_count} строк")

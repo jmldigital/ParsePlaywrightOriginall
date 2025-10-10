@@ -23,7 +23,7 @@ STATE_FILE = 'output/state.json'
 CACHE_FILE = 'output/cache.json'
 
 # === Параметры ===
-MAX_ROWS = 4
+MAX_ROWS = 30
 SAVE_INTERVAL = 10
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
@@ -41,9 +41,9 @@ corrected_price = 'corrected_price'
 
 
 # === Названия столбцов во входном файле ===
-INPUT_COL_ARTICLE = 1         # ← или как у тебя в файле
-INPUT_COL_BRAND = 3             # ← или "Производитель", "Brand" и т.п.
-input_price = 5  # индекс колонки             # ← если нужно читать цену по имени
+INPUT_COL_ARTICLE = '1'         # ← или как у тебя в файле
+INPUT_COL_BRAND = '3'             # ← или "Производитель", "Brand" и т.п.
+input_price = '5'  # индекс колонки             # ← если нужно читать цену по имени
 
 
 # === Селекторы ===
