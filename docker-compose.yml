@@ -1,4 +1,3 @@
-
 version: '3.8'
 
 services:
@@ -6,27 +5,26 @@ services:
     build: .
     container_name: price-parser-bot
     volumes:
-      - .:/app                             # ← вся папка проекта (горячая правка!)
-      - ./output:/app/output               # ← результаты
-      - ./input:/app/input                 # ← входные файлы
-      - ./temp:/app/temp                   # ← временные файлы
-      # - ~/.wdm:/root/.wdm                   # ← кэш webdriver-manager (быстрее запуск)
-      - ./logs:/app/logs                 # ← если хочешь вынести логи (опционально)
+      - .:/app                         # горячая правка кода
+      - ./output:/app/output           # результаты
+      - ./input:/app/input             # входные файлы
+      - ./temp:/app/temp               # временные файлы
+      - ./logs:/app/logs               # логи
+      - ./screenshots:/app/screenshots # скриншоты при ошибках
 
     environment:
       - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1             # Логи в реальном времени
 
-    cap_add:
-      - SYS_ADMIN
-    security_opt:
-      - seccomp:unconfined
-
-    # Логи Docker (не путать с parser.log)
+    # Для Playwright headless Chrome
+    shm_size: '2gb'
+    
+    # Логирование
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
-    # Перезапуск (опционально)
+    # Автоматический перезапуск
     restart: unless-stopped

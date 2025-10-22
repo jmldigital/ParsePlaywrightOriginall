@@ -212,6 +212,8 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
         return None, None
 
 
+
+
 async def scrape_stparts_name_async(page: Page, part: str, logger: logging.Logger) -> str:
     """
     Парсер stparts для поиска только названия детали по номеру.
@@ -220,14 +222,43 @@ async def scrape_stparts_name_async(page: Page, part: str, logger: logging.Logge
 
     try:
         url = f"{BASE_URL}/search?pcode={part}"
-        await page.goto(url)
-        logger.info(f"Загружена страница: {url}")
+        
+        # ✅ FIX 1: Добавлен таймаут
+        try:
+            await page.goto(url, timeout=45000)
+            logger.info(f"Загружена страница: {url}")
+        except PlaywrightTimeout:
+            logger.warning(f"⏰ Таймаут загрузки страницы для {part}")
+            return None
 
+        # Проверка капчи
         if await page.locator(SELECTORS['stparts']['captcha_img']).is_visible():
             logger.warning("Обнаружена капча на stparts.ru")
             if not await solve_image_captcha_async(page):
                 logger.error("Не удалось решить капчу")
                 return None
+
+        # ✅ FIX 2: Проверка "товар не найден"
+        no_results_locator = page.locator('div.fr-alert.fr-alert-warning.alert-noResults')
+        try:
+            await no_results_locator.wait_for(state='visible', timeout=3000)
+            no_results_text = await no_results_locator.text_content()
+            logger.info(f"🚫 Товар не найден для {part}: {no_results_text.strip()}")
+            return None
+        except PlaywrightTimeout:
+            # Товар найден, продолжаем
+            pass
+
+        # ✅ FIX 3: Ждём появления хотя бы одной таблицы
+        try:
+            await page.wait_for_selector(
+                f"{SELECTORS['stparts']['case_table']}, {SELECTORS['stparts']['alt_results_table']}",
+                timeout=10000,
+                state='visible'
+            )
+        except PlaywrightTimeout:
+            logger.warning(f"⏰ Таймаут ожидания таблиц результатов для {part}")
+            return None
 
         # Проверяем таблицу globalCase
         case_table_count = await page.locator(SELECTORS['stparts']['case_table']).count()
@@ -238,18 +269,18 @@ async def scrape_stparts_name_async(page: Page, part: str, logger: logging.Logge
             desc_count = await desc_cells.count()
             logger.info(f"Количество ячеек caseDescription: {desc_count}")
             if desc_count > 0:
-                description = (await desc_cells.nth(0).text_content())
+                description = await desc_cells.nth(0).text_content()
                 logger.info(f"Содержимое первой ячейки в globalCase: {description}")
                 if description:
                     description = description.strip()
-                    logger.info(f"Найдено название детали в globalCase: {description}")
+                    logger.info(f"✅ Найдено название детали в globalCase: {description}")
                     return description
                 else:
                     logger.info("Первая ячейка caseDescription пустая")
             else:
                 logger.info("Ячейки caseDescription не найдены в globalCase")
 
-        # Если таблицы globalCase нет, проверяем globalResult — берём первую строку
+        # Если таблицы globalCase нет, проверяем globalResult
         alt_results_count = await page.locator(SELECTORS['stparts']['alt_results_table']).count()
         logger.info(f"Количество таблиц globalResult: {alt_results_count}")
         if alt_results_count > 0:
@@ -258,22 +289,25 @@ async def scrape_stparts_name_async(page: Page, part: str, logger: logging.Logge
             desc_count = await desc_cells.count()
             logger.info(f"Количество элементов resultDescription: {desc_count}")
             if desc_count > 0:
-                description = (await desc_cells.nth(0).text_content())
+                description = await desc_cells.nth(0).text_content()
                 logger.info(f"Содержимое первой ячейки в globalResult: {description}")
                 if description:
                     description = description.strip()
-                    logger.info(f"Найдено название детали в globalResult (первый элемент): {description}")
+                    logger.info(f"✅ Найдено название детали в globalResult: {description}")
                     return description
                 else:
                     logger.info("Первый элемент resultDescription пустой")
             else:
                 logger.info("Элементы resultDescription не найдены в globalResult")
 
-        logger.info("Не удалось найти ни одну из таблиц с описаниями детали")
+        logger.info(f"❌ Не удалось найти описание детали для {part}")
         return None
 
+    # ✅ FIX 4: Отдельная обработка PlaywrightTimeout
+    except PlaywrightTimeout as e:
+        logger.warning(f"⏰ Таймаут для {part}: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Ошибка парсинга названия детали для {part}: {e}")
-        await page.screenshot(path=f"screenshots/error_name_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        logger.error(f"❌ Ошибка парсинга названия детали для {part}: {e}")
+        await page.screenshot(path=f"screenshots/error_name_stparts_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         return None
-

@@ -41,7 +41,7 @@ corrected_price = 'corrected_price'
 ENABLE_AVTOFORMULA = True
 ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
 
-TEMP_RAW = 30
+TEMP_RAW = 100
 
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = '1'         # ← или как у тебя в файле

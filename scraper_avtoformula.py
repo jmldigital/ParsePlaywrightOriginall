@@ -239,12 +239,78 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
             return None, None
 
 
+# async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
+#     """Fallback-поиск через прямой URL с обработкой капчи"""
+#     try:
+#         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
+#         await page.goto(fallback_url, wait_until="networkidle")
+#         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+#         # Проверка капчи
+#         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+#             logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+#             if not await solve_avtoformula_captcha_async(page):
+#                 logger.error("Не удалось решить капчу (fallback)")
+#                 return None, None
+
+#         # Ожидание таблицы
+#         await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+
+#         # Обработка результатов (аналогично основной функции)
+#         table = page.locator(SELECTORS['avtoformula']['results_table'])
+#         rows = table.locator("tr")
+#         count = await rows.count()
+
+#         if count <= 1:
+#             logger.info(f"Fallback: результаты не найдены для {part}")
+#             return None, None
+
+#         min_price, min_delivery = None, None
+#         for i in range(1, count):
+#             row = rows.nth(i)
+#             brand_in_row = (await row.locator(SELECTORS['avtoformula']['brand_cell']).text_content() or "").strip()
+#             if not brand_matches(brand, brand_in_row):
+#                 continue
+
+#             delivery_text = (await row.locator(SELECTORS['avtoformula']['delivery_cell']).text_content() or "").strip()
+#             price_text = (await row.locator(SELECTORS['avtoformula']['price_cell']).text_content() or "").strip()
+
+#             delivery_days_match = re.search(r'\d+', delivery_text)
+#             if not delivery_days_match:
+#                 continue
+#             delivery_days = int(delivery_days_match.group())
+
+#             price = parse_price(price_text)
+#             if price is None:
+#                 continue
+
+#             if (
+#                 min_delivery is None
+#                 or delivery_days < min_delivery
+#                 or (delivery_days == min_delivery and price < min_price)
+#             ):
+#                 min_delivery, min_price = delivery_days, price
+
+#         if min_price:
+#             logger.info(f"Fallback: найдено {brand}/{part}: {min_price} ₽ ({min_delivery} дней)")
+#             return min_price, f"{min_delivery} дней"
+#         else:
+#             logger.info(f"Fallback: подходящие результаты не найдены для {part}")
+#             return None, None
+
+#     except Exception as e:
+#         logger.error(f"Fallback ошибка парсинга avtoformula для {part}: {e}")
+#         return None, None
+
 async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
-    """Fallback-поиск через прямой URL с обработкой капчи"""
+    """Fallback-поиск через прямой URL с обработкой капчи и проверкой отсутствия товара"""
     try:
         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
-        await page.goto(fallback_url, wait_until="networkidle")
+        await page.goto(fallback_url, wait_until="networkidle", timeout=45000)
         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+        # Ждём 3 секунды, чтобы страница загрузилась
+        await page.wait_for_timeout(3000)
 
         # Проверка капчи
         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
@@ -252,17 +318,32 @@ async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger:
             if not await solve_avtoformula_captcha_async(page):
                 logger.error("Не удалось решить капчу (fallback)")
                 return None, None
+            await page.wait_for_timeout(3000)
 
-        # Ожидание таблицы
-        await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+        # Проверка отсутствия товара
+        html = await page.content()
+        if "К сожалению, в поставках" in html or "не обнаружены" in html or "не найдено" in html.lower():
+            logger.info(f"🚫 Fallback: товар не найден для {brand}/{part}")
+            return None, None
 
-        # Обработка результатов (аналогично основной функции)
+        # Ждём таблицу
+        try:
+            await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=15000, state='visible')
+        except PlaywrightTimeout:
+            logger.warning(f"⏰ Fallback: таймаут ожидания таблицы для {brand}/{part}")
+            # Скриншот при таймауте
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_path = f"screenshots/timeout_fallback_price_{part}_{timestamp}.png"
+            await page.screenshot(path=screenshot_path)
+            logger.warning(f"📸 Скриншот таймаута сохранён: {screenshot_path}")
+            return None, None
+
         table = page.locator(SELECTORS['avtoformula']['results_table'])
         rows = table.locator("tr")
         count = await rows.count()
 
         if count <= 1:
-            logger.info(f"Fallback: результаты не найдены для {part}")
+            logger.info(f"Fallback: результаты не найдены для {brand}/{part}")
             return None, None
 
         min_price, min_delivery = None, None
@@ -292,14 +373,25 @@ async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger:
                 min_delivery, min_price = delivery_days, price
 
         if min_price:
-            logger.info(f"Fallback: найдено {brand}/{part}: {min_price} ₽ ({min_delivery} дней)")
+            logger.info(f"✅ Fallback: найдено {brand}/{part}: {min_price} ₽ ({min_delivery} дней)")
             return min_price, f"{min_delivery} дней"
         else:
-            logger.info(f"Fallback: подходящие результаты не найдены для {part}")
+            logger.info(f"Fallback: подходящие результаты не найдены для {brand}/{part}")
             return None, None
 
+    except PlaywrightTimeout as e:
+        logger.warning(f"⏰ Fallback таймаут для {brand}/{part}: {e}")
+        # Скриншот при исключении таймаута
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        screenshot_path = f"screenshots/timeout_exception_fallback_price_{part}_{timestamp}.png"
+        try:
+            await page.screenshot(path=screenshot_path)
+            logger.warning(f"📸 Скриншот таймаута сохранён: {screenshot_path}")
+        except:
+            pass
+        return None, None
     except Exception as e:
-        logger.error(f"Fallback ошибка парсинга avtoformula для {part}: {e}")
+        logger.error(f"❌ Fallback ошибка парсинга avtoformula для {brand}/{part}: {e}")
         return None, None
 
 
@@ -368,12 +460,49 @@ async def scrape_avtoformula_name_async(page: Page, part: str, logger: logging.L
 
 
 
+# async def fallback_avtoformula_name_search(page: Page, part: str, logger: logging.Logger) -> str:
+#     """Fallback-поиск названия детали через прямой URL с обработкой капчи"""
+#     try:
+#         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
+#         await page.goto(fallback_url, wait_until="networkidle")
+#         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+#         # Проверка капчи
+#         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+#             logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+#             if not await solve_avtoformula_captcha_async(page):
+#                 logger.error("Не удалось решить капчу (fallback)")
+#                 return None
+
+#         # Ожидание таблицы
+#         await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+
+#         # Получаем первый элемент с описанием детали
+#         first_desc_cell_selector = f"{SELECTORS['avtoformula']['results_table']} tr:nth-child(2) td.td_spare_info"
+#         first_desc = await page.locator(first_desc_cell_selector).text_content()
+
+#         if first_desc:
+#             description = first_desc.strip()
+#             logger.info(f"Fallback: найдено название детали avtoformula: {description}")
+#             return description
+#         else:
+#             logger.info(f"Fallback: название детали avtoformula не найдено для артикула {part}")
+#             return None
+
+#     except Exception as e:
+#         logger.error(f"Fallback ошибка парсинга названия детали avtoformula для {part}: {e}")
+#         return None
+
+
 async def fallback_avtoformula_name_search(page: Page, part: str, logger: logging.Logger) -> str:
-    """Fallback-поиск названия детали через прямой URL с обработкой капчи"""
+    """Fallback-поиск названия детали через прямой URL с обработкой капчи и проверкой отсутствия товара"""
     try:
         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
-        await page.goto(fallback_url, wait_until="networkidle")
+        await page.goto(fallback_url, wait_until="networkidle", timeout=45000)
         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+        # Ждём 3 секунды, чтобы страница загрузилась
+        await page.wait_for_timeout(3000)
 
         # Проверка капчи
         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
@@ -381,22 +510,49 @@ async def fallback_avtoformula_name_search(page: Page, part: str, logger: loggin
             if not await solve_avtoformula_captcha_async(page):
                 logger.error("Не удалось решить капчу (fallback)")
                 return None
+            await page.wait_for_timeout(3000)
 
-        # Ожидание таблицы
-        await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+        # Проверка отсутствия товара
+        html = await page.content()
+        if "К сожалению, в поставках" in html or "не обнаружены" in html or "не найдено" in html.lower():
+            logger.info(f"🚫 Fallback: товар не найден для {part}")
+            return None
 
-        # Получаем первый элемент с описанием детали
+        # Ждём таблицу
+        try:
+            await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=15000, state='visible')
+        except PlaywrightTimeout:
+            logger.warning(f"⏰ Fallback: таймаут ожидания таблицы для {part}")
+            # Скриншот при таймауте
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_path = f"screenshots/timeout_fallback_name_{part}_{timestamp}.png"
+            await page.screenshot(path=screenshot_path)
+            logger.warning(f"📸 Скриншот таймаута сохранён: {screenshot_path}")
+            return None
+
         first_desc_cell_selector = f"{SELECTORS['avtoformula']['results_table']} tr:nth-child(2) td.td_spare_info"
         first_desc = await page.locator(first_desc_cell_selector).text_content()
 
         if first_desc:
             description = first_desc.strip()
-            logger.info(f"Fallback: найдено название детали avtoformula: {description}")
+            logger.info(f"✅ Fallback: найдено название детали avtoformula: {description}")
             return description
         else:
             logger.info(f"Fallback: название детали avtoformula не найдено для артикула {part}")
             return None
 
-    except Exception as e:
-        logger.error(f"Fallback ошибка парсинга названия детали avtoformula для {part}: {e}")
+    except PlaywrightTimeout as e:
+        logger.warning(f"⏰ Fallback таймаут для {part}: {e}")
+        # Скриншот при исключении таймаута
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        screenshot_path = f"screenshots/timeout_exception_fallback_name_{part}_{timestamp}.png"
+        try:
+            await page.screenshot(path=screenshot_path)
+            logger.warning(f"📸 Скриншот таймаута сохранён: {screenshot_path}")
+        except:
+            pass
         return None
+    except Exception as e:
+        logger.error(f"❌ Fallback ошибка парсинга названия детали avtoformula для {part}: {e}")
+        return None
+

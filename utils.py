@@ -131,7 +131,7 @@ def parse_price(text):
 
 def preprocess_dataframe(df):
     df.columns = df.columns.map(str)
-    print("вывод колонок", df.columns.tolist())
+    # print("вывод колонок", df.columns.tolist())
 
     if INPUT_COL_BRAND in df.columns:
         df[INPUT_COL_BRAND] = (
