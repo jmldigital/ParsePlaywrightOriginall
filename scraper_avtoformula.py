@@ -8,36 +8,146 @@
 import re
 import time
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
-from config import SELECTORS, AVTO_LOGIN, AVTO_PASSWORD
+from config import SELECTORS, API_KEY_2CAPTCHA
 from utils import logger, parse_price, brand_matches
 from auth import is_logged_in
 import asyncio
 import logging
 from utils import get_site_logger
 logger = get_site_logger("avtoformula")
+from twocaptcha import TwoCaptcha
+import base64
+import datetime
 
-
-MAX_WAIT_SECONDS = 45
+MAX_WAIT_SECONDS = 15
 CHECK_INTERVAL = 0.5  # секунды
 AUTH_CHECK_INTERVAL = 10  # сек
 
 
 
 
-async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
-    """Асинхронный парсер avtoformula.ru с передачей логгера."""
+
+# async def solve_avtoformula_captcha_async(page: Page) -> bool:
+#     """Решение капчи через 2Captcha для avtoformula с нажатием кнопки отправки"""
+#     try:
+#         solver = TwoCaptcha(API_KEY_2CAPTCHA)
+#         captcha_img = page.locator(SELECTORS["avtoformula"]["captcha_img"])
+#         if not await captcha_img.is_visible():
+#             logger.info("Капча не обнаружена")
+#             return False
+
+#         # Получаем base64 из Playwright
+#         captcha_bytes = await captcha_img.screenshot()
+#         captcha_base64 = base64.b64encode(captcha_bytes).decode("utf-8")
+
+#         logger.info("Отправляем капчу avtoformula на распознавание в 2Captcha")
+#         result = await asyncio.to_thread(solver.normal, captcha_base64)
+#         captcha_text = result["code"]
+#         logger.info(f"✅ Капча распознана: {captcha_text}")
+
+#         # Вводим капчу
+#         input_el = page.locator(SELECTORS["avtoformula"]["captcha_input"])
+#         await input_el.fill(captcha_text)
+#         logger.info(f"✅ Капча введена в поле: {captcha_text}")
+
+#         # Нажимаем кнопку "Отправить"
+#         submit_button = page.locator('input[name="submit"][value="Отправить"]')
+#         await submit_button.click()
+#         logger.info("✅ Нажата кнопка 'Отправить'")
+
+#         # Ждём перезагрузку страницы
+#         await page.wait_for_timeout(5000)
+        
+#         # Проверяем, исчезла ли капча
+#         if not await captcha_img.is_visible():
+#             logger.info("✅ Капча успешно решена, страница обновлена")
+#             return True
+#         else:
+#             logger.warning("⚠️ Капча всё ещё видна после отправки")
+#             return False
+
+#     except Exception as e:
+#         logger.error(f"❌ Ошибка решения капчи avtoformula: {e}")
+#         return False
+
+async def solve_avtoformula_captcha_async(page: Page) -> bool:
+    """Решение капчи через 2Captcha для avtoformula с нажатием кнопки отправки"""
+    captcha_text = None  # Инициализируем заранее для использования в except
+    
     try:
+        solver = TwoCaptcha(API_KEY_2CAPTCHA)
+        captcha_img = page.locator(SELECTORS["avtoformula"]["captcha_img"])
+        if not await captcha_img.is_visible():
+            logger.info("Капча не обнаружена")
+            return False
+
+        # Получаем base64 из Playwright
+        captcha_bytes = await captcha_img.screenshot()
+        captcha_base64 = base64.b64encode(captcha_bytes).decode("utf-8")
+
+        logger.info("Отправляем капчу avtoformula на распознавание в 2Captcha")
+        result = await asyncio.to_thread(solver.normal, captcha_base64)
+        captcha_text = result["code"]
+        logger.info(f"✅ Капча распознана: {captcha_text}")
+
+        # Вводим капчу
+        input_el = page.locator(SELECTORS["avtoformula"]["captcha_input"])
+        await input_el.fill(captcha_text)
+        logger.info(f"✅ Капча введена в поле: {captcha_text}")
+
+        # Нажимаем кнопку "Отправить"
+        submit_button = page.locator('input[name="submit"][value="Отправить"]')
+        await submit_button.click()
+        logger.info("✅ Нажата кнопка 'Отправить'")
+
+        # Ждём перезагрузку страницы
+        await page.wait_for_timeout(5000)
+        
+        # Проверяем, исчезла ли капча
+        if not await captcha_img.is_visible():
+            logger.info("✅ Капча успешно решена, страница обновлена")
+            return True
+        else:
+            logger.warning("⚠️ Капча всё ещё видна после отправки")
+            # Делаем скриншот с текстом капчи в названии
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_path = f"screenshots/captcha_failed_avtoformula_{captcha_text}_{timestamp}.png"
+            await page.screenshot(path=screenshot_path)
+            logger.warning(f"📸 Скриншот сохранён: {screenshot_path}")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка решения капчи avtoformula: {e}")
+        # Делаем скриншот с текстом капчи в названии (если он был распознан)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        captcha_label = captcha_text if captcha_text else "unknown"
+        screenshot_path = f"screenshots/captcha_error_avtoformula_{captcha_label}_{timestamp}.png"
+        try:
+            await page.screenshot(path=screenshot_path)
+            logger.error(f"📸 Скриншот ошибки сохранён: {screenshot_path}")
+        except Exception as screenshot_error:
+            logger.error(f"Не удалось сохранить скриншот: {screenshot_error}")
+        return False
+
+
+
+
+
+async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
+    """Асинхронный парсер avtoformula.ru с поддержкой капчи."""
+    try:
+        # Пробуем сначала стандартный поиск
         await page.goto("https://www.avtoformula.ru", wait_until="networkidle")
         logger.info(f"🌐 Страница загружена: avtoformula.ru")
 
-        # Устанавливаем режим "с аналогами"
+        # Устанавливаем режим "без аналогов"
         try:
             mode_select = page.locator("#smode")
             await mode_select.wait_for(state="visible", timeout=5000)
             await mode_select.select_option("A0")
             logger.info("⚙️ Режим поиска установлен: без аналогов")
         except Exception as e:
-            logger.warning(f"⚠️ Не удалось установить режим 'с аналогами': {e}")
+            logger.warning(f"⚠️ Не удалось установить режим 'без аналогов': {e}")
 
         # Ввод артикула
         article_field = page.locator(f"#{SELECTORS['avtoformula']['article_field']}")
@@ -51,6 +161,14 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
         while True:
             elapsed = time.time() - start
 
+            # Проверка капчи
+            if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+                logger.warning("⚠️ Обнаружена капча на avtoformula.ru")
+                if not await solve_avtoformula_captcha_async(page):
+                    logger.error("Не удалось решить капчу")
+                    return None, None
+                # После решения капчи продолжаем ожидание результатов
+                continue
 
             # Проверка "не найдено"
             html = await page.content()
@@ -67,12 +185,13 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
                 break
 
             if elapsed > MAX_WAIT_SECONDS:
-                logger.warning(f"⏰ Таймаут ожидания результатов: {brand}/{part}")
-                return None, None
+                logger.warning(f"⏰ Таймаут ожидания результатов: {brand}/{part}, пробуем прямой URL")
+                # Fallback на прямой URL с капчей
+                return await fallback_avtoformula_search(page, brand, part, logger)
 
-            await asyncio.sleep(CHECK_INTERVAL)  # не wait_for_timeout
+            await asyncio.sleep(CHECK_INTERVAL)
 
-        # Обработка результатов
+        # Обработка результатов (как было)
         min_price, min_delivery = None, None
         count = await rows.count()
         for i in range(1, count):
@@ -109,7 +228,7 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
 
     except PlaywrightTimeout:
         logger.warning(f"⏰ Таймаут при загрузке страницы: {brand}/{part}")
-        return None, None
+        return await fallback_avtoformula_search(page, brand, part, logger)
     except Exception as e:
         error_msg = str(e).lower()
         if "зарегистрируйтесь" in error_msg or "авториз" in error_msg:
@@ -120,10 +239,75 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
             return None, None
 
 
+async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
+    """Fallback-поиск через прямой URL с обработкой капчи"""
+    try:
+        fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
+        await page.goto(fallback_url, wait_until="networkidle")
+        logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+        # Проверка капчи
+        if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+            logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+            if not await solve_avtoformula_captcha_async(page):
+                logger.error("Не удалось решить капчу (fallback)")
+                return None, None
+
+        # Ожидание таблицы
+        await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+
+        # Обработка результатов (аналогично основной функции)
+        table = page.locator(SELECTORS['avtoformula']['results_table'])
+        rows = table.locator("tr")
+        count = await rows.count()
+
+        if count <= 1:
+            logger.info(f"Fallback: результаты не найдены для {part}")
+            return None, None
+
+        min_price, min_delivery = None, None
+        for i in range(1, count):
+            row = rows.nth(i)
+            brand_in_row = (await row.locator(SELECTORS['avtoformula']['brand_cell']).text_content() or "").strip()
+            if not brand_matches(brand, brand_in_row):
+                continue
+
+            delivery_text = (await row.locator(SELECTORS['avtoformula']['delivery_cell']).text_content() or "").strip()
+            price_text = (await row.locator(SELECTORS['avtoformula']['price_cell']).text_content() or "").strip()
+
+            delivery_days_match = re.search(r'\d+', delivery_text)
+            if not delivery_days_match:
+                continue
+            delivery_days = int(delivery_days_match.group())
+
+            price = parse_price(price_text)
+            if price is None:
+                continue
+
+            if (
+                min_delivery is None
+                or delivery_days < min_delivery
+                or (delivery_days == min_delivery and price < min_price)
+            ):
+                min_delivery, min_price = delivery_days, price
+
+        if min_price:
+            logger.info(f"Fallback: найдено {brand}/{part}: {min_price} ₽ ({min_delivery} дней)")
+            return min_price, f"{min_delivery} дней"
+        else:
+            logger.info(f"Fallback: подходящие результаты не найдены для {part}")
+            return None, None
+
+    except Exception as e:
+        logger.error(f"Fallback ошибка парсинга avtoformula для {part}: {e}")
+        return None, None
+
+
 
 async def scrape_avtoformula_name_async(page: Page, part: str, logger: logging.Logger) -> str:
     """
     Парсер avtoformula.ru для поиска только названия детали по номеру.
+    С поддержкой капчи и fallback на прямой URL.
     """
 
     try:
@@ -137,8 +321,30 @@ async def scrape_avtoformula_name_async(page: Page, part: str, logger: logging.L
         await page.locator(SELECTORS['avtoformula']['search_button']).click()
         logger.info(f"🔍 Поиск артикула: {part}")
 
-        # Ожидание появления результатов (одна таблица)
-        await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+        # Ожидание появления результатов с проверкой капчи
+        start = time.time()
+        while True:
+            elapsed = time.time() - start
+
+            # Проверка капчи
+            if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+                logger.warning("⚠️ Обнаружена капча на avtoformula.ru")
+                if not await solve_avtoformula_captcha_async(page):
+                    logger.error("Не удалось решить капчу")
+                    return None
+                # После решения капчи продолжаем ожидание
+                continue
+
+            # Проверка наличия таблицы с результатами
+            table_count = await page.locator(SELECTORS['avtoformula']['results_table']).count()
+            if table_count > 0:
+                break
+
+            if elapsed > MAX_WAIT_SECONDS:
+                logger.warning(f"⏰ Таймаут ожидания результатов для {part}, пробуем прямой URL")
+                return await fallback_avtoformula_name_search(page, part, logger)
+
+            await asyncio.sleep(CHECK_INTERVAL)
 
         # Получаем первый элемент с описанием детали в колонке td_spare_info
         first_desc_cell_selector = f"{SELECTORS['avtoformula']['results_table']} tr:nth-child(2) td.td_spare_info"
@@ -154,8 +360,43 @@ async def scrape_avtoformula_name_async(page: Page, part: str, logger: logging.L
 
     except PlaywrightTimeout:
         logger.warning(f"⏰ Таймаут ожидания результатов для {part}")
-        return None
+        return await fallback_avtoformula_name_search(page, part, logger)
     except Exception as e:
         logger.error(f"Ошибка парсинга названия детали avtoformula для {part}: {e}")
         # await page.screenshot(path=f"screenshots/error_name_avtoformula_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        return None
+
+
+
+async def fallback_avtoformula_name_search(page: Page, part: str, logger: logging.Logger) -> str:
+    """Fallback-поиск названия детали через прямой URL с обработкой капчи"""
+    try:
+        fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
+        await page.goto(fallback_url, wait_until="networkidle")
+        logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
+
+        # Проверка капчи
+        if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+            logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+            if not await solve_avtoformula_captcha_async(page):
+                logger.error("Не удалось решить капчу (fallback)")
+                return None
+
+        # Ожидание таблицы
+        await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
+
+        # Получаем первый элемент с описанием детали
+        first_desc_cell_selector = f"{SELECTORS['avtoformula']['results_table']} tr:nth-child(2) td.td_spare_info"
+        first_desc = await page.locator(first_desc_cell_selector).text_content()
+
+        if first_desc:
+            description = first_desc.strip()
+            logger.info(f"Fallback: найдено название детали avtoformula: {description}")
+            return description
+        else:
+            logger.info(f"Fallback: название детали avtoformula не найдено для артикула {part}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Fallback ошибка парсинга названия детали avtoformula для {part}: {e}")
         return None

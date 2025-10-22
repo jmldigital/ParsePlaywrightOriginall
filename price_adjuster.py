@@ -79,10 +79,8 @@ def adjust_prices_and_save(df, output_file):
             else:
                 min_comp_price = min(competitor_prices)
                 if our_price > min_comp_price:
-                    # new_price = max(round(min_comp_price - 2, 2), 0.0)
-                    new_price = max(int(min_comp_price - 2), 0)
+                    new_price = max(int(min_comp_price - 2), int(our_price * 0.1), 1)
                     corrected_prices.append(new_price)
-                    # logger.info(f"🔻 Цена снижена: {our_price} → {new_price}")
                 else:
                     corrected_prices.append(our_price)
                     # logger.info(f"✅ Цена конкурентоспособна: {our_price}")

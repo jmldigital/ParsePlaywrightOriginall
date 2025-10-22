@@ -23,7 +23,7 @@ STATE_FILE = 'output/state.json'
 CACHE_FILE = 'output/cache.json'
 
 # === Параметры ===
-MAX_ROWS = 60
+MAX_ROWS = 2000
 SAVE_INTERVAL = 10
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
@@ -41,6 +41,7 @@ corrected_price = 'corrected_price'
 ENABLE_AVTOFORMULA = True
 ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
 
+TEMP_RAW = 30
 
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = '1'         # ← или как у тебя в файле
@@ -84,5 +85,6 @@ SELECTORS = {
             # Селекторы капчи
         'captcha_img': 'img[src*="/_phplib/check/img.php"]',
         'captcha_input': 'input#ban_hc_code',
+        'captcha_submit': 'input[name="submit"][value="Отправить"]',  # новый селектор
     }
 }
