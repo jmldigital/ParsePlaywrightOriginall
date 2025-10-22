@@ -210,3 +210,70 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
     except Exception as e:
         logger.error(f"Fallback ошибка парсинга stparts для {part}: {e}")
         return None, None
+
+
+async def scrape_stparts_name_async(page: Page, part: str, logger: logging.Logger) -> str:
+    """
+    Парсер stparts для поиска только названия детали по номеру.
+    Проверяет два варианта таблиц с разными классами.
+    """
+
+    try:
+        url = f"{BASE_URL}/search?pcode={part}"
+        await page.goto(url)
+        logger.info(f"Загружена страница: {url}")
+
+        if await page.locator(SELECTORS['stparts']['captcha_img']).is_visible():
+            logger.warning("Обнаружена капча на stparts.ru")
+            if not await solve_image_captcha_async(page):
+                logger.error("Не удалось решить капчу")
+                return None
+
+        # Проверяем таблицу globalCase
+        case_table_count = await page.locator(SELECTORS['stparts']['case_table']).count()
+        logger.info(f"Количество таблиц globalCase: {case_table_count}")
+        if case_table_count > 0:
+            case_table = page.locator(SELECTORS['stparts']['case_table'])
+            desc_cells = case_table.locator(SELECTORS['stparts']['case_description'])
+            desc_count = await desc_cells.count()
+            logger.info(f"Количество ячеек caseDescription: {desc_count}")
+            if desc_count > 0:
+                description = (await desc_cells.nth(0).text_content())
+                logger.info(f"Содержимое первой ячейки в globalCase: {description}")
+                if description:
+                    description = description.strip()
+                    logger.info(f"Найдено название детали в globalCase: {description}")
+                    return description
+                else:
+                    logger.info("Первая ячейка caseDescription пустая")
+            else:
+                logger.info("Ячейки caseDescription не найдены в globalCase")
+
+        # Если таблицы globalCase нет, проверяем globalResult — берём первую строку
+        alt_results_count = await page.locator(SELECTORS['stparts']['alt_results_table']).count()
+        logger.info(f"Количество таблиц globalResult: {alt_results_count}")
+        if alt_results_count > 0:
+            alt_table = page.locator(SELECTORS['stparts']['alt_results_table'])
+            desc_cells = alt_table.locator(SELECTORS['stparts']['alt_result_description'])
+            desc_count = await desc_cells.count()
+            logger.info(f"Количество элементов resultDescription: {desc_count}")
+            if desc_count > 0:
+                description = (await desc_cells.nth(0).text_content())
+                logger.info(f"Содержимое первой ячейки в globalResult: {description}")
+                if description:
+                    description = description.strip()
+                    logger.info(f"Найдено название детали в globalResult (первый элемент): {description}")
+                    return description
+                else:
+                    logger.info("Первый элемент resultDescription пустой")
+            else:
+                logger.info("Элементы resultDescription не найдены в globalResult")
+
+        logger.info("Не удалось найти ни одну из таблиц с описаниями детали")
+        return None
+
+    except Exception as e:
+        logger.error(f"Ошибка парсинга названия детали для {part}: {e}")
+        await page.screenshot(path=f"screenshots/error_name_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        return None
+

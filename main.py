@@ -7,7 +7,7 @@
 """
 from telegram import Bot
 import asyncio
-import time
+import os
 import pandas as pd
 import json
 import math
@@ -32,15 +32,15 @@ from price_adjuster import adjust_prices_and_save
 import requests
 
 # Импортируем асинхронные скрапперы
-from scraper_avtoformula import scrape_avtoformula_pw
-from scraper_stparts import scrape_stparts_async
+from scraper_avtoformula import scrape_avtoformula_pw,scrape_avtoformula_name_async
+from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
 from auth import ensure_logged_in
 
 
 import sys
 
 
-
+ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
 COOKIE_PATH = Path(COOKIE_FILE)
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -182,6 +182,90 @@ class ContextPool:
 
 
 
+# async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
+#     context = None
+#     page_st = None
+#     page_avto = None
+#     result_st = None
+#     result_avto = None
+
+#     for attempt in range(2):  # максимум 2 попытки
+#         try:
+#             context = await pool.get_context()
+#             page_st = await context.new_page()
+#             page_avto = await context.new_page()
+
+#             if ENABLE_NAME_PARSING:
+#                 # Парсим название детали по номеру (brand не используется)
+#                 detail_name = await scrape_stparts_name_async(page_st, part, logger_st)
+#                 if not detail_name:
+#                     # Если не нашли на stparts, пытаемся на avtoformula
+#                     detail_name = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
+#                 result_st, result_avto = (detail_name, None), (None, None)
+
+#             else:
+
+#                 if ENABLE_AVTOFORMULA:
+#                     result_st, result_avto = await asyncio.gather(
+#                         scrape_stparts_async(page_st, brand, part, logger_st),
+#                         scrape_avtoformula_pw(page_avto, brand, part, logger_avto),
+#                         return_exceptions=True
+#                     )
+#                 else:
+#                     result_st = await scrape_stparts_async(page_st, brand, part, logger_st)
+#                     result_avto = (None, None)
+
+#             # Проверка: если avtoformula упал из-за разлогина
+#             if isinstance(result_avto, Exception) and "зарегистрируйтесь" in str(result_avto).lower():
+#                 logger.warning(f"🔁 Разлогин обнаружен для {brand}/{part}. Обновляем куки...")
+#                 await pool.refresh_cookies()
+#                 # Закрываем текущие страницы и контекст
+#                 await page_st.close()
+#                 await page_avto.close()
+#                 pool.release_context(context)
+#                 context = page_st = page_avto = None
+#                 continue  # повторим попытку
+#             else:
+#                 break  # всё ок, выходим из цикла
+
+#         except Exception as e:
+#             logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
+#             send_telegram_error(f"{brand}/{part}: {e}")
+#             break  # выходим при фатальной ошибке
+#         finally:
+#             if page_st:
+#                 await page_st.close()
+#             if page_avto:
+#                 await page_avto.close()
+#             if context:
+#                 pool.release_context(context)
+
+#     if ENABLE_NAME_PARSING:
+#         # Возвращаем название детали в новую колонку
+#         name = None if isinstance(result_st, Exception) else result_st[0]
+#         return idx, {
+#             'finde_name': name
+#         }
+#     else:
+#         # Обработка результатов
+#         if isinstance(result_st, Exception):
+#             price_st, delivery_st = None, None
+#         else:
+#             price_st, delivery_st = result_st
+
+#         if isinstance(result_avto, Exception):
+#             price_avto, delivery_avto = None, None
+#         else:
+#             price_avto, delivery_avto = result_avto
+
+#         return idx, {
+#             competitor1: price_st,
+#             competitor1_delivery: delivery_st,
+#             competitor2: price_avto,
+#             competitor2_delivery: delivery_avto
+#         }
+
+
 async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
     context = None
     page_st = None
@@ -195,21 +279,30 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             page_st = await context.new_page()
             page_avto = await context.new_page()
 
-            if ENABLE_AVTOFORMULA:
-                result_st, result_avto = await asyncio.gather(
-                    scrape_stparts_async(page_st, brand, part, logger_st),
-                    scrape_avtoformula_pw(page_avto, brand, part, logger_avto),
-                    return_exceptions=True
-                )
+            if ENABLE_NAME_PARSING:
+                # Сначала пытаемся получить имя с stparts
+                detail_name = await scrape_stparts_name_async(page_st, part, logger_st)
+                if not detail_name:
+                    # Если не нашли на stparts, пытаемся на avtoformula
+                    detail_name = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
+                result_st, result_avto = (detail_name, None), (None, None)
+
             else:
-                result_st = await scrape_stparts_async(page_st, brand, part, logger_st)
-                result_avto = (None, None)
+                # Функции парсинга цены как раньше
+                if ENABLE_AVTOFORMULA:
+                    result_st, result_avto = await asyncio.gather(
+                        scrape_stparts_async(page_st, brand, part, logger_st),
+                        scrape_avtoformula_pw(page_avto, brand, part, logger_avto),
+                        return_exceptions=True
+                    )
+                else:
+                    result_st = await scrape_stparts_async(page_st, brand, part, logger_st)
+                    result_avto = (None, None)
 
             # Проверка: если avtoformula упал из-за разлогина
             if isinstance(result_avto, Exception) and "зарегистрируйтесь" in str(result_avto).lower():
                 logger.warning(f"🔁 Разлогин обнаружен для {brand}/{part}. Обновляем куки...")
                 await pool.refresh_cookies()
-                # Закрываем текущие страницы и контекст
                 await page_st.close()
                 await page_avto.close()
                 pool.release_context(context)
@@ -221,7 +314,7 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
         except Exception as e:
             logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
             send_telegram_error(f"{brand}/{part}: {e}")
-            break  # выходим при фатальной ошибке
+            break
         finally:
             if page_st:
                 await page_st.close()
@@ -230,28 +323,42 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             if context:
                 pool.release_context(context)
 
-    # Обработка результатов
-    if isinstance(result_st, Exception):
-        price_st, delivery_st = None, None
+    if ENABLE_NAME_PARSING:
+        name = None if isinstance(result_st, Exception) else result_st[0]
+        return idx, {'finde_name': name}
     else:
-        price_st, delivery_st = result_st
+        if isinstance(result_st, Exception):
+            price_st, delivery_st = None, None
+        else:
+            price_st, delivery_st = result_st
 
-    if isinstance(result_avto, Exception):
-        price_avto, delivery_avto = None, None
-    else:
-        price_avto, delivery_avto = result_avto
+        if isinstance(result_avto, Exception):
+            price_avto, delivery_avto = None, None
+        else:
+            price_avto, delivery_avto = result_avto
 
-    return idx, {
-        competitor1: price_st,
-        competitor1_delivery: delivery_st,
-        competitor2: price_avto,
-        competitor2_delivery: delivery_avto
-    }
+        return idx, {
+            competitor1: price_st,
+            competitor1_delivery: delivery_st,
+            competitor2: price_avto,
+            competitor2_delivery: delivery_avto
+        }
+    
+
+
 
 # === Основная функция ===
 async def main_async():
+    global ENABLE_NAME_PARSING
+     # Перечитываем .env, чтобы подхватить изменения
+    load_dotenv(override=True)
+    
+    # Считываем переменную заново
+    ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
+
     logger.info("=" * 60)
     logger.info("🚀 ЗАПУСК PLAYWRIGHT ПАРСЕРА")
+    logger.info(f"режим {ENABLE_NAME_PARSING}")
     logger.info("=" * 60)
 
     df = pd.read_excel(INPUT_FILE)
@@ -262,6 +369,9 @@ async def main_async():
     for col in [competitor1, competitor1_delivery, competitor2, competitor2_delivery]:
         if col not in df.columns:
             df[col] = None
+    if ENABLE_NAME_PARSING:
+        if 'finde_name' not in df.columns:
+            df['finde_name'] = None
 
     # logger.info(f" датафрейм после препроцесса {df}")   
 
@@ -277,6 +387,7 @@ async def main_async():
         await pool.initialize()
 
         results = []
+        processed_count = 0
         with tqdm(total=len(tasks), desc="Парсинг") as pbar:
             for coro in asyncio.as_completed([process_row_async(pool, *t) for t in tasks]):
                 idx, result = await coro
@@ -285,6 +396,12 @@ async def main_async():
                         df.at[idx, col] = val
                 pbar.update(1)
                 results.append((idx, result))
+                processed_count += 1
+
+                 # Перезаписываем один временный файл каждые 100 строк
+                if processed_count % 10 == 0:
+                    await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
+                    logger.info(f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}")
 
         await asyncio.to_thread(adjust_prices_and_save, df, OUTPUT_FILE)
         await send_telegram_file(OUTPUT_FILE)

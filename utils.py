@@ -30,7 +30,7 @@ def get_site_logger(site_name: str) -> logging.Logger:
         return logger  # избегаем дублирования
 
     logger.setLevel(logging.INFO)
-    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh = logging.FileHandler(log_file, encoding="utf-8", mode='w')
     fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -82,7 +82,7 @@ def setup_logger():
 
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-    fh = logging.FileHandler(log_path, encoding='utf-8', mode='a')
+    fh = logging.FileHandler(log_path, encoding='utf-8', mode='w')
     fh.setFormatter(formatter)
     _logger.addHandler(fh)
 

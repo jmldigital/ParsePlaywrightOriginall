@@ -35,15 +35,76 @@ logger = logging.getLogger(__name__)
 INPUT_DIR.mkdir(exist_ok=True)
 
 
+
+
+# from pathlib import Path
+
+def set_env_variable(key: str, value: str):
+    """Изменяет или добавляет переменную в .env файле"""
+    env_path = Path('.env')
+    
+    if env_path.exists():
+        with open(env_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        found = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith(f"{key}="):
+                lines[i] = f"{key}={value}\n"
+                found = True
+                break
+        
+        if not found:
+            lines.append(f"{key}={value}\n")
+        
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+    else:
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.write(f"{key}={value}\n")
+    
+    logger.info(f"✅ Переменная {key} установлена в {value}")
+
+
+async def mode_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключить на режим поиска цен"""
+    try:
+        set_env_variable('ENABLE_NAME_PARSING', 'False')
+        await update.message.reply_text(
+            "✅ Режим переключён: **Поиск цен и доставки**\n"
+            "Изменения вступят в силу при следующем запуске парсера.",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при переключении режима: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
+async def mode_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключить на режим поиска имён"""
+    try:
+        set_env_variable('ENABLE_NAME_PARSING', 'True')
+        await update.message.reply_text(
+            "✅ Режим переключён: **Поиск названий деталей**\n"
+            "Изменения вступят в силу при следующем запуске парсера.",
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при переключении режима: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки прайс-листов автозапчастей.\n\n"
         "📋 Доступные команды:\n"
         "/start - Показать это сообщение\n"
-        "/наличие - Отправить файл для обработки\n\n"
-        "📎 Чтобы загрузить новый файл, отправьте команду /parse "
-        "и прикрепите файл .xls или .xlsx"
+        "/parse - Отправить файл для обработки\n"
+        "/mode_price - Режим: поиск цен и доставки\n"
+        "/mode_name - Режим: поиск названий деталей\n\n"
+        "📎 Для загрузки файла отправьте команду /parse и прикрепите .xls/.xlsx"
     )
 
 
@@ -197,6 +258,8 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("parse", nalichie_command))
+    application.add_handler(CommandHandler("mode_price", mode_price_command))
+    application.add_handler(CommandHandler("mode_name", mode_name_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 

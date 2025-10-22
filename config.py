@@ -23,7 +23,7 @@ STATE_FILE = 'output/state.json'
 CACHE_FILE = 'output/cache.json'
 
 # === Параметры ===
-MAX_ROWS = 3000
+MAX_ROWS = 60
 SAVE_INTERVAL = 10
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
@@ -39,6 +39,8 @@ competitor2_delivery = 'avtoformula_delivery'
 corrected_price = 'corrected_price'
 
 ENABLE_AVTOFORMULA = True
+ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
+
 
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = '1'         # ← или как у тебя в файле
@@ -58,7 +60,13 @@ SELECTORS = {
         'result_row': 'tr.resultTr2',
         'brand': 'td.resultBrand',
         'delivery': 'td.resultDeadline',
-        'price': 'td.resultPrice'
+        'price': 'td.resultPrice',
+        # новые селекторы для названий деталей
+        'case_table': 'table.globalCase',
+        'case_description': 'td.caseDescription',
+        'alt_results_table': 'table.globalResult',
+        'alt_result_row': 'tr',
+        'alt_result_description': 'td.resultDescription'
     },
     'avtoformula': {
         'login_field': 'userlogin',
@@ -70,6 +78,11 @@ SELECTORS = {
         'results_table': 'table.web_ar_datagrid.search_results',
         'brand_cell': 'td.td_prd_info_link',
         'delivery_cell': 'td.td_term',
-        'price_cell': 'td.td_final_price'
+        'price_cell': 'td.td_final_price',
+          # селектор имени детали
+        'name_cell': 'td.td_spare_info',
+            # Селекторы капчи
+        'captcha_img': 'img[src*="/_phplib/check/img.php"]',
+        'captcha_input': 'input#ban_hc_code',
     }
 }
