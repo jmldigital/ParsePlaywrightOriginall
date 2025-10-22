@@ -1,67 +1,44 @@
+# auth_playwright_async.py
+"""
+Асинхронная авторизация для Playwright
+Аналог auth_playwright.py, но с async/await
+"""
 
-# auth.py
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from playwright.async_api import Page
 from config import SELECTORS, COOKIE_FILE
 from utils import logger
-import time
 import json
 from pathlib import Path
+import asyncio
 import threading
 
-# --- Глобальные переменные для синхронизации ---
-_login_lock = threading.Lock()
-_global_login_done = False  # Флаг: кто-то уже успешно залогинился
+_login_lock = asyncio.Lock()
+_global_login_done = False
 
-def save_cookies(driver, filepath=COOKIE_FILE):
-    """Сохраняет куки. Должно вызываться только один раз после успешного логина."""
+
+async def save_cookies(page: Page, filepath: str = COOKIE_FILE):
+    """Сохраняет куки после успешного логина"""
     try:
-        cookies = driver.get_cookies()
-        with open(filepath, 'w', encoding='utf-8') as f:
+        cookies = await page.context.cookies()
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(cookies, f, ensure_ascii=False, indent=2)
         logger.info(f"✅ Куки сохранены в {filepath}")
     except Exception as e:
         logger.warning(f"❌ Не удалось сохранить куки: {e}")
 
-def load_cookies(driver, filepath=COOKIE_FILE):
-    """
-    Загружает куки без ожидания полной загрузки страницы.
-    Важно: не используем WebDriverWait здесь.
-    """
+
+async def load_cookies(page: Page, filepath: str = COOKIE_FILE) -> bool:
+    """Загружает куки из файла"""
     if not Path(filepath).exists():
         logger.debug(f"❌ Файл кук не найден: {filepath}")
         return False
-
     try:
-        # Открываем базовый URL, чтобы можно было добавить куки
-        driver.get("https://www.avtoformula.ru")
-
-        # Удаляем текущие куки и добавляем свои
-        driver.delete_all_cookies()
-
-        with open(filepath, 'r', encoding='utf-8') as f:
+        await page.goto("https://www.avtoformula.ru")
+        with open(filepath, "r", encoding="utf-8") as f:
             cookies = json.load(f)
-
-        for cookie in cookies:
-            # Удаляем problematic поля
-            cookie.pop('sameSite', None)  # ← Удаляем sameSite — Chrome сам решит
-            cookie.pop('httpOnly', None)  # ← Необязательно, но может помочь
-            cookie.pop('expiry', None)    # ← Иногда мешает, особенно если просрочены
-
-            try:
-                driver.add_cookie(cookie)
-            except Exception as e:
-                # Логируем только если критично
-                if 'Secure' in str(e) and cookie.get('secure'):
-                    # Проблема: кука secure, но мы на http? (но у нас https)
-                    pass
-                logger.debug(f"⚠️ Пропущена кука {cookie.get('name')}: {e}")
-
-        # Перезагружаем — теперь с куками
-        driver.refresh()
-        time.sleep(1)  # Даем время на обработку
-
+        await page.context.add_cookies(cookies)
+        await page.reload()
+        await page.wait_for_timeout(1000)
         logger.info(f"✅ Куки загружены из {filepath}")
         return True
     except Exception as e:
@@ -69,110 +46,110 @@ def load_cookies(driver, filepath=COOKIE_FILE):
         return False
 
 
-def is_logged_in(driver):
-    """
-    Проверяет авторизацию по наличию фразы 'Вы авторизованы как'.
-    Выводит в лог точный текст для уверенности.
-    """
+async def is_logged_in(page: Page) -> bool:
+    """Проверяет наличие надписи 'Вы авторизованы как'"""
     try:
-        # Ищем элемент по части текста
-        element = driver.find_element(By.XPATH, "//span[contains(text(), 'Вы авторизованы как')]")
-        
-        if not element.is_displayed():
-            logger.debug("❌ Элемент 'Вы авторизованы как' найден, но скрыт")
+        element = page.locator("xpath=//span[contains(text(), 'Вы авторизованы как')]")
+        if await element.count() == 0:
             return False
-
-        # Получаем полный текст
-        full_text = element.text.strip()
-        logger.info(f"🟢 Найдена надпись об авторизации: '{full_text}'")
-
-        # Можно дополнительно проверить, что внутри есть имя
-        try:
-            username_span = element.find_element(By.XPATH, ".//span")
-            username = username_span.text.strip()
-            if username:
-                logger.info(f"🟢 Авторизован как: {username}")
-            else:
-                logger.warning("🟡 Нет имени пользователя внутри надписи")
-        except Exception as e:
-            logger.debug(f"⚠️ Не удалось найти имя пользователя в надписи: {e}")
-
+        if not await element.is_visible():
+            return False
+        text = (await element.text_content() or "").strip()
+        logger.info(f"🟢 Найдена надпись об авторизации: '{text}'")
         return True
-
     except Exception as e:
-        logger.debug(f"❌ Элемент 'Вы авторизованы как' не найден: {e}")
+        logger.debug(f"Ошибка проверки авторизации: {e}")
         return False
 
-def ensure_logged_in(driver, login, password):
-    """
-    Гарантирует, что драйвер залогинен.
-    Выполняется только один раз для всех потоков.
-    """
-    global _global_login_done
 
-    # Проверяем, не залогинились ли уже
-    if _global_login_done:
-        return True
-
-    with _login_lock:
-        # Двойная проверка внутри блока (защита от race condition)
-        if _global_login_done:
-            return True
-
-        logger.info("🔐 Проверка авторизации...")
-
-        # Пытаемся загрузить куки
-        if load_cookies(driver) and is_logged_in(driver):
-            logger.info("✅ Авторизация по кукам успешна")
-            _global_login_done = True
-            return True
-
-        # Если не вышло — делаем ручной логин
-        logger.info("🔄 Куки не помогли — выполняем ручной логин")
-        if login_manually(driver, login, password):
-            save_cookies(driver)  # Сохраняем куки один раз!
-            _global_login_done = True
-            logger.info("✅ Ручной логин успешен, куки сохранены")
-            return True
-        else:
-            logger.error("❌ Не удалось авторизоваться")
-            return False
-
-# --- Отдельно выносим login_manually, чтобы избежать циклических импортов ---
-def login_manually(driver, login, password):
-    """Ручная авторизация на avtoformula.ru"""
-    from config import SELECTORS
+async def login_manually(page: Page, login: str, password: str) -> bool:
+    """Ручной логин на сайте AvtoFormula"""
     try:
-        driver.get("https://www.avtoformula.ru")
-        wait = WebDriverWait(driver, 15)
+        await page.goto("https://www.avtoformula.ru")
 
-        # Поле логина
-        login_el = wait.until(EC.element_to_be_clickable((By.ID, SELECTORS['avtoformula']['login_field'])))
-        login_el.clear()
-        login_el.send_keys(login)
+        login_field = page.locator(f"#{SELECTORS['avtoformula']['login_field']}")
+        await login_field.wait_for(state="visible", timeout=15000)
+        await login_field.fill(login)
 
-        # Поле пароля
-        password_el = driver.find_element(By.ID, SELECTORS['avtoformula']['password_field'])
-        password_el.clear()
-        password_el.send_keys(password)
+        password_field = page.locator(f"#{SELECTORS['avtoformula']['password_field']}")
+        await password_field.fill(password)
 
-        # Кнопка входа
-        submit_btn = driver.find_element(By.CSS_SELECTOR, SELECTORS['avtoformula']['login_button'])
-        submit_btn.click()
+        submit_btn = page.locator(SELECTORS['avtoformula']['login_button'])
+        await submit_btn.click()
 
-        # Ждём, пока форма логина исчезнет
-        wait.until(EC.invisibility_of_element_located((By.ID, SELECTORS['avtoformula']['login_field'])))
-        time.sleep(2)
+        # Ждём исчезновения формы логина
+        await login_field.wait_for(state="hidden", timeout=15000)
+        await page.wait_for_timeout(2000)
 
-        # Выбор режима A0
-        smode_select = wait.until(EC.element_to_be_clickable((By.ID, SELECTORS['avtoformula']['smode_select'])))
-        for option in smode_select.find_elements(By.TAG_NAME, "option"):
-            if option.get_attribute("value") == "A0":
-                option.click()
-                break
+        # Выбор режима без аналогов (A0)
+        smode_select = page.locator(f"#{SELECTORS['avtoformula']['smode_select']}")
+        await smode_select.wait_for(state="visible", timeout=15000)
+        await smode_select.select_option("A0")
 
         logger.info("✅ Ручной логин выполнен")
         return True
     except Exception as e:
         logger.error(f"❌ Ошибка ручного входа: {e}")
+        return False
+
+
+async def ensure_logged_in(page: Page, login: str, password: str) -> bool:
+    """Гарантирует, что мы авторизованы"""
+    global _global_login_done
+    if _global_login_done:
+        return True
+
+    async with _login_lock:
+        if _global_login_done:
+            return True
+        logger.info("🔐 Проверка авторизации...")
+
+        # Пробуем куки
+        if await load_cookies(page) and await is_logged_in(page):
+            logger.info("✅ Авторизация по кукам успешна")
+            _global_login_done = True
+            return True
+
+        # Если не вышло — делаем ручной вход
+        if await login_manually(page, login, password):
+            await save_cookies(page)
+            _global_login_done = True
+            logger.info("✅ Авторизация успешна и куки сохранены")
+            return True
+        else:
+            logger.error("❌ Не удалось авторизоваться")
+            return False
+
+
+async def check_if_logged_out(page: Page) -> bool:
+    """Проверяет, не разлогинились ли мы"""
+    try:
+        reg_link = page.locator("a[href='/registration.html']")
+        if await reg_link.count() > 0 and await reg_link.is_visible():
+            logger.warning("🚪 Обнаружен разлогин (ссылка регистрации)")
+            return True
+        if "зарегистрируйтесь" in (await page.content()).lower():
+            logger.warning("🚪 Обнаружен разлогин (по тексту)")
+            return True
+        return False
+    except Exception as e:
+        logger.debug(f"Ошибка проверки разлогина: {e}")
+        return False
+
+
+async def handle_relogin(page: Page,  login: str, password: str) -> bool:
+    """Повторный логин при разлогине"""
+    logger.warning(f"🔄 Попытка повторного логина для ")
+    try:
+        if await load_cookies(page) and await is_logged_in(page):
+            logger.info("✅ Ре-логин через куки успешен")
+            return True
+        if await login_manually(page, login, password):
+            await save_cookies(page)
+            logger.info("✅ Ре-логин успешен")
+            return True
+        logger.error("❌ Ре-логин не удался")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка при ре-логине: {e}")
         return False
