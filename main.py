@@ -193,7 +193,7 @@ class ContextPool:
 
 
 
-
+    
 
 async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
     context = None
@@ -211,10 +211,25 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             if ENABLE_NAME_PARSING:
                 # Сначала пытаемся получить имя с stparts
                 detail_name = await scrape_stparts_name_async(page_st, part, logger_st)
-                if not detail_name:
-                    # Если не нашли на stparts, пытаемся на avtoformula
-                    detail_name = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
-                result_st, result_avto = (detail_name, None), (None, None)
+                
+                # ✅ Проверяем, не является ли название "Деталь" или пустым
+                if not detail_name or detail_name.lower().strip() == "деталь":
+                    if detail_name:
+                        logger.info(f"⚠️ stparts вернул 'Деталь' для {part}, пробуем avtoformula")
+                    
+                    # Пытаемся на avtoformula
+                    detail_name_avto = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
+                    
+                    # Используем название из avtoformula только если оно НЕ "Деталь" и НЕ пустое
+                    if detail_name_avto and detail_name_avto.lower().strip() != "деталь":
+                        detail_name = detail_name_avto
+                    else:
+                        detail_name = "Detail"
+                        logger.info(f"❌ Не удалось найти нормальное название для {part}")
+                
+                # ✅ Сохраняем как строку, а не кортеж
+                result_st = detail_name
+                result_avto = None
 
             else:
                 # Функции парсинга цены как раньше
@@ -232,39 +247,43 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             if isinstance(result_avto, Exception) and "зарегистрируйтесь" in str(result_avto).lower():
                 logger.warning(f"🔁 Разлогин обнаружен для {brand}/{part}. Обновляем куки...")
                 await pool.refresh_cookies()
-                await page_st.close()
-                await page_avto.close()
+                # ✅ Не закрываем здесь — будет в finally
                 pool.release_context(context)
-                context = page_st = page_avto = None
+                context = None  # чтобы finally не освободил дважды
+                # Помечаем страницы для закрытия
                 continue  # повторим попытку
             else:
                 break  # всё ок, выходим из цикла
 
+        except asyncio.CancelledError:
+            logger.warning(f"⚠️ Задача отменена для {brand}/{part}")
+            break
         except Exception as e:
             logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
             send_telegram_error(f"{brand}/{part}: {e}")
             break
         finally:
-            if page_st:
-                await page_st.close()
-            if page_avto:
-                await page_avto.close()
+            # ✅ Безопасное закрытие страниц
+            await safe_close_page(page_st)
+            await safe_close_page(page_avto)
             if context:
                 pool.release_context(context)
 
+    # ✅ Правильная обработка результатов
     if ENABLE_NAME_PARSING:
-        name = None if isinstance(result_st, Exception) else result_st[0]
+        # result_st теперь просто строка (или None)
+        name = result_st if isinstance(result_st, str) else None
         return idx, {'finde_name': name}
     else:
         if isinstance(result_st, Exception):
             price_st, delivery_st = None, None
         else:
-            price_st, delivery_st = result_st
+            price_st, delivery_st = result_st if result_st else (None, None)
 
         if isinstance(result_avto, Exception):
             price_avto, delivery_avto = None, None
         else:
-            price_avto, delivery_avto = result_avto
+            price_avto, delivery_avto = result_avto if result_avto else (None, None)
 
         return idx, {
             competitor1: price_st,
@@ -272,71 +291,19 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             competitor2: price_avto,
             competitor2_delivery: delivery_avto
         }
-    
 
 
 
-# # === Основная функция ===
-# async def main_async():
-#     global ENABLE_NAME_PARSING
-#      # Перечитываем .env, чтобы подхватить изменения
-#     load_dotenv(override=True)
-    
-#     # Считываем переменную заново
-#     ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
+async def safe_close_page(page):
+    """Безопасное закрытие страницы без ошибок"""
+    if page:
+        try:
+            await page.close()
+        except Exception:
+            pass  # игнорируем ошибки закрытия
 
-#     logger.info("=" * 60)
-#     logger.info("🚀 ЗАПУСК PLAYWRIGHT ПАРСЕРА")
-#     logger.info(f"режим {ENABLE_NAME_PARSING}")
-#     logger.info("=" * 60)
 
-#     df = pd.read_excel(INPUT_FILE)
-    
-#     # logger.info(f" датафрейм перед препроцесом {df}")  
 
-#     df = preprocess_dataframe(df)
-#     for col in [competitor1, competitor1_delivery, competitor2, competitor2_delivery]:
-#         if col not in df.columns:
-#             df[col] = None
-#     if ENABLE_NAME_PARSING:
-#         if 'finde_name' not in df.columns:
-#             df['finde_name'] = None
-
-#     # logger.info(f" датафрейм после препроцесса {df}")   
-
-#     tasks = [
-#         (idx, str(row[INPUT_COL_BRAND]).strip(), str(row[INPUT_COL_ARTICLE]).strip())
-#         for idx, row in df.head(MAX_ROWS).iterrows()
-#         if str(row[INPUT_COL_ARTICLE]).strip()
-#     ]
-
-#     async with async_playwright() as p:
-#         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-#         pool = ContextPool(browser, pool_size=MAX_WORKERS)
-#         await pool.initialize()
-
-#         results = []
-#         processed_count = 0
-#         with tqdm(total=len(tasks), desc="Парсинг") as pbar:
-#             for coro in asyncio.as_completed([process_row_async(pool, *t) for t in tasks]):
-#                 idx, result = await coro
-#                 if result:
-#                     for col, val in result.items():
-#                         df.at[idx, col] = val
-#                 pbar.update(1)
-#                 results.append((idx, result))
-#                 processed_count += 1
-
-#                  # Перезаписываем один временный файл каждые 100 строк
-#                 if processed_count % 10 == 0:
-#                     await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
-#                     logger.info(f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}")
-
-#         await asyncio.to_thread(adjust_prices_and_save, df, OUTPUT_FILE)
-#         await send_telegram_file(OUTPUT_FILE)
-#         await pool.close_all()
-#         await browser.close()
-#         logger.info("🎉 Завершено")
 
 async def main_async():
     global ENABLE_NAME_PARSING

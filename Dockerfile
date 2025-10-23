@@ -1,30 +1,15 @@
-FROM python:3.11-slim
+# Используем официальный образ Playwright с Python 3.11
+FROM mcr.microsoft.com/playwright/python:v1.34.0-jammy
 
-# Установка системных зависимостей для Playwright и Chrome
+# Установка дополнительных системных зависимостей (если нужны)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    wget \
-    gnupg \
-    unzip \
     curl \
-    libnss3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxss1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка uv (ультрабыстрый менеджер пакетов)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+# Установка uv для быстрой установки пакетов
+RUN pip install --no-cache-dir uv
 
 # Рабочая директория
 WORKDIR /app
@@ -36,12 +21,12 @@ COPY . .
 # Устанавливаем зависимости через uv
 RUN uv pip install --system -r pyproject.toml
 
-# Устанавливаем Playwright браузеры
-RUN playwright install chromium
-RUN playwright install-deps chromium
-
 # Создаём необходимые директории
 RUN mkdir -p output cache cookies logs screenshots input temp
 
-# Точка входа
+# Переменные окружения (опционально, можно задать в docker-compose.yml)
+ENV TZ=Europe/Moscow
+ENV PYTHONUNBUFFERED=1
+
+# Точка входа — bot.py
 CMD ["python", "bot.py"]
