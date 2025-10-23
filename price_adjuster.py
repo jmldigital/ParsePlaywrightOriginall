@@ -29,17 +29,23 @@ def adjust_prices_and_save(df, output_file):
 
     corrected_prices = []
 
+    # logger.info(f"Типы датафрейма:\n{df}")
 
     for idx, row in df.iterrows():
-        # logger.info("------------------------------------------------------------")
+        
         # logger.info(f"▶️ Обработка строки {idx + 1}/{len(df)}")
 
         try:
             # Наша цена
             raw_price = row.get(input_price)
             
+          # Диагностика - что именно в переменной
+            # logger.info(f"raw_price = {raw_price}, тип: {type(raw_price)}, repr: {repr(raw_price)}")
 
             our_price = parse_price(raw_price)
+            # logger.info(f"our_price = {our_price}")
+
+
             if our_price is None:
                 logger.warning(f"⚠️ Невозможно преобразовать цену: {raw_price}")
                 corrected_prices.append(None)

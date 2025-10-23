@@ -109,54 +109,56 @@ def parse_price(text):
     if text is None or (isinstance(text, float) and pd.isna(text)):
         return None
 
-    # Если это уже int или float — просто вернуть как есть
+    # Если это уже int или float — вернуть как float
     if isinstance(text, (int, float)):
-        return int(text)  # или float(text), если нужны float
+        return float(text)
 
     # Дальше обычная логика для строки
     clean = re.sub(r'[^\d,.\s]', '', str(text).lower()).strip()
     clean = clean.replace("\u00a0", "").replace(" ", "")
-    match = re.match(r'(\d+)[.,]', clean)
-    if match:
-        number_str = match.group(1)
-        try:
-            return int(number_str)
-        except ValueError:
-            return None
-    else:
-        try:
-            return int(float(clean.replace(',', '.')))
-        except Exception:
-            return None
+    
+    # Попытка парсинга с учетом десятичных знаков
+    try:
+        # Заменяем запятую на точку для корректного парсинга
+        normalized = clean.replace(',', '.')
+        return float(normalized)
+    except (ValueError, AttributeError):
+        return None
+
+
+
 
 def preprocess_dataframe(df):
-    df.columns = df.columns.map(str)
-    # print("вывод колонок", df.columns.tolist())
+    """
+    Предобработка DataFrame:
+    - Конвертирует имена столбцов в строки (удаляет .0)
+    - Очищает значения от пробелов
+    - Преобразует столбец с ценой: если не float, приводит к float через безопасную обработку запятых
+    """
 
-    if INPUT_COL_BRAND in df.columns:
-        df[INPUT_COL_BRAND] = (
-            df[INPUT_COL_BRAND]
-            .astype(str)
-            .str.replace('/', '', regex=False)
-            .str.replace('\\', '', regex=False)
-            .str.strip()
-        )
-    else:
-        logger.warning(f"⚠️ Столбец '{INPUT_COL_BRAND}' не найден при предобработке")
+    # Преобразование имён столбцов
+    df.columns = df.columns.astype(str).str.replace('.0', '', regex=False).str.strip()
+
+    # Обработка строковых столбцов — убираем лишние пробелы
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].astype(str).str.strip()
     
-    # Для цен: сначала к строкам, затем удаляем пробелы, заменяем запятую на точку,
-    # и только потом в float (через pd.to_numeric)
+    # Обработка столбца с ценой (например, input_price)
     if input_price in df.columns:
-        df[input_price] = (
-            df[input_price]
-            .astype(str)
-            .str.replace(' ', '', regex=False)
-            .str.replace('\u00a0', '', regex=False)   # на всякий случай неразрывные пробелы
-            .str.replace(',', '.', regex=False)
-        )
-        df[input_price] = pd.to_numeric(df[input_price], errors='coerce').astype('Int64')
-
+        # Только если не float — иначе не трогаем
+        if df[input_price].dtype != 'float64':
+            # Преобразуем ВСЕ значения к строкам, чтобы .str.replace не упал с ошибкой
+            df[input_price] = df[input_price].astype(str).str.replace(',', '.', regex=False)
+            # Конвертируем в float, нечисловые значения станут NaN
+            df[input_price] = pd.to_numeric(df[input_price], errors='coerce')
+            # Явно приводим к float dtype для совместимости
+            df[input_price] = df[input_price].astype('float64')
+    
     return df
+
+
+
 
 
 

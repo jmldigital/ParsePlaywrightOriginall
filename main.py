@@ -320,6 +320,7 @@ async def main_async():
 
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
+
     
     for col in [competitor1, competitor1_delivery, competitor2, competitor2_delivery]:
         if col not in df.columns:
