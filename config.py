@@ -12,7 +12,7 @@ AVTO_PASSWORD = os.getenv('AVTO_PASSWORD', 'your_password_here')
 # === Telegram ===
 BOT_TOKEN = os.getenv('BOT_TOKEN', '8364237483AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s')
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '-4688651319'))
-SEND_TO_TELEGRAM = True
+SEND_TO_TELEGRAM = False
 
 # === Файлы ===
 INPUT_FILE = 'input/наличие.xls'
@@ -23,7 +23,7 @@ STATE_FILE = 'output/state.json'
 CACHE_FILE = 'output/cache.json'
 
 # === Параметры ===
-MAX_ROWS = 20000
+MAX_ROWS = 23000
 SAVE_INTERVAL = 10
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
@@ -48,7 +48,7 @@ INPUT_COL_ARTICLE = '1'         # ← или как у тебя в файле
 INPUT_COL_BRAND = '3'             # ← или "Производитель", "Brand" и т.п.
 input_price = '5'  # индекс колонки             # ← если нужно читать цену по имени
 
-MAX_WORKERS=7
+MAX_WORKERS=4
 
 
 # === Селекторы ===
@@ -88,3 +88,5 @@ SELECTORS = {
         'captcha_submit': 'input[name="submit"][value="Отправить"]',  # новый селектор
     }
 }
+
+BAD_DETAIL_NAMES = {"деталь", "автозапчасть", "запчасть", "part"}  # Расширяй по необходимости

@@ -14,7 +14,7 @@ import telegram
 import sys
 # Загружаем переменные окружения
 load_dotenv()
-
+parse_task = None
 # Импортируем функцию отправки из нашего модуля
 from telegram_sender import send_telegram_file
 
@@ -229,11 +229,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("❌ Файл результата не найден!")
         else:
-            logger.error(f"❌ Ошибка парсера: {result.stderr}")
-            error_msg = result.stderr[-3000:]
+            logger.error(f"❌ Ошибка парсера: {stderr}")
+            error_msg = stderr[-3000:]  # последние 3000 символов stderr
+            text = error_msg
             await update.message.reply_text(
-                f"❌ Ошибка при работе парсера:\n",
-                parse_mode='Markdown'
+                text,
+                parse_mode='MarkdownV2'
             )
 
     except Exception as e:

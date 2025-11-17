@@ -4,7 +4,9 @@
 С поддержкой ре-логина, ожидания результатов, проверки разлогина
 и установки режима "с аналогами".
 """
-
+from PIL import Image, ImageEnhance
+import io
+import os
 import re
 import time
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
@@ -18,6 +20,7 @@ logger = get_site_logger("avtoformula")
 from twocaptcha import TwoCaptcha
 import base64
 import datetime
+import httpx
 
 MAX_WAIT_SECONDS = 15
 CHECK_INTERVAL = 0.5  # секунды
@@ -25,10 +28,14 @@ AUTH_CHECK_INTERVAL = 10  # сек
 
 
 
-
+# Этот работает
 
 # async def solve_avtoformula_captcha_async(page: Page) -> bool:
-#     """Решение капчи через 2Captcha для avtoformula с нажатием кнопки отправки"""
+#     """Решение капчи через 2Captcha для avtoformula: использование скриншота, логирование успешных и неудачных капч."""
+#     captcha_text = None
+#     img = None
+#     original_img_bytes = None
+
 #     try:
 #         solver = TwoCaptcha(API_KEY_2CAPTCHA)
 #         captcha_img = page.locator(SELECTORS["avtoformula"]["captcha_img"])
@@ -36,44 +43,112 @@ AUTH_CHECK_INTERVAL = 10  # сек
 #             logger.info("Капча не обнаружена")
 #             return False
 
-#         # Получаем base64 из Playwright
-#         captcha_bytes = await captcha_img.screenshot()
-#         captcha_base64 = base64.b64encode(captcha_bytes).decode("utf-8")
+#         logger.info("📸 Делаем скриншот капчи")
+
+#         # Сохраняем HTML для анализа
+#         html = await page.content()
+#         os.makedirs("screenshots/pages", exist_ok=True)
+#         with open(f"screenshots/pages/captcha_page_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
+#             f.write(html)
+#         logger.info("💾 HTML страницы капчи сохранён для анализа")
+
+#         # Делаем скриншот локатора
+#         original_img_bytes = await captcha_img.screenshot()
+#         logger.info(f"📸 Скриншот капчи получен, размер: {len(original_img_bytes)} байт")
+
+#         # Проверяем, что получили валидные данные
+#         if not original_img_bytes or len(original_img_bytes) < 100:
+#             raise Exception("Получены пустые или слишком маленькие данные изображения")
+
+#         # Открываем и обрабатываем изображение
+#         img = Image.open(io.BytesIO(original_img_bytes))
+#         logger.info(f"✅ Изображение открыто: {img.format} {img.size} {img.mode}")
+        
+#         # Только увеличение размера
+#         img = img.resize((img.width * 3, img.height * 3), Image.BICUBIC)
+
+#         buf = io.BytesIO()
+#         img.save(buf, format="PNG")
+#         captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
 #         logger.info("Отправляем капчу avtoformula на распознавание в 2Captcha")
 #         result = await asyncio.to_thread(solver.normal, captcha_base64)
 #         captcha_text = result["code"]
 #         logger.info(f"✅ Капча распознана: {captcha_text}")
 
-#         # Вводим капчу
+#         # КРИТИЧНО: Проверяем, не изменилась ли капча за время распознавания
+#         current_img_bytes = await captcha_img.screenshot()
+#         if current_img_bytes != original_img_bytes:
+#             logger.warning("⚠️ Капча изменилась во время распознавания! Начинаем заново.")
+#             # Сохраняем для анализа
+#             os.makedirs("screenshots/changed", exist_ok=True)
+#             timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+#             Image.open(io.BytesIO(original_img_bytes)).save(f"screenshots/changed/original_{timestamp}.png")
+#             Image.open(io.BytesIO(current_img_bytes)).save(f"screenshots/changed/changed_{timestamp}.png")
+#             logger.info("💾 Сохранены обе версии капчи для сравнения")
+#             # Рекурсивно пробуем снова (но можно добавить счётчик попыток)
+#             return await solve_avtoformula_captcha_async(page)
+
 #         input_el = page.locator(SELECTORS["avtoformula"]["captcha_input"])
 #         await input_el.fill(captcha_text)
 #         logger.info(f"✅ Капча введена в поле: {captcha_text}")
 
-#         # Нажимаем кнопку "Отправить"
 #         submit_button = page.locator('input[name="submit"][value="Отправить"]')
 #         await submit_button.click()
 #         logger.info("✅ Нажата кнопка 'Отправить'")
 
-#         # Ждём перезагрузку страницы
 #         await page.wait_for_timeout(5000)
+#         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         
-#         # Проверяем, исчезла ли капча
 #         if not await captcha_img.is_visible():
 #             logger.info("✅ Капча успешно решена, страница обновлена")
+#             # Сохраняем успешно решённую капчу
+#             os.makedirs("screenshots/success", exist_ok=True)
+#             success_path = f"screenshots/success/success_captcha_{captcha_text}_{timestamp}.png"
+#             img.save(success_path)
+#             logger.info(f"🎉 Успешная капча сохранена: {success_path}")
 #             return True
 #         else:
 #             logger.warning("⚠️ Капча всё ещё видна после отправки")
+#             screenshot_path = f"screenshots/captcha_failed_avtoformula_{captcha_text}_{timestamp}.png"
+#             await page.screenshot(path=screenshot_path)
+#             logger.warning(f"📸 Скриншот сохранён: {screenshot_path}")
+#             os.makedirs("screenshots/capchas", exist_ok=True)
+#             processed_path = f"screenshots/capchas/processed_captcha_{captcha_text}_{timestamp}.png"
+#             img.save(processed_path)
+#             logger.error(f"📸 Сохранена обработанная капча: {processed_path}")
 #             return False
 
 #     except Exception as e:
-#         logger.error(f"❌ Ошибка решения капчи avtoformula: {e}")
+#         logger.error(f"❌ Ошибка решения капчи avtoformula: {e}", exc_info=True)
+#         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+#         captcha_label = captcha_text if captcha_text else "unknown"
+#         screenshot_path = f"screenshots/captcha_error_avtoformula_{captcha_label}_{timestamp}.png"
+        
+#         try:
+#             await page.screenshot(path=screenshot_path)
+#             logger.error(f"📸 Скриншот ошибки сохранён: {screenshot_path}")
+#         except Exception as screenshot_error:
+#             logger.error(f"Не удалось сохранить скриншот: {screenshot_error}")
+            
+#         try:
+#             if img is not None:
+#                 os.makedirs("screenshots/capchas", exist_ok=True)
+#                 processed_path = f"screenshots/capchas/processed_captcha_{captcha_label}_{timestamp}.png"
+#                 img.save(processed_path)
+#                 logger.error(f"📸 Сохранена обработанная капча: {processed_path}")
+#         except Exception as save_error:
+#             logger.error(f"Не удалось сохранить обработанную капчу: {save_error}")
+            
 #         return False
 
-async def solve_avtoformula_captcha_async(page: Page) -> bool:
-    """Решение капчи через 2Captcha для avtoformula с нажатием кнопки отправки"""
-    captcha_text = None  # Инициализируем заранее для использования в except
-    
+
+async def solve_avtoformula_captcha_async(page: Page, max_attempts: int = 3, attempt: int = 1) -> bool:
+    """Решение капчи через 2Captcha для avtoformula: использование скриншота, логирование успешных и неудачных капч."""
+    captcha_text = None
+    img = None
+    original_img_bytes = None
+
     try:
         solver = TwoCaptcha(API_KEY_2CAPTCHA)
         captcha_img = page.locator(SELECTORS["avtoformula"]["captcha_img"])
@@ -81,53 +156,128 @@ async def solve_avtoformula_captcha_async(page: Page) -> bool:
             logger.info("Капча не обнаружена")
             return False
 
-        # Получаем base64 из Playwright
-        captcha_bytes = await captcha_img.screenshot()
-        captcha_base64 = base64.b64encode(captcha_bytes).decode("utf-8")
+        logger.info(f"📸 Делаем скриншот капчи (попытка {attempt}/{max_attempts})")
+
+        # Сохраняем HTML для анализа
+        # html = await page.content()
+        # os.makedirs("screenshots/pages", exist_ok=True)
+        # with open(f"screenshots/pages/captcha_page_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html", "w", encoding="utf-8") as f:
+        #     f.write(html)
+        # logger.info("💾 HTML страницы капчи сохранён для анализа")
+
+        # Делаем скриншот локатора
+        original_img_bytes = await captcha_img.screenshot()
+        logger.info(f"📸 Скриншот капчи получен, размер: {len(original_img_bytes)} байт")
+
+        # Проверяем, что получили валидные данные
+        if not original_img_bytes or len(original_img_bytes) < 100:
+            raise Exception("Получены пустые или слишком маленькие данные изображения")
+
+        # Открываем и обрабатываем изображение
+        img = Image.open(io.BytesIO(original_img_bytes))
+        logger.info(f"✅ Изображение открыто: {img.format} {img.size} {img.mode}")
+        
+        # Только увеличение размера
+        img = img.resize((img.width * 3, img.height * 3), Image.BICUBIC)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         logger.info("Отправляем капчу avtoformula на распознавание в 2Captcha")
         result = await asyncio.to_thread(solver.normal, captcha_base64)
         captcha_text = result["code"]
-        logger.info(f"✅ Капча распознана: {captcha_text}")
+        logger.info(f"✅ Капча распознана (оригинал): {captcha_text}")
+        
+        # Преобразуем в заглавные буквы
+        captcha_text = captcha_text.upper()
+        logger.info(f"✅ Капча преобразована в заглавные: {captcha_text}")
 
-        # Вводим капчу
+        # Проверяем, не изменилась ли капча за время распознавания
+        current_img_bytes = await captcha_img.screenshot()
+        if current_img_bytes != original_img_bytes:
+            logger.warning("⚠️ Капча изменилась во время распознавания! Начинаем заново.")
+            # Сохраняем для анализа
+            os.makedirs("screenshots/changed", exist_ok=True)
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            Image.open(io.BytesIO(original_img_bytes)).save(f"screenshots/changed/original_{timestamp}.png")
+            Image.open(io.BytesIO(current_img_bytes)).save(f"screenshots/changed/changed_{timestamp}.png")
+            logger.info("💾 Сохранены обе версии капчи для сравнения")
+            
+            if attempt < max_attempts:
+                logger.info(f"🔄 Повторная попытка из-за изменения капчи ({attempt + 1}/{max_attempts})")
+                return await solve_avtoformula_captcha_async(page, max_attempts, attempt + 1)
+            else:
+                logger.error(f"❌ Превышено максимальное количество попыток ({max_attempts})")
+                return False
+
         input_el = page.locator(SELECTORS["avtoformula"]["captcha_input"])
         await input_el.fill(captcha_text)
         logger.info(f"✅ Капча введена в поле: {captcha_text}")
 
-        # Нажимаем кнопку "Отправить"
         submit_button = page.locator('input[name="submit"][value="Отправить"]')
         await submit_button.click()
         logger.info("✅ Нажата кнопка 'Отправить'")
 
-        # Ждём перезагрузку страницы
         await page.wait_for_timeout(5000)
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # Проверяем, исчезла ли капча
         if not await captcha_img.is_visible():
             logger.info("✅ Капча успешно решена, страница обновлена")
+            # Сохраняем успешно решённую капчу
+            os.makedirs("screenshots/success", exist_ok=True)
+            success_path = f"screenshots/success/success_captcha_{captcha_text}_{timestamp}.png"
+            img.save(success_path)
+            logger.info(f"🎉 Успешная капча сохранена: {success_path}")
             return True
         else:
-            logger.warning("⚠️ Капча всё ещё видна после отправки")
-            # Делаем скриншот с текстом капчи в названии
-            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            logger.warning(f"⚠️ Капча всё ещё видна после отправки (попытка {attempt}/{max_attempts})")
             screenshot_path = f"screenshots/captcha_failed_avtoformula_{captcha_text}_{timestamp}.png"
             await page.screenshot(path=screenshot_path)
             logger.warning(f"📸 Скриншот сохранён: {screenshot_path}")
-            return False
+            os.makedirs("screenshots/capchas", exist_ok=True)
+            processed_path = f"screenshots/capchas/processed_captcha_{captcha_text}_{timestamp}.png"
+            img.save(processed_path)
+            logger.error(f"📸 Сохранена обработанная капча: {processed_path}")
+            
+            # Повторная попытка, если не достигнут лимит
+            if attempt < max_attempts:
+                logger.info(f"🔄 Повторная попытка решения капчи ({attempt + 1}/{max_attempts})")
+                await page.wait_for_timeout(2000)  # Небольшая пауза перед повтором
+                return await solve_avtoformula_captcha_async(page, max_attempts, attempt + 1)
+            else:
+                logger.error(f"❌ Превышено максимальное количество попыток ({max_attempts})")
+                return False
 
     except Exception as e:
-        logger.error(f"❌ Ошибка решения капчи avtoformula: {e}")
-        # Делаем скриншот с текстом капчи в названии (если он был распознан)
+        logger.error(f"❌ Ошибка решения капчи avtoformula (попытка {attempt}/{max_attempts}): {e}", exc_info=True)
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
         captcha_label = captcha_text if captcha_text else "unknown"
         screenshot_path = f"screenshots/captcha_error_avtoformula_{captcha_label}_{timestamp}.png"
+        
         try:
             await page.screenshot(path=screenshot_path)
             logger.error(f"📸 Скриншот ошибки сохранён: {screenshot_path}")
         except Exception as screenshot_error:
             logger.error(f"Не удалось сохранить скриншот: {screenshot_error}")
-        return False
+            
+        try:
+            if img is not None:
+                os.makedirs("screenshots/capchas", exist_ok=True)
+                processed_path = f"screenshots/capchas/processed_captcha_{captcha_label}_{timestamp}.png"
+                img.save(processed_path)
+                logger.error(f"📸 Сохранена обработанная капча: {processed_path}")
+        except Exception as save_error:
+            logger.error(f"Не удалось сохранить обработанную капчу: {save_error}")
+        
+        # Повторная попытка при ошибке, если не достигнут лимит
+        if attempt < max_attempts:
+            logger.info(f"🔄 Повторная попытка после ошибки ({attempt + 1}/{max_attempts})")
+            await page.wait_for_timeout(2000)
+            return await solve_avtoformula_captcha_async(page, max_attempts, attempt + 1)
+        else:
+            logger.error(f"❌ Превышено максимальное количество попыток ({max_attempts})")
+            return False
 
 
 
@@ -239,68 +389,6 @@ async def scrape_avtoformula_pw(page: Page, brand: str, part: str, logger: loggi
             return None, None
 
 
-# async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
-#     """Fallback-поиск через прямой URL с обработкой капчи"""
-#     try:
-#         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
-#         await page.goto(fallback_url, wait_until="networkidle")
-#         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
-
-#         # Проверка капчи
-#         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
-#             logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
-#             if not await solve_avtoformula_captcha_async(page):
-#                 logger.error("Не удалось решить капчу (fallback)")
-#                 return None, None
-
-#         # Ожидание таблицы
-#         await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
-
-#         # Обработка результатов (аналогично основной функции)
-#         table = page.locator(SELECTORS['avtoformula']['results_table'])
-#         rows = table.locator("tr")
-#         count = await rows.count()
-
-#         if count <= 1:
-#             logger.info(f"Fallback: результаты не найдены для {part}")
-#             return None, None
-
-#         min_price, min_delivery = None, None
-#         for i in range(1, count):
-#             row = rows.nth(i)
-#             brand_in_row = (await row.locator(SELECTORS['avtoformula']['brand_cell']).text_content() or "").strip()
-#             if not brand_matches(brand, brand_in_row):
-#                 continue
-
-#             delivery_text = (await row.locator(SELECTORS['avtoformula']['delivery_cell']).text_content() or "").strip()
-#             price_text = (await row.locator(SELECTORS['avtoformula']['price_cell']).text_content() or "").strip()
-
-#             delivery_days_match = re.search(r'\d+', delivery_text)
-#             if not delivery_days_match:
-#                 continue
-#             delivery_days = int(delivery_days_match.group())
-
-#             price = parse_price(price_text)
-#             if price is None:
-#                 continue
-
-#             if (
-#                 min_delivery is None
-#                 or delivery_days < min_delivery
-#                 or (delivery_days == min_delivery and price < min_price)
-#             ):
-#                 min_delivery, min_price = delivery_days, price
-
-#         if min_price:
-#             logger.info(f"Fallback: найдено {brand}/{part}: {min_price} ₽ ({min_delivery} дней)")
-#             return min_price, f"{min_delivery} дней"
-#         else:
-#             logger.info(f"Fallback: подходящие результаты не найдены для {part}")
-#             return None, None
-
-#     except Exception as e:
-#         logger.error(f"Fallback ошибка парсинга avtoformula для {part}: {e}")
-#         return None, None
 
 async def fallback_avtoformula_search(page: Page, brand: str, part: str, logger: logging.Logger) -> tuple:
     """Fallback-поиск через прямой URL с обработкой капчи и проверкой отсутствия товара"""
@@ -460,38 +548,6 @@ async def scrape_avtoformula_name_async(page: Page, part: str, logger: logging.L
 
 
 
-# async def fallback_avtoformula_name_search(page: Page, part: str, logger: logging.Logger) -> str:
-#     """Fallback-поиск названия детали через прямой URL с обработкой капчи"""
-#     try:
-#         fallback_url = f"https://www.avtoformula.ru/search.html?article={part}&smode=A&searchTemplate=default&delivery_time=0&sort___search_results_by=final_price"
-#         await page.goto(fallback_url, wait_until="networkidle")
-#         logger.info(f"Fallback: загружена страница по прямому URL: {fallback_url}")
-
-#         # Проверка капчи
-#         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
-#             logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
-#             if not await solve_avtoformula_captcha_async(page):
-#                 logger.error("Не удалось решить капчу (fallback)")
-#                 return None
-
-#         # Ожидание таблицы
-#         await page.wait_for_selector(SELECTORS['avtoformula']['results_table'], timeout=30000)
-
-#         # Получаем первый элемент с описанием детали
-#         first_desc_cell_selector = f"{SELECTORS['avtoformula']['results_table']} tr:nth-child(2) td.td_spare_info"
-#         first_desc = await page.locator(first_desc_cell_selector).text_content()
-
-#         if first_desc:
-#             description = first_desc.strip()
-#             logger.info(f"Fallback: найдено название детали avtoformula: {description}")
-#             return description
-#         else:
-#             logger.info(f"Fallback: название детали avtoformula не найдено для артикула {part}")
-#             return None
-
-#     except Exception as e:
-#         logger.error(f"Fallback ошибка парсинга названия детали avtoformula для {part}: {e}")
-#         return None
 
 
 async def fallback_avtoformula_name_search(page: Page, part: str, logger: logging.Logger) -> str:

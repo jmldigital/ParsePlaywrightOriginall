@@ -17,6 +17,7 @@ from tqdm.asyncio import tqdm
 import logging
 from dotenv import load_dotenv
 load_dotenv()
+from config import BAD_DETAIL_NAMES
 
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from config import (
@@ -26,7 +27,7 @@ from config import (
     INPUT_COL_ARTICLE, INPUT_COL_BRAND,TEMP_RAW,
     AVTO_LOGIN, AVTO_PASSWORD, BOT_TOKEN, ADMIN_CHAT_ID, SEND_TO_TELEGRAM,ENABLE_AVTOFORMULA
 )
-from utils import logger, preprocess_dataframe
+from utils import logger, preprocess_dataframe,clean_text
 from state_manager import load_state, save_state
 from price_adjuster import adjust_prices_and_save
 import requests
@@ -213,15 +214,15 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
                 detail_name = await scrape_stparts_name_async(page_st, part, logger_st)
                 
                 # ✅ Проверяем, не является ли название "Деталь" или пустым
-                if not detail_name or detail_name.lower().strip() == "деталь":
+                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
                     if detail_name:
-                        logger.info(f"⚠️ stparts вернул 'Деталь' для {part}, пробуем avtoformula")
+                        logger.info(f"⚠️ stparts вернул '{detail_name}' для {part}, пробуем avtoformula")
                     
                     # Пытаемся на avtoformula
                     detail_name_avto = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
                     
-                    # Используем название из avtoformula только если оно НЕ "Деталь" и НЕ пустое
-                    if detail_name_avto and detail_name_avto.lower().strip() != "деталь":
+                    # Используем название из avtoformula только если оно НЕ из BAD_DETAIL_NAMES и НЕ пустое
+                    if detail_name_avto and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES:
                         detail_name = detail_name_avto
                     else:
                         detail_name = "Detail"
@@ -255,8 +256,9 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             else:
                 break  # всё ок, выходим из цикла
 
-        except asyncio.CancelledError:
-            logger.warning(f"⚠️ Задача отменена для {brand}/{part}")
+        except asyncio.CancelledError as e:
+            logger.exception(f"Ошибка [{idx}] {brand}/{part}: {e}")
+            send_telegram_error(f"{brand}/{part}: {e}")
             break
         except Exception as e:
             logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
@@ -366,8 +368,13 @@ async def main_async():
 
                 # Промежуточное сохранение каждые 100 строк
                 if processed_count % TEMP_RAW == 0:
-                    await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
-                    logger.info(f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}")
+                    try:
+                        df = preprocess_dataframe(df)
+                        await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
+                        logger.info(f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}")
+                    except Exception as e:
+                            logger.error(f"❌ Ошибка при промежуточном сохранении Excel: {e}")
+                            raise
 
                 # Отправка прогресса в Telegram при достижении контрольных точек
                 if processed_count in progress_checkpoints and processed_count not in sent_progress:
@@ -376,7 +383,11 @@ async def main_async():
                     sent_progress.add(processed_count)
 
         # Финальное сохранение
-        await asyncio.to_thread(adjust_prices_and_save, df, OUTPUT_FILE)
+        try:
+            df = preprocess_dataframe(df)
+            await asyncio.to_thread(adjust_prices_and_save, df, OUTPUT_FILE)
+        except Exception as e:
+            logger.error(f"❌ Ошибка при финальном сохранении Excel: {e}")
         await send_telegram_file(OUTPUT_FILE)
         await pool.close_all()
         await browser.close()

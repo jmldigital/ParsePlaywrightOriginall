@@ -125,7 +125,11 @@ def parse_price(text):
     except (ValueError, AttributeError):
         return None
 
-
+def clean_text(s):
+    if isinstance(s, str):
+        # Удаляем управляющие символы
+        return re.sub(r'[\x00-\x1F]', '', s)
+    return s
 
 
 def preprocess_dataframe(df):
@@ -154,6 +158,8 @@ def preprocess_dataframe(df):
             df[input_price] = pd.to_numeric(df[input_price], errors='coerce')
             # Явно приводим к float dtype для совместимости
             df[input_price] = df[input_price].astype('float64')
+
+    df = df.applymap(clean_text)
     
     return df
 
