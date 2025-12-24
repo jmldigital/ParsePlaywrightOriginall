@@ -7,7 +7,9 @@
 """
 from telegram import Bot
 import asyncio
-import os
+import sys  # 🆕 №1 — ПЕРВЫЙ!
+import io  # 🆕 №2
+import os  # 🆕 №3
 import pandas as pd
 import json
 import math
@@ -16,24 +18,41 @@ from pathlib import Path
 from tqdm.asyncio import tqdm
 import logging
 from dotenv import load_dotenv
+from config import reload_config  # ← импорт
+
+
+# 🔥 КРОССПЛАТФОРМЕННЫЙ ФИКС ЭМОДЗИ
+if os.name == "nt":  # Только Windows
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
+
+from scraper_japarts import scrape_weight_japarts  # 🆕
+from scraper_armtek import scrape_weight_armtek
+
 load_dotenv()
 from config import BAD_DETAIL_NAMES
 
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from config import (
-    INPUT_FILE, OUTPUT_FILE, TEMP_FILE, MAX_ROWS, SAVE_INTERVAL,
-    competitor1, competitor1_delivery, competitor2, competitor2_delivery,
-    MAX_WORKERS, COOKIE_FILE,
-    INPUT_COL_ARTICLE, INPUT_COL_BRAND,TEMP_RAW,
-    AVTO_LOGIN, AVTO_PASSWORD, BOT_TOKEN, ADMIN_CHAT_ID, SEND_TO_TELEGRAM,ENABLE_AVTOFORMULA
+    competitor1,
+    competitor1_delivery,
+    competitor2,
+    competitor2_delivery,
+    COOKIE_FILE,
+    AVTO_LOGIN,
+    AVTO_PASSWORD,
+    BOT_TOKEN,
+    ADMIN_CHAT_ID,
+    SEND_TO_TELEGRAM,
 )
-from utils import logger, preprocess_dataframe,clean_text
+from utils import logger, preprocess_dataframe, clean_text
 from state_manager import load_state, save_state
 from price_adjuster import adjust_prices_and_save
 import requests
 
 # Импортируем асинхронные скрапперы
-from scraper_avtoformula import scrape_avtoformula_pw,scrape_avtoformula_name_async
+from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
 from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
 from auth import ensure_logged_in
 
@@ -41,7 +60,7 @@ from auth import ensure_logged_in
 import sys
 
 
-ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
+# ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
 COOKIE_PATH = Path(COOKIE_FILE)
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -51,12 +70,13 @@ from utils import get_site_logger
 
 logger_avto = get_site_logger("avtoformula")
 logger_st = get_site_logger("stparts")
-
+logger_jp = get_site_logger("japarts")
+logger_armtek = get_site_logger("armtek")
 
 
 def setup_event_loop_policy():
-    if sys.platform.startswith('win'):
-        if hasattr(asyncio, 'WindowsProactorEventLoopPolicy'):
+    if sys.platform.startswith("win"):
+        if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
             asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
             print("Установлена WindowsProactorEventLoopPolicy для Windows")
     else:
@@ -69,11 +89,11 @@ def send_telegram_process(msg):
         return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': ADMIN_CHAT_ID, 'text': f"🕐 Прогресс:\n{msg}"})
+        requests.post(
+            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"🕐 Прогресс:\n{msg}"}
+        )
     except Exception as e:
         logger.error(f"Ошибка отправки прогресса в Telegram: {e}")
-
-
 
 
 # === Telegram ===
@@ -82,7 +102,9 @@ def send_telegram_error(msg):
         return
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={'chat_id': ADMIN_CHAT_ID, 'text': f"❌ Parser Error:\n{msg}"})
+        requests.post(
+            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Parser Error:\n{msg}"}
+        )
     except Exception as e:
         logger.error(f"Ошибка Telegram: {e}")
 
@@ -93,11 +115,9 @@ async def send_telegram_file(file_path, caption=None):
     try:
         bot = Bot(token=BOT_TOKEN)
         async with bot:
-            with open(file_path, 'rb') as f:  # ← теперь файл закрывается
+            with open(file_path, "rb") as f:  # ← теперь файл закрывается
                 await bot.send_document(
-                    chat_id=ADMIN_CHAT_ID,
-                    document=f,
-                    caption=caption
+                    chat_id=ADMIN_CHAT_ID, document=f, caption=caption
                 )
         logger.info("Файл отправлен в Telegram")
     except Exception as e:
@@ -114,7 +134,6 @@ class ContextPool:
         self.initialized = False
         self.cookies = None  # общие куки
 
-
     async def initialize(self):
         """Создание пула контекстов с общей авторизацией. Страницы создаются при обработке задач."""
         logger.info("🔧 Авторизация на Avtoformula для получения кук...")
@@ -130,7 +149,9 @@ class ContextPool:
 
             # Сохраняем состояние авторизации (куки + localStorage и т.д.)
             await temp_context.storage_state(path=COOKIE_PATH)
-            logger.info("✅ Авторизация успешна, состояние сохранено в storage_state.json")
+            logger.info(
+                "✅ Авторизация успешна, состояние сохранено в storage_state.json"
+            )
 
         finally:
             await temp_context.close()
@@ -142,8 +163,8 @@ class ContextPool:
         for i in range(self.pool_size):
             ctx = await self.browser.new_context(
                 storage_state=COOKIE_PATH,  # ← авторизованное состояние
-                viewport={'width': 1920, 'height': 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             )
             self.contexts.append(ctx)
             logger.info(f"✅ Контекст {i + 1}/{self.pool_size} создан и авторизован")
@@ -173,7 +194,7 @@ class ContextPool:
             logger.error(f"❌ Ошибка при обновлении кук: {e}")
         finally:
             await temp_context.close()
-    
+
     async def get_context(self):
         """Получить один контекст из пула (без страницы)"""
         await self.semaphore.acquire()
@@ -193,107 +214,128 @@ class ContextPool:
         logger.info("🛑 Все контексты закрыты")
 
 
-
-    
-
 async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
-    context = None
-    page_st = None
-    page_avto = None
-    result_st = None
-    result_avto = None
+    from config import (
+        ENABLE_WEIGHT_PARSING as WEIGHT,
+        ENABLE_NAME_PARSING as NAME,
+        ENABLE_PRICE_PARSING as PRICE,  #
+    )  # 🆕 ЛОКАЛЬНЫЕ!
 
-    for attempt in range(2):  # максимум 2 попытки
+    context = None
+    page1 = None  # Универсальная страница 1
+    page2 = None  # Универсальная страница 2
+
+    # Результаты по режимам (НЕ общие!)
+    result_price_st = None
+    result_price_avto = None
+    result_name = None
+    weight_jp = None
+    weight_armtek = None
+
+    for attempt in range(2):
         try:
             context = await pool.get_context()
-            page_st = await context.new_page()
-            page_avto = await context.new_page()
+            page1 = await context.new_page()
+            page2 = await context.new_page()
 
-            if ENABLE_NAME_PARSING:
-                # Сначала пытаемся получить имя с stparts
-                detail_name = await scrape_stparts_name_async(page_st, part, logger_st)
-                
-                # ✅ Проверяем, не является ли название "Деталь" или пустым
+            # 🔥 🔥 🔥 ПРАВИЛЬНАЯ ЛОГИКА РЕЖИМОВ (elif!) 🔥 🔥 🔥
+            if WEIGHT:
+                # 🆕 ВЕСА — japarts.ru + armtek.ru
+                logger.info(f"⚖️ [{idx}] Поиск веса для {brand}/{part}")
+
+                # НОВЫЕ ЛОГГЕРЫ (добавь импорт вверху!)
+                logger_jp = get_site_logger("japarts")
+                logger_armtek = get_site_logger("armtek")
+
+                weight_jp = await scrape_weight_japarts(page1, part, logger_jp)
+                weight_armtek = await scrape_weight_armtek(page2, part, logger_armtek)
+
+            elif NAME:
+                # ИМЕНА — stparts + avtoformula
+                detail_name_avto = None  # 🆕 ИНИЦИАЛИЗАЦИЯ!
+                detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+
                 if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
                     if detail_name:
-                        logger.info(f"⚠️ stparts вернул '{detail_name}' для {part}, пробуем avtoformula")
-                    
-                    # Пытаемся на avtoformula
-                    detail_name_avto = await scrape_avtoformula_name_async(page_avto, part, logger_avto)
-                    
-                    # Используем название из avtoformula только если оно НЕ из BAD_DETAIL_NAMES и НЕ пустое
-                    if detail_name_avto and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES:
+                        logger.info(
+                            f"⚠️ stparts вернул '{detail_name}' для {part}, пробуем avtoformula"
+                        )
+
+                    detail_name_avto = await scrape_avtoformula_name_async(
+                        page2, part, logger_avto
+                    )
+
+                    if (
+                        detail_name_avto
+                        and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES
+                    ):
                         detail_name = detail_name_avto
                     else:
                         detail_name = "Detail"
-                        logger.info(f"❌ Не удалось найти нормальное название для {part}")
-                
-                # ✅ Сохраняем как строку, а не кортеж
-                result_st = detail_name
-                result_avto = None
+                        logger.info(
+                            f"❌ Не удалось найти нормальное название для {part}"
+                        )
+
+                result_name = detail_name
 
             else:
-                # Функции парсинга цены как раньше
-                if ENABLE_AVTOFORMULA:
-                    result_st, result_avto = await asyncio.gather(
-                        scrape_stparts_async(page_st, brand, part, logger_st),
-                        scrape_avtoformula_pw(page_avto, brand, part, logger_avto),
-                        return_exceptions=True
-                    )
-                else:
-                    result_st = await scrape_stparts_async(page_st, brand, part, logger_st)
-                    result_avto = (None, None)
+                # ЦЕНЫ — stparts + avtoformula (ВСЕГДА ОБОИ!)
+                result_price_st, result_price_avto = await asyncio.gather(
+                    scrape_stparts_async(page1, brand, part, logger_st),
+                    scrape_avtoformula_pw(page2, brand, part, logger_avto),
+                    return_exceptions=True,
+                )
 
-            # Проверка: если avtoformula упал из-за разлогина
-            if isinstance(result_avto, Exception) and "зарегистрируйтесь" in str(result_avto).lower():
-                logger.warning(f"🔁 Разлогин обнаружен для {brand}/{part}. Обновляем куки...")
-                await pool.refresh_cookies()
-                # ✅ Не закрываем здесь — будет в finally
-                pool.release_context(context)
-                context = None  # чтобы finally не освободил дважды
-                # Помечаем страницы для закрытия
-                continue  # повторим попытку
-            else:
-                break  # всё ок, выходим из цикла
+            # Проверка разлогина (для ЦЕН и ИМЕН)
+            if not WEIGHT:  # ← ТОЛЬКО НЕ веса!
+                # Проверяем avtoformula на разлогин
+                avto_result = result_price_avto if not NAME else detail_name_avto
+
+                if (
+                    isinstance(avto_result, Exception)
+                    and "зарегистрируйтесь" in str(avto_result).lower()
+                ):
+                    logger.warning(f"🔁 Разлогин avtoformula для {part}")
+                    await pool.refresh_cookies()
+                    pool.release_context(context)
+                    context = None
+                    continue
+
+            break  # успех!
 
         except asyncio.CancelledError as e:
             logger.exception(f"Ошибка [{idx}] {brand}/{part}: {e}")
-            send_telegram_error(f"{brand}/{part}: {e}")
             break
         except Exception as e:
             logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
-            send_telegram_error(f"{brand}/{part}: {e}")
             break
         finally:
-            # ✅ Безопасное закрытие страниц
-            await safe_close_page(page_st)
-            await safe_close_page(page_avto)
+            await safe_close_page(page1)
+            await safe_close_page(page2)
             if context:
                 pool.release_context(context)
 
-    # ✅ Правильная обработка результатов
-    if ENABLE_NAME_PARSING:
-        # result_st теперь просто строка (или None)
-        name = result_st if isinstance(result_st, str) else None
-        return idx, {'finde_name': name}
+    # 🔥 ИТОГОВАЯ ОБРАБОТКА РЕЗУЛЬТАТОВ 🔥
+    if WEIGHT:
+        return idx, {
+            "japarts_weight": weight_jp,
+            "armtek_weight": weight_armtek,
+        }
+    elif NAME:
+        return idx, {"finde_name": result_name}
     else:
-        if isinstance(result_st, Exception):
-            price_st, delivery_st = None, None
-        else:
-            price_st, delivery_st = result_st if result_st else (None, None)
-
-        if isinstance(result_avto, Exception):
-            price_avto, delivery_avto = None, None
-        else:
-            price_avto, delivery_avto = result_avto if result_avto else (None, None)
+        # ЦЕНЫ
+        price_st, delivery_st = result_price_st if result_price_st else (None, None)
+        price_avto, delivery_avto = (
+            result_price_avto if result_price_avto else (None, None)
+        )
 
         return idx, {
             competitor1: price_st,
             competitor1_delivery: delivery_st,
             competitor2: price_avto,
-            competitor2_delivery: delivery_avto
+            competitor2_delivery: delivery_avto,
         }
-
 
 
 async def safe_close_page(page):
@@ -305,32 +347,74 @@ async def safe_close_page(page):
             pass  # игнорируем ошибки закрытия
 
 
-
-
 async def main_async():
-    global ENABLE_NAME_PARSING
-    # Перечитываем .env, чтобы подхватить изменения
-    load_dotenv(override=True)
-    
-    # Считываем переменную заново
-    ENABLE_NAME_PARSING = os.getenv('ENABLE_NAME_PARSING', 'False').lower() == 'true'
+    # global ENABLE_NAME_PARSING
+    # # Перечитываем .env, чтобы подхватить изменения
+    # load_dotenv(override=True)
 
-    logger.info("=" * 60)
-    logger.info("🚀 ЗАПУСК PLAYWRIGHT ПАРСЕРА")
-    logger.info(f"режим {'Поиск имён' if ENABLE_NAME_PARSING else 'Поиск цен'}")
+    # Считываем переменную заново
+    # ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
+    print("🚀 main.py ЗАПУЩЕН!")
+    print(
+        f"🔍 .env ДО reload: NAME={os.getenv('ENABLE_NAME_PARSING')}, WEIGHT={os.getenv('ENABLE_WEIGHT_PARSING')}"
+    )
+
+    reload_config()
+
+    # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
+    from config import (
+        INPUT_FILE,
+        TEMP_FILE,
+        TEMP_RAW,
+        MAX_ROWS,
+        MAX_WORKERS,
+        INPUT_COL_BRAND,
+        INPUT_COL_ARTICLE,
+        get_output_file,
+        competitor1,
+        competitor1_delivery,
+        competitor2,
+        competitor2_delivery,
+        ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
+        ENABLE_NAME_PARSING as LOCAL_NAME,
+        ENABLE_PRICE_PARSING as LOCAL_PRICE,
+        BAD_DETAIL_NAMES,
+    )
+
+    # Проверка ЛОКАЛЬНЫХ
+    active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
+    if active_modes != 1:
+        error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
+        logger.error(error_msg)
+        return
+
+    # Режим
+    if LOCAL_WEIGHT:
+        mode = "ВЕСА"
+    elif LOCAL_NAME:
+        mode = "ИМЕНА"
+    else:
+        mode = "ЦЕНЫ"
+
+    logger.info(f"✅ Режим: {mode}")
     logger.info("=" * 60)
 
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
 
-    
     for col in [competitor1, competitor1_delivery, competitor2, competitor2_delivery]:
         if col not in df.columns:
             df[col] = None
-    
-    if ENABLE_NAME_PARSING:
-        if 'finde_name' not in df.columns:
-            df['finde_name'] = None
+
+    if LOCAL_NAME:
+        if "finde_name" not in df.columns:
+            df["finde_name"] = None
+
+    if LOCAL_WEIGHT:
+        if "japarts_weight" not in df.columns:
+            df["japarts_weight"] = None
+        if "armtek_weight" not in df.columns:
+            df["armtek_weight"] = None
 
     tasks = [
         (idx, str(row[INPUT_COL_BRAND]).strip(), str(row[INPUT_COL_ARTICLE]).strip())
@@ -344,20 +428,24 @@ async def main_async():
         math.ceil(total_tasks * 0.25),  # 25%
         math.ceil(total_tasks * 0.50),  # 50%
         math.ceil(total_tasks * 0.75),  # 75%
-        total_tasks                      # 100%
+        total_tasks,  # 100%
     }
     sent_progress = set()  # Чтобы не отправлять дважды
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = await p.chromium.launch(
+            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         pool = ContextPool(browser, pool_size=MAX_WORKERS)
         await pool.initialize()
 
         results = []
         processed_count = 0
-        
+
         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
-            for coro in asyncio.as_completed([process_row_async(pool, *t) for t in tasks]):
+            for coro in asyncio.as_completed(
+                [process_row_async(pool, *t) for t in tasks]
+            ):
                 idx, result = await coro
                 if result:
                     for col, val in result.items():
@@ -371,24 +459,34 @@ async def main_async():
                     try:
                         df = preprocess_dataframe(df)
                         await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
-                        logger.info(f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}")
+                        logger.info(
+                            f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}"
+                        )
                     except Exception as e:
-                            logger.error(f"❌ Ошибка при промежуточном сохранении Excel: {e}")
-                            raise
+                        logger.error(
+                            f"❌ Ошибка при промежуточном сохранении Excel: {e}"
+                        )
+                        raise
 
                 # Отправка прогресса в Telegram при достижении контрольных точек
-                if processed_count in progress_checkpoints and processed_count not in sent_progress:
+                if (
+                    processed_count in progress_checkpoints
+                    and processed_count not in sent_progress
+                ):
                     percent = int(processed_count / total_tasks * 100)
-                    send_telegram_process(f"Прогресс: {percent}% ({processed_count} из {total_tasks})")
+                    send_telegram_process(
+                        f"Прогресс: {percent}% ({processed_count} из {total_tasks})"
+                    )
                     sent_progress.add(processed_count)
 
         # Финальное сохранение
         try:
             df = preprocess_dataframe(df)
-            await asyncio.to_thread(adjust_prices_and_save, df, OUTPUT_FILE)
+            output_file = get_output_file(mode)  # 🆕 + mode!
+            await asyncio.to_thread(adjust_prices_and_save, df, output_file)
         except Exception as e:
             logger.error(f"❌ Ошибка при финальном сохранении Excel: {e}")
-        await send_telegram_file(OUTPUT_FILE)
+        # await send_telegram_file(output_file) дулировалась отсылка файла
         await pool.close_all()
         await browser.close()
         logger.info("🎉 Завершено")
@@ -401,4 +499,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
