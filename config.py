@@ -67,11 +67,19 @@ CAPTCHA_WAIT = 5
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
-# === Колонки ===
+# === Колонки для поиска цен ===
 competitor1 = "stparts_price"
 competitor1_delivery = "stparts_delivery"
 competitor2 = "avtoformula_price"
 competitor2_delivery = "avtoformula_delivery"
+corrected_price = "corrected_price"
+
+
+# === Колонки для поиска весов ===
+JPARTS_P_W = "japarts_physical_weight"
+JPARTS_V_W = "japarts_volumetric_weight"
+ARMTEK_P_W = "armtek_physical_weight"
+ARMTEK_V_W = "armtek_volumetric_weight"
 corrected_price = "corrected_price"
 
 
@@ -120,6 +128,12 @@ SELECTORS = {
         "captcha_img": 'img[src*="/_phplib/check/img.php"]',
         "captcha_input": "input#ban_hc_code",
         "captcha_submit": 'input[name="submit"][value="Отправить"]',  # новый селектор
+    },
+    "japarts": {
+        "search_form": "form[name='search']",  # 🆕 КОНТЕКСТ!
+        "search_input": "form[name='search'] input.search[name='original_id']",  # 🆕 ТОЧНЫЙ!
+        "search_button": "form[name='search'] input.postbutton[value='Найти']",  # 🆕 ТОЧНЫЙ!
+        "weight_row": "font:has-text('Вес')",
     },
 }
 BAD_DETAIL_NAMES = {

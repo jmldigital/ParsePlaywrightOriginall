@@ -1,4 +1,3 @@
-
 # utils.py
 import logging
 import re
@@ -6,13 +5,17 @@ import pandas as pd
 from pathlib import Path
 import json
 from config import INPUT_COL_BRAND  # ← импорт в начале
-from decimal import Decimal, InvalidOperation
 from config import (
-    input_price)
+    ARMTEK_P_W,
+    ARMTEK_V_W,
+    JPARTS_P_W,
+    JPARTS_V_W,
+)
+from config import input_price
 
 # Файлы
-LOG_FILE = 'logs/parser.log'
-COUNTER_FILE = 'logs/run_counter.json'
+LOG_FILE = "logs/parser.log"
+COUNTER_FILE = "logs/run_counter.json"
 
 # Глобальный логгер (инициализируется один раз)
 _logger = None
@@ -30,7 +33,7 @@ def get_site_logger(site_name: str) -> logging.Logger:
         return logger  # избегаем дублирования
 
     logger.setLevel(logging.INFO)
-    fh = logging.FileHandler(log_file, encoding="utf-8", mode='w')
+    fh = logging.FileHandler(log_file, encoding="utf-8", mode="w")
     fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -44,7 +47,7 @@ def get_run_count():
     path.parent.mkdir(exist_ok=True)
 
     try:
-        with open(path, 'r+', encoding='utf-8') as f:
+        with open(path, "r+", encoding="utf-8") as f:
             data = json.load(f)
             count = data.get("count", 0) + 1
             f.seek(0)
@@ -52,7 +55,9 @@ def get_run_count():
             f.truncate()
     except (FileNotFoundError, json.JSONDecodeError):
         count = 1
-        path.write_text(json.dumps({"count": count}, ensure_ascii=False, indent=2), encoding='utf-8')
+        path.write_text(
+            json.dumps({"count": count}, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     except Exception as e:
         print(f"⚠️ Ошибка работы со счётчиком: {e}")
         count = 1
@@ -80,9 +85,11 @@ def setup_logger():
     if _logger.handlers:
         _logger.handlers.clear()
 
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
 
-    fh = logging.FileHandler(log_path, encoding='utf-8', mode='w')
+    fh = logging.FileHandler(log_path, encoding="utf-8", mode="w")
     fh.setFormatter(formatter)
     _logger.addHandler(fh)
 
@@ -114,21 +121,22 @@ def parse_price(text):
         return float(text)
 
     # Дальше обычная логика для строки
-    clean = re.sub(r'[^\d,.\s]', '', str(text).lower()).strip()
+    clean = re.sub(r"[^\d,.\s]", "", str(text).lower()).strip()
     clean = clean.replace("\u00a0", "").replace(" ", "")
-    
+
     # Попытка парсинга с учетом десятичных знаков
     try:
         # Заменяем запятую на точку для корректного парсинга
-        normalized = clean.replace(',', '.')
+        normalized = clean.replace(",", ".")
         return float(normalized)
     except (ValueError, AttributeError):
         return None
 
+
 def clean_text(s):
     if isinstance(s, str):
         # Удаляем управляющие символы
-        return re.sub(r'[\x00-\x1F]', '', s)
+        return re.sub(r"[\x00-\x1F]", "", s)
     return s
 
 
@@ -141,38 +149,72 @@ def preprocess_dataframe(df):
     """
 
     # Преобразование имён столбцов
-    df.columns = df.columns.astype(str).str.replace('.0', '', regex=False).str.strip()
+    df.columns = df.columns.astype(str).str.replace(".0", "", regex=False).str.strip()
 
     # Обработка строковых столбцов — убираем лишние пробелы
     for col in df.columns:
-        if df[col].dtype == 'object':
+        if df[col].dtype == "object":
             df[col] = df[col].astype(str).str.strip()
-    
+
     # Обработка столбца с ценой (например, input_price)
     if input_price in df.columns:
         # Только если не float — иначе не трогаем
-        if df[input_price].dtype != 'float64':
+        if df[input_price].dtype != "float64":
             # Преобразуем ВСЕ значения к строкам, чтобы .str.replace не упал с ошибкой
-            df[input_price] = df[input_price].astype(str).str.replace(',', '.', regex=False)
+            df[input_price] = (
+                df[input_price].astype(str).str.replace(",", ".", regex=False)
+            )
             # Конвертируем в float, нечисловые значения станут NaN
-            df[input_price] = pd.to_numeric(df[input_price], errors='coerce')
+            df[input_price] = pd.to_numeric(df[input_price], errors="coerce")
             # Явно приводим к float dtype для совместимости
-            df[input_price] = df[input_price].astype('float64')
+            df[input_price] = df[input_price].astype("float64")
 
     df = df.applymap(clean_text)
-    
+
     return df
 
 
+def consolidate_weights(df):
+    """
+    Из 4 колонок весов → 2 финальные
+    Приоритет: japarts > armtek
+    """
+    logger.info("🔄 Консолидация весов: 4 колонки → 2 финальные")
 
+    # Создаём финальные колонки
+    df["physical_weight"] = None
+    df["volumetric_weight"] = None
 
+    for idx, row in df.iterrows():
+        # Физический вес: japarts ИЛИ armtek
+        if pd.notna(row[JPARTS_P_W]):
+            df.at[idx, "physical_weight"] = row[JPARTS_P_W]
+        elif pd.notna(row[ARMTEK_P_W]):
+            df.at[idx, "physical_weight"] = row[ARMTEK_P_W]
 
+        # Объёмный вес: japarts ИЛИ armtek
+        if pd.notna(row[JPARTS_V_W]):
+            df.at[idx, "volumetric_weight"] = row[JPARTS_V_W]
+        elif pd.notna(row[ARMTEK_V_W]):
+            df.at[idx, "volumetric_weight"] = row[ARMTEK_V_W]
+
+    # Удаляем промежуточные колонки
+    cols_to_drop = [
+        JPARTS_P_W,
+        JPARTS_V_W,
+        ARMTEK_P_W,
+        ARMTEK_V_W,
+    ]
+    df.drop(columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
+
+    logger.info("✅ Консолидация весов завершена")
+    return df
 
 
 def normalize_brand(brand_str):
     if not brand_str:
         return ""
-    return re.sub(r'[^a-z0-9]', '', str(brand_str).lower())
+    return re.sub(r"[^a-z0-9]", "", str(brand_str).lower())
 
 
 def brand_matches(search_brand, result_brand):

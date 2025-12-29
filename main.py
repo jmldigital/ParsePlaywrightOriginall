@@ -16,7 +16,6 @@ import math
 import random
 from pathlib import Path
 from tqdm.asyncio import tqdm
-import logging
 from dotenv import load_dotenv
 from config import reload_config  # ← импорт
 
@@ -45,8 +44,12 @@ from config import (
     BOT_TOKEN,
     ADMIN_CHAT_ID,
     SEND_TO_TELEGRAM,
+    ARMTEK_P_W,
+    ARMTEK_V_W,
+    JPARTS_P_W,
+    JPARTS_V_W,
 )
-from utils import logger, preprocess_dataframe, clean_text
+from utils import logger, preprocess_dataframe, consolidate_weights
 from state_manager import load_state, save_state
 from price_adjuster import adjust_prices_and_save
 import requests
@@ -126,48 +129,64 @@ async def send_telegram_file(file_path, caption=None):
 
 # === Пул контекстов ===
 class ContextPool:
-    def __init__(self, browser: Browser, pool_size: int = 5):
+
+    def __init__(
+        self, browser: Browser, pool_size: int = 5, auth_avtoformula: bool = True
+    ):
         self.browser = browser
         self.pool_size = pool_size
         self.contexts = []
         self.semaphore = asyncio.Semaphore(pool_size)
         self.initialized = False
         self.cookies = None  # общие куки
+        self.auth_avtoformula = auth_avtoformula  # 🆕 ПАРАМЕТР!
 
     async def initialize(self):
-        """Создание пула контекстов с общей авторизацией. Страницы создаются при обработке задач."""
-        logger.info("🔧 Авторизация на Avtoformula для получения кук...")
+        if self.auth_avtoformula:
+            """Создание пула контекстов с общей авторизацией. Страницы создаются при обработке задач."""
+            logger.info("🔧 Авторизация на Avtoformula для получения кук...")
 
-        # Временный контекст для логина
-        temp_context = await self.browser.new_context()
-        temp_page = await temp_context.new_page()
+            # Временный контекст для логина
+            temp_context = await self.browser.new_context()
+            temp_page = await temp_context.new_page()
 
-        try:
-            if not await ensure_logged_in(temp_page, AVTO_LOGIN, AVTO_PASSWORD):
-                logger.error("❌ Не удалось авторизоваться на Avtoformula")
-                raise RuntimeError("Авторизация не удалась")
+            try:
+                if not await ensure_logged_in(temp_page, AVTO_LOGIN, AVTO_PASSWORD):
+                    logger.error("❌ Не удалось авторизоваться на Avtoformula")
+                    raise RuntimeError("Авторизация не удалась")
 
-            # Сохраняем состояние авторизации (куки + localStorage и т.д.)
-            await temp_context.storage_state(path=COOKIE_PATH)
-            logger.info(
-                "✅ Авторизация успешна, состояние сохранено в storage_state.json"
-            )
+                # Сохраняем состояние авторизации (куки + localStorage и т.д.)
+                await temp_context.storage_state(path=COOKIE_PATH)
+                logger.info(
+                    "✅ Авторизация успешна, состояние сохранено в storage_state.json"
+                )
 
-        finally:
-            await temp_context.close()
+            finally:
+                await temp_context.close()
 
-        # Создаём пул контекстов, загружая состояние
-        logger.info(f"Создаём {self.pool_size} контекстов с общей авторизацией...")
-        self.contexts = []  # очищаем на всякий случай
+            # Создаём пул контекстов, загружая состояние
+            logger.info(f"Создаём {self.pool_size} контекстов с общей авторизацией...")
+            self.contexts = []  # очищаем на всякий случай
 
-        for i in range(self.pool_size):
-            ctx = await self.browser.new_context(
-                storage_state=COOKIE_PATH,  # ← авторизованное состояние
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            )
-            self.contexts.append(ctx)
-            logger.info(f"✅ Контекст {i + 1}/{self.pool_size} создан и авторизован")
+            for i in range(self.pool_size):
+                ctx = await self.browser.new_context(
+                    storage_state=COOKIE_PATH,  # ← авторизованное состояние
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                )
+                self.contexts.append(ctx)
+                logger.info(
+                    f"✅ Контекст {i + 1}/{self.pool_size} создан и авторизован"
+                )
+        else:
+            # ✅ ПРОСТАЯ инициализация
+            logger.info(f"Создаём {self.pool_size} контекстов БЕЗ авторизации...")
+            for i in range(self.pool_size):
+                ctx = await self.browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0...",
+                )
+                self.contexts.append(ctx)
 
         self.initialized = True
 
@@ -214,6 +233,25 @@ class ContextPool:
         logger.info("🛑 Все контексты закрыты")
 
 
+# class SimpleContextPool(ContextPool):
+#     """Пул БЕЗ авторизации — для весов/имен"""
+
+#     async def initialize(self):
+#         """ПРОСТАЯ инициализация БЕЗ авторизации"""
+#         logger.info(f"Создаём {self.pool_size} простых контекстов...")
+
+#         for i in range(self.pool_size):
+#             ctx = await self.browser.new_context(
+#                 viewport={"width": 1920, "height": 1080},
+#                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+#             )
+#             self.contexts.append(ctx)
+#             logger.debug(f"✅ Контекст {i + 1}/{self.pool_size} создан")
+
+#         self.initialized = True
+#         logger.info(f"✅ {self.pool_size} простых контекстов готово")
+
+
 async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
     from config import (
         ENABLE_WEIGHT_PARSING as WEIGHT,
@@ -240,15 +278,22 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
 
             # 🔥 🔥 🔥 ПРАВИЛЬНАЯ ЛОГИКА РЕЖИМОВ (elif!) 🔥 🔥 🔥
             if WEIGHT:
-                # 🆕 ВЕСА — japarts.ru + armtek.ru
-                logger.info(f"⚖️ [{idx}] Поиск веса для {brand}/{part}")
+                logger.info(f"⚖️ [{idx}] Поиск весов для {part}")
 
-                # НОВЫЕ ЛОГГЕРЫ (добавь импорт вверху!)
-                logger_jp = get_site_logger("japarts")
-                logger_armtek = get_site_logger("armtek")
+                # Japarts PRIORITY
+                jp_physical, jp_volumetric = await scrape_weight_japarts(
+                    page1, part, logger_jp
+                )
 
-                weight_jp = await scrape_weight_japarts(page1, part, logger_jp)
-                weight_armtek = await scrape_weight_armtek(page2, part, logger_armtek)
+                # Armtek FALLBACK (если НЕПОЛНЫЙ japarts)
+                armtek_physical, armtek_volumetric = None, None
+                if not jp_physical or not jp_volumetric:
+                    logger.info(
+                        f"🔄 Japarts: физ={jp_physical}, объём={jp_volumetric} → armtek.ru"
+                    )
+                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
+                        page2, part, logger_armtek
+                    )
 
             elif NAME:
                 # ИМЕНА — stparts + avtoformula
@@ -318,8 +363,10 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
     # 🔥 ИТОГОВАЯ ОБРАБОТКА РЕЗУЛЬТАТОВ 🔥
     if WEIGHT:
         return idx, {
-            "japarts_weight": weight_jp,
-            "armtek_weight": weight_armtek,
+            JPARTS_P_W: jp_physical,
+            JPARTS_V_W: jp_volumetric,
+            ARMTEK_P_W: armtek_physical,
+            ARMTEK_V_W: armtek_volumetric,
         }
     elif NAME:
         return idx, {"finde_name": result_name}
@@ -411,10 +458,10 @@ async def main_async():
             df["finde_name"] = None
 
     if LOCAL_WEIGHT:
-        if "japarts_weight" not in df.columns:
-            df["japarts_weight"] = None
-        if "armtek_weight" not in df.columns:
-            df["armtek_weight"] = None
+        df[JPARTS_P_W] = None
+        df[JPARTS_V_W] = None
+        df[ARMTEK_P_W] = None
+        df[ARMTEK_V_W] = None
 
     tasks = [
         (idx, str(row[INPUT_COL_BRAND]).strip(), str(row[INPUT_COL_ARTICLE]).strip())
@@ -436,7 +483,15 @@ async def main_async():
         browser = await p.chromium.launch(
             headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
-        pool = ContextPool(browser, pool_size=MAX_WORKERS)
+
+        if LOCAL_WEIGHT:
+            pool = ContextPool(
+                browser, pool_size=MAX_WORKERS, auth_avtoformula=False
+            )  # 🆕
+        else:
+            pool = ContextPool(browser, pool_size=MAX_WORKERS, auth_avtoformula=True)
+
+        # pool = ContextPool(browser, pool_size=MAX_WORKERS)
         await pool.initialize()
 
         results = []
@@ -483,7 +538,19 @@ async def main_async():
         try:
             df = preprocess_dataframe(df)
             output_file = get_output_file(mode)  # 🆕 + mode!
-            await asyncio.to_thread(adjust_prices_and_save, df, output_file)
+
+            if LOCAL_PRICE:  # Только для цен
+                await asyncio.to_thread(adjust_prices_and_save, df, output_file)
+            elif LOCAL_WEIGHT:
+                # 🆕 СПЕЦИАЛЬНО для весов!
+                df = await asyncio.to_thread(consolidate_weights, df)
+                await asyncio.to_thread(df.to_excel, output_file, index=False)
+                logger.info(f"💾 Веса сохранены: {output_file}")
+            elif LOCAL_NAME:
+                await asyncio.to_thread(df.to_excel, output_file, index=False)
+                logger.info(f"💾 Имена сохранены: {output_file}")
+
+            # await asyncio.to_thread(adjust_prices_and_save, df, output_file)
         except Exception as e:
             logger.error(f"❌ Ошибка при финальном сохранении Excel: {e}")
         # await send_telegram_file(output_file) дулировалась отсылка файла
