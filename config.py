@@ -68,10 +68,10 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2
 
 # === Колонки для поиска цен ===
-competitor1 = "stparts_price"
-competitor1_delivery = "stparts_delivery"
-competitor2 = "avtoformula_price"
-competitor2_delivery = "avtoformula_delivery"
+stparts_price = "stparts_price"
+stparts_delivery = "stparts_delivery"
+avtoformula_price = "avtoformula_price"
+avtoformula_delivery = "avtoformula_delivery"
 corrected_price = "corrected_price"
 
 
@@ -98,7 +98,7 @@ SELECTORS = {
     "stparts": {
         "captcha_img": "img.captchaImg",
         "captcha_input": "input[name='captcha']",
-        "captcha_submit": "captchaSubmitBtn",
+        "captcha_submit": "#captchaSubmitBtn",
         "results_table": "table.globalResult.searchResultsSecondStep",
         "result_row": "tr.resultTr2",
         "brand": "td.resultBrand",
@@ -134,6 +134,16 @@ SELECTORS = {
         "search_input": "form[name='search'] input.search[name='original_id']",  # 🆕 ТОЧНЫЙ!
         "search_button": "form[name='search'] input.postbutton[value='Найти']",  # 🆕 ТОЧНЫЙ!
         "weight_row": "font:has-text('Вес')",
+    },
+    "armtek": {
+        "search_input": "input[data-test-id='search-input']",
+        "search_button": "div.search-input__btn button",
+        "captcha_img": "div.captcha__img-wrap img",
+        "captcha_input": "div.captcha__input-wrapper input",
+        "captcha_submit": "sproit-ui-button",
+        "product_cards": "product-card-info",
+        "product_list": "div.list-view.sit-ui-smart-scroll__items",
+        "weight_value": "div.product-key-values__item__values span.font__body2",
     },
 }
 BAD_DETAIL_NAMES = {

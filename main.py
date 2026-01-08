@@ -34,10 +34,10 @@ from config import BAD_DETAIL_NAMES
 
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from config import (
-    competitor1,
-    competitor1_delivery,
-    competitor2,
-    competitor2_delivery,
+    stparts_price,
+    stparts_delivery,
+    avtoformula_price,
+    avtoformula_delivery,
     COOKIE_FILE,
     AVTO_LOGIN,
     AVTO_PASSWORD,
@@ -294,6 +294,13 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
                     armtek_physical, armtek_volumetric = await scrape_weight_armtek(
                         page2, part, logger_armtek
                     )
+                    logger.info(
+                        f"⚖️ [{idx}] Armtek вернул: физ={armtek_physical}, объём={armtek_volumetric} для {part}"
+                    )
+                else:
+                    logger.info(
+                        f"⚖️ [{idx}] Japarts полный, armtek не вызываем: физ={jp_physical}, объём={jp_volumetric}"
+                    )
 
             elif NAME:
                 # ИМЕНА — stparts + avtoformula
@@ -361,13 +368,16 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
                 pool.release_context(context)
 
     # 🔥 ИТОГОВАЯ ОБРАБОТКА РЕЗУЛЬТАТОВ 🔥
+
     if WEIGHT:
-        return idx, {
+        result = {
             JPARTS_P_W: jp_physical,
             JPARTS_V_W: jp_volumetric,
             ARMTEK_P_W: armtek_physical,
             ARMTEK_V_W: armtek_volumetric,
         }
+        logger.info(f"⚖️ [{idx}] Итог для WEIGHT: {part} → {result}")
+        return idx, result
     elif NAME:
         return idx, {"finde_name": result_name}
     else:
@@ -378,10 +388,10 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
         )
 
         return idx, {
-            competitor1: price_st,
-            competitor1_delivery: delivery_st,
-            competitor2: price_avto,
-            competitor2_delivery: delivery_avto,
+            stparts_price: price_st,
+            stparts_delivery: delivery_st,
+            avtoformula_price: price_avto,
+            avtoformula_delivery: delivery_avto,
         }
 
 
@@ -418,10 +428,10 @@ async def main_async():
         INPUT_COL_BRAND,
         INPUT_COL_ARTICLE,
         get_output_file,
-        competitor1,
-        competitor1_delivery,
-        competitor2,
-        competitor2_delivery,
+        stparts_price,
+        stparts_delivery,
+        avtoformula_price,
+        avtoformula_delivery,
         ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
         ENABLE_NAME_PARSING as LOCAL_NAME,
         ENABLE_PRICE_PARSING as LOCAL_PRICE,
@@ -449,7 +459,12 @@ async def main_async():
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
 
-    for col in [competitor1, competitor1_delivery, competitor2, competitor2_delivery]:
+    for col in [
+        stparts_price,
+        stparts_delivery,
+        avtoformula_price,
+        avtoformula_delivery,
+    ]:
         if col not in df.columns:
             df[col] = None
 
@@ -505,6 +520,8 @@ async def main_async():
                 if result:
                     for col, val in result.items():
                         df.at[idx, col] = val
+                    # logger.info(f"✅ [{idx}] Записаны значения в df: {result}")
+
                 pbar.update(1)
                 results.append((idx, result))
                 processed_count += 1
@@ -512,7 +529,7 @@ async def main_async():
                 # Промежуточное сохранение каждые 100 строк
                 if processed_count % TEMP_RAW == 0:
                     try:
-                        df = preprocess_dataframe(df)
+                        # df = preprocess_dataframe(df)
                         await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
                         logger.info(
                             f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}"
@@ -536,13 +553,19 @@ async def main_async():
 
         # Финальное сохранение
         try:
-            df = preprocess_dataframe(df)
+            # df = preprocess_dataframe(df)
             output_file = get_output_file(mode)  # 🆕 + mode!
 
             if LOCAL_PRICE:  # Только для цен
                 await asyncio.to_thread(adjust_prices_and_save, df, output_file)
             elif LOCAL_WEIGHT:
-                # 🆕 СПЕЦИАЛЬНО для весов!
+                pd.set_option("display.max_columns", None)
+                pd.set_option("display.width", 200)
+
+                logger.info(
+                    f"📊 Перед консолидацией:\n"
+                    f"{df[[INPUT_COL_ARTICLE, JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]].head(20)}"
+                )
                 df = await asyncio.to_thread(consolidate_weights, df)
                 await asyncio.to_thread(df.to_excel, output_file, index=False)
                 logger.info(f"💾 Веса сохранены: {output_file}")
