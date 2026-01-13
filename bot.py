@@ -1,6 +1,5 @@
 # bot.py
 import logging
-import signal  # 🆕 для graceful stop
 import os
 from pathlib import Path
 from telegram import Update
@@ -11,9 +10,11 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+import glob  # ← ДОБАВЬ ЭТУ СТРОКУ
+
 from dotenv import load_dotenv
 import subprocess
-import traceback
+import signal
 import asyncio
 from telegram import Bot
 import telegram
@@ -33,6 +34,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8364237483:AAERd9UAqQO_EAPt62AepFSojT41v9Vmw
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-4688651319"))
 INPUT_DIR = Path("input")
 
+parse_task = None
+
 
 # Настройка логирования
 logging.basicConfig(
@@ -45,6 +48,56 @@ INPUT_DIR.mkdir(exist_ok=True)
 
 
 # from pathlib import Path
+
+
+async def monitor_parser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Фоновый мониторинг парсера"""
+    global parse_task
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.to_thread(parse_task.communicate)
+
+        # 🆕 ПОЛНОЕ декодирование
+        try:
+            stdout = stdout_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                stdout = stdout_bytes.decode("cp1251")
+            except:
+                stdout = stdout_bytes.decode("latin1", errors="replace")
+
+        try:
+            stderr = stderr_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                stderr = stderr_bytes.decode("cp1251")
+            except:
+                stderr = stderr_bytes.decode("latin1", errors="replace")
+
+        logger.info(f"✅ ПАРСЕР ЗАВЕРШЁН (код: {parse_task.returncode})")
+
+        # Отправка результата
+        output_files = glob.glob("output/*.xlsx")
+        if output_files:
+            latest_file = max(output_files, key=os.path.getmtime)
+            await send_telegram_file(
+                file_path=latest_file, caption="✅ Результат обработки"
+            )
+        else:
+            await update.message.reply_text("❌ Файлы результата не найдены!")
+
+        # Логи в консоль
+        print("----- STDOUT -----")
+        print(stdout)
+        print("----- STDERR -----")
+        print(stderr)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка мониторинга: {e}")
+
+    finally:
+
+        parse_task = None
 
 
 def set_env_variable(key: str, value: str):
@@ -135,36 +188,57 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+import os
+from pathlib import Path
+import platform
+import signal
+
+
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Остановить текущий парсер"""
     global parse_task
 
+    # 🆕 ОТЛАДКА - добавь эти 4 строки
+    await update.message.reply_text(f"🔍 DEBUG: parse_task={parse_task}")
     if parse_task:
-        logger.info("🛑 👤 ПОЛЬЗОВАТЕЛЬСКИЙ STOP — проверяем процесс...")
+        await update.message.reply_text(
+            f"🔍 DEBUG: PID={parse_task.pid}, poll={parse_task.poll()}"
+        )
+    await update.message.reply_text(
+        f"🔍 DEBUG: глобальная parse_task={globals().get('parse_task')}"
+    )
 
-        if hasattr(parse_task, "poll") and parse_task.poll() is None:
-            logger.info(f"🛑 ПРОЦЕСС ЖИВОЙ (PID: {parse_task.pid}) — TERMINATE!")
-            parse_task.terminate()
-
-            # Ждём завершения (5 сек)
-            try:
-                logger.info("⏳ Ждём завершения процесса (5 сек)...")
-                parse_task.wait(timeout=5)
-                logger.info("✅ ПРОЦЕСС УСПЕШНО ОСТАНОВЛЕН (terminate)")
-            except subprocess.TimeoutExpired:
-                logger.warning("⚠️ ПРОЦЕСС НЕ ОТВЕЧАЕТ — KILL!")
-                parse_task.kill()
-                parse_task.wait(timeout=2)
-                logger.info("💥 ПРОЦЕСС УБИТ (kill)")
-        else:
-            logger.info("ℹ️ ПРОЦЕСС УЖЕ ЗАВЕРШЁН")
-
-        parse_task = None
-        await update.message.reply_text("🛑 **Парсер остановлен!** ✅")
-
-    else:
-        logger.info("ℹ️ /stop — парсер не запущен")
+    if not parse_task or parse_task.poll() is not None:
         await update.message.reply_text("ℹ️ **Парсер не запущен**")
+        return
+
+    logger.info(f"🛑 Graceful stop PID: {parse_task.pid}")
+
+    # 🆕 УНИВЕРСАЛЬНЫЙ STOP
+    stop_flag = Path("input/STOP.flag")  # В папке input!
+    stop_flag.touch()
+
+    # SIGTERM только для Ubuntu
+    if platform.system() != "Windows":
+        parse_task.send_signal(signal.SIGTERM)
+        logger.info("🛑 SIGTERM sent (Linux/Mac)")
+
+    try:
+        parse_task.wait(timeout=60)  # 1 минута достаточно
+        logger.info("✅ Graceful stop completed")
+        await update.message.reply_text(
+            "🛑 **Graceful stop завершён! Финальный файл отправлен** ✅"
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("⚠️ Timeout — kill")
+        parse_task.kill()
+        parse_task.wait(timeout=10)
+        await update.message.reply_text("💥 **Fallback kill** (timeout)")
+
+    # 🆕 Очистка
+    if stop_flag.exists():
+        stop_flag.unlink()
+
+    parse_task = None
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -217,66 +291,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [sys.executable, "main.py"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                # universal_newlines=True  # ❌ УДАЛЕНО!
             )
         )
 
         logger.info(f"🚀 ПАРСЕР ЗАПУЩЕН (PID: {parse_task.pid})")
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.to_thread(parse_task.communicate)
-            result = subprocess.CompletedProcess(
-                parse_task.args, parse_task.returncode, stdout_bytes, stderr_bytes
-            )
+        # 🆕 ФОНОВАЯ задача мониторинга вместо блокировки!
+        asyncio.create_task(monitor_parser(update, context))
 
-            # 🆕 ЕДИНОЕ ДЕКОДИРОВАНИЕ БАЙТОВ
-            try:
-                stdout = stdout_bytes.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    stdout = stdout_bytes.decode("cp1251")
-                except:
-                    stdout = stdout_bytes.decode("latin1", errors="replace")
-
-            try:
-                stderr = stderr_bytes.decode("utf-8")
-            except UnicodeDecodeError:
-                try:
-                    stderr = stderr_bytes.decode("cp1251")
-                except:
-                    stderr = stderr_bytes.decode("latin1", errors="replace")
-
-            logger.info(f"✅ ПАРСЕР ЗАВЕРШЁН (код: {result.returncode})")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка парсера: {e}")
-            await update.message.reply_text("❌ Ошибка при выполнении парсера")
-            return
-
-        # Логируем в консоль
-        print("----- STDOUT парсера -----")
-        print(stdout)
-        print("----- STDERR парсера -----")
-        print(stderr)
-
-        logger.info(f"✅ Парсер завершился (код: {result.returncode})")
-
-        if result.returncode == 0:
-            logger.info("✅ Парсер завершился успешно")
-
-            # 🆕 БЕРЁМ ПОСЛЕДНИЙ изменённый файл из output/
-            import glob
-            import time
-
-            output_files = glob.glob("output/*.xlsx")
-            if output_files:
-                latest_file = max(output_files, key=os.path.getmtime)
-                logger.info(f"📤 Отправляем: {latest_file}")
-                await send_telegram_file(
-                    file_path=latest_file, caption="✅ Результат обработки"
-                )
-            else:
-                await update.message.reply_text("❌ Файлы результата не найдены!")
+        # ✅ Бот сразу отвечает - НЕ БЛОКИРУЕТСЯ
+        await update.message.reply_text(
+            "✅ Парсер запущен в фоне!\n"
+            f"📊 PID: `{parse_task.pid}`\n"
+            "🛑 `/stop` для остановки"
+        )
 
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при обработке файла: {e}")

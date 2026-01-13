@@ -14,7 +14,11 @@ from config import (
     SELECTORS,
     # Ключ 2Captcha из config.py
 )
-from utils import get_site_logger, solve_captcha_universal  # 🆕 ИЗ utils.py!
+from utils import (
+    get_site_logger,
+    solve_captcha_universal,
+    save_debug_info,
+)  # 🆕 ИЗ utils.py!
 
 logger = get_site_logger("armtek")  # Теперь работает!
 import logging
@@ -58,99 +62,6 @@ os.makedirs("debug_armtek", exist_ok=True)
 #         return False
 
 
-async def save_debug_info(page: Page, part: str, reason: str, logger: logging.Logger):
-    """DEBUG: скриншот + HTML при проблемах"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    screenshot_path = f"debug_armtek/{reason}_{part}_{timestamp}.png"
-    await page.screenshot(path=screenshot_path)
-
-    html_path = f"debug_armtek/{reason}_{part}_{timestamp}.html"
-    html_content = await page.content()
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
-
-    logger.warning(f"📸 DEBUG {reason} armtek.ru {part}:")
-    logger.warning(f"   📍 URL: {page.url}")
-    logger.warning(f"   🖼️  {screenshot_path}")
-    logger.warning(f"   📄 {html_path}")
-
-
-# async def scrape_weight_armtek(
-#     page: Page, part: str, logger: logging.Logger
-# ) -> tuple[str, None]:
-#     """
-#     Парсер armtek.ru — с ВАШИМИ селекторами из config!
-#     """
-#     try:
-#         logger.info(f"🌐 armtek.ru: {part}")
-
-#         # 1. Главная страница
-#         await page.goto(
-#             "https://armtek.ru", wait_until="networkidle", timeout=WAIT_TIMEOUT
-#         )
-
-#         if page.url == "about:blank":
-#             await save_debug_info(page, part, "BLANK_PAGE", logger)
-#             return None, None
-
-#         # 2. Ждём поле поиска
-#         await page.wait_for_selector(SELECTORS["armtek"]["search_input"], timeout=10000)
-
-#         # 3. Поиск
-#         search_input = page.locator(SELECTORS["armtek"]["search_input"])
-#         await search_input.fill(part)
-#         logger.info(f"✅ '{part}' введён")
-
-#         search_button = page.locator(SELECTORS["armtek"]["search_button"])
-#         await search_button.click()
-#         logger.info("✅ Поиск отправлен")
-
-#         await page.wait_for_load_state("networkidle", timeout=10000)
-
-#         # 4. Капча
-#         captcha_img = page.locator(SELECTORS["armtek"]["captcha_img"])
-#         if await captcha_img.is_visible(timeout=2000):
-#             logger.warning("⚠️  Капча armtek.ru!")
-#             if await solve_armtek_captcha_async(page, logger):
-#                 await page.wait_for_load_state("networkidle", timeout=10000)
-#             else:
-#                 return None, None
-
-#         # 5. Ищем веса в карточках
-#         product_cards = page.locator(SELECTORS["armtek"]["product_cards"])
-#         weight_elements = product_cards.filter(has=page.locator(":text-is('кг')"))
-
-#         count = await weight_elements.count()
-#         logger.info(f"📊 {count} карточек с кг")
-
-#         if count == 0:
-#             logger.info(f"ℹ️  Вес не найден: {part}")
-#             return None, None
-
-#         # 6. Первый вес
-#         weight_elem = weight_elements.first()
-#         weight_text = await weight_elem.text_content(timeout=3000)
-#         physical_match = re.search(r"(\d+[.,]\d+)\s*кг", weight_text)
-
-#         if physical_match:
-#             physical_weight = physical_match.group(1).replace(",", ".")
-#             logger.info(f"✅ armtek.ru: {physical_weight}кг")
-#             return physical_weight, None
-#         else:
-#             logger.info(f"ℹ️  Не распарсился вес")
-#             return None, None
-
-#     except PlaywrightTimeout as e:
-#         await save_debug_info(page, part, f"TIMEOUT_{e.__class__.__name__}", logger)
-#         logger.error(f"⏰ Таймаут armtek.ru {part}")
-#         return None, None
-#     except Exception as e:
-#         await save_debug_info(page, part, f"ERROR_{type(e).__name__}", logger)
-#         logger.error(f"❌ armtek.ru {part}: {e}")
-#         return None, None
-
-
 async def close_city_dialog_if_any(page: Page, logger: logging.Logger):
     """Закрывает/подтверждает окно выбора города, если оно есть."""
     try:
@@ -173,162 +84,324 @@ async def close_city_dialog_if_any(page: Page, logger: logging.Logger):
         logger.warning(f"⚠️ Ошибка при закрытии диалога города: {e}")
 
 
+# async def scrape_weight_armtek(
+#     page: Page, part: str, logger: logging.Logger
+# ) -> tuple[str, None]:
+#     """
+#     Парсер armtek.ru:
+#     1) сразу открывает https://armtek.ru/search?text=<part>
+#     2) закрывает диалог выбора города, если он есть
+#     3) если виден список (product_list) — заходит в первую позицию
+#     4) на странице карточки (product-card-info) ищет вес по значению с 'кг'
+#     """
+#     # logger.info(f"🌐 armtek.ru: {part}")
+
+#     try:
+#         # 1. Переход сразу на поиск по артикулу
+#         search_url = f"{BASE_URL}/search?text={part}"
+#         # logger.info(f"➡️ Открываю страницу поиска: {search_url}")
+#         await page.goto(search_url, timeout=WAIT_TIMEOUT)
+#         # logger.info(f"📍 URL после goto: {page.url}")
+
+#         # 2. Закрываем/подтверждаем окно выбора города, если оно всплыло
+#         await close_city_dialog_if_any(page, logger)
+
+#         # 🆕 ТОЧНЫЕ селекторы из HTML
+#         # logger.info("⏳ Жду results-list + scroll-item...")
+
+#         # 1. Контейнер списка
+#         await page.wait_for_selector(".results-list", timeout=15000)
+#         # logger.info("✅ .results-list НАЙДЕН!")
+
+#         # 2. Первый товар
+#         await page.wait_for_selector(".scroll-item", timeout=10000)
+#         # logger.info("✅ .scroll-item НАЙДЕН!")
+
+#         await page.wait_for_timeout(2000)
+
+#         # 3. Селекторы
+#         list_selector = SELECTORS["armtek"]["product_list"]
+#         cards_selector = SELECTORS["armtek"]["product_cards"]
+#         card_selector = SELECTORS["armtek"]["product_card"]
+
+#         list_loc = page.locator(list_selector)
+#         cards_loc = page.locator(cards_selector)
+#         card_loc = page.locator(card_selector)
+
+#         list_count = await list_loc.count()
+#         cards_count = await cards_loc.count()
+#         # logger.info(f"📊 list_count={list_count}, cards_count={cards_count}")
+
+#         product_cards = None
+
+#         # 4. Если есть список — переходим по первой ссылке <a>
+#         if list_count > 0:
+#             # logger.info("📜 Найден список товаров, ищу первую ссылку <a>")
+#             first_link = list_loc.locator("a").first
+
+#             if await first_link.count() == 0:
+#                 logger.warning("ℹ️ Не найдена ни одна ссылка <a> в списке")
+#                 await save_debug_info(page, part, "NO_LIST_LINK", logger)
+#                 return None, None
+
+#             href = await first_link.get_attribute("href")
+#             # logger.info(f"🔗 Переход по ссылке первого товара: {href}")
+
+#             if href and href.startswith("/"):
+#                 target_url = BASE_URL + href
+#             else:
+#                 target_url = href or search_url
+
+#             await page.goto(target_url, timeout=WAIT_TIMEOUT)
+#             # logger.info(f"📍 URL после перехода по товару: {page.url}")
+
+#             await page.wait_for_selector(card_selector, timeout=10000)
+#             product_cards = page.locator(card_selector)
+
+#         else:
+#             if cards_count == 0:
+#                 # logger.warning("ℹ️ Ни списка, ни карточек товара не найдено")
+#                 await save_debug_info(page, part, "NO_LIST_NO_CARDS", logger)
+#                 return None, None
+
+#             logger.info("🧾 Найдены карточки товара на странице поиска")
+#             product_cards = card_loc
+
+#         cards_found = await product_cards.count()
+#         # logger.info(f"🧾 Карточек товара (product-card-info) на странице: {cards_found}")
+#         if cards_found == 0:
+#             logger.warning("ℹ️ Карточка товара не найдена")
+#             await save_debug_info(page, part, "NO_PRODUCT_CARD", logger)
+#             return None, None
+
+#         # logger.info("✅ Карточка товара найдена, ищем вес")
+#         # 5. Капча в МОДАЛКЕ (новые селекторы)
+
+#         await page.wait_for_timeout(4000)  # Angular рендер
+#         await page.evaluate("window.scrollTo(0, 300)")  # Помогает показать список
+
+#         # ✅ attached вместо visible!
+#         try:
+#             await page.wait_for_selector(list_selector, timeout=30000, state="attached")
+#             # logger.info("✅ .results-list attached")
+#         except:
+#             pass
+
+#         try:
+#             await page.wait_for_selector(
+#                 cards_selector, timeout=25000, state="attached"
+#             )
+#             # logger.info("✅ .scroll-item attached")
+#         except:
+#             pass
+
+#         await page.wait_for_timeout(2000)
+
+#         # 5. ✅ КАПЧА - основной + fallback blob
+#         captcha_selector = SELECTORS["armtek"]["captcha_img"]  # ТОЧНЫЙ селектор
+#         captcha_img = page.locator(captcha_selector)
+#         captcha_count = await captcha_img.count()
+
+#         if captcha_count > 0:
+#             logger.warning("⚠️ Капча по ТОЧНОМУ селектору обнаружена")
+
+#             # Ждём src + visible
+#             try:
+#                 await page.wait_for_selector(f"{captcha_selector}[src]", timeout=10000)
+#                 logger.info("✅ Captcha src загружена")
+#             except:
+#                 logger.info("ℹ️ Captcha src не загрузилась")
+
+#             captcha_element = captcha_img.first
+#             if await captcha_element.is_visible():
+#                 logger.info("🚨 Капча visible → решаем!")
+
+#                 # ✅ ТОЧНЫЕ селекторы из config
+#                 if await solve_captcha_universal(
+#                     page=page,
+#                     logger=logger,
+#                     site_key="armtek",
+#                     selectors={
+#                         "captcha_img": SELECTORS["armtek"]["captcha_img"],
+#                         "captcha_input": SELECTORS["armtek"]["captcha_input"],
+#                         "submit": SELECTORS["armtek"]["captcha_submit"],
+#                     },
+#                     max_attempts=3,  # Больше попыток
+#                     scale_factor=2,
+#                     check_changed=False,
+#                     wait_after_submit_ms=4000,  # Больше после submit
+#                 ):
+#                     await page.wait_for_timeout(3000)  # Ждём исчезновения модалки
+#                     logger.info("✅ Капча решена!")
+
+#                     # ✅ ПОВТОРНО ждём список после капчи
+#                     await page.wait_for_selector(
+#                         ".results-list", timeout=15000, state="attached"
+#                     )
+#                 else:
+#                     logger.error("❌ Капча не решена")
+#                     return None, None
+#             else:
+#                 logger.warning("⚠️ Капча не visible - ждём...")
+#                 await page.wait_for_timeout(3000)
+
+#         else:
+#             # ✅ FALLBACK blob-капча
+#             blob_captcha = page.locator("sproit-ui-modal img[src*='blob']")
+#             if await blob_captcha.count() > 0:
+#                 logger.warning("🔍 Blob-капча в модалке fallback!")
+#                 await solve_captcha_universal(  # Повторяем с blob
+#                     page=page,
+#                     logger=logger,
+#                     site_key="armtek",
+#                     selectors={
+#                         "captcha_img": "sproit-ui-modal img[src*='blob']",
+#                         "captcha_input": SELECTORS["armtek"]["captcha_input"],
+#                         "submit": SELECTORS["armtek"]["captcha_submit"],
+#                     },
+#                     max_attempts=2,
+#                 )
+
+#         # 6. Ждём блок характеристик
+#         try:
+#             await page.wait_for_selector("product-key-value", timeout=5000)
+#         except Exception:
+#             logger.warning("⚠️ Не дождались product-key-value")
+
+#         # 7. Поиск веса по значению, содержащему "кг"
+#         value_locator = product_cards.locator("span.font__body2")
+#         values_count = await value_locator.count()
+#         # logger.info(f"⚖️ Найдено span.font__body2 в карточке: {values_count}")
+
+#         weight_text = None
+#         for i in range(values_count):
+#             v = value_locator.nth(i)
+#             txt = (await v.text_content() or "").strip()
+#             if "кг" in txt:
+#                 logger.info("⚖️ Найден вес: %s для %s", txt, part)
+#                 weight_text = txt
+#                 break
+
+#         if not weight_text:
+#             logger.info("ℹ️ Вес не найден в карточке: %s", part)
+#             await save_debug_info(page, part, "NO_WEIGHT_TEXT", logger)
+#             return None, None
+
+#         # 8. Парс веса из найденного текста
+#         physical_match = re.search(r"(\d+(?:[.,]\d+)?)\s*кг", weight_text or "")
+#         if physical_match:
+#             physical_weight = physical_match.group(1).replace(",", ".")
+#             # logger.info(f"✅ armtek.ru: физ. вес={physical_weight} кг")
+#             return physical_weight, None
+#         else:
+#             logger.warning("ℹ️ Не удалось извлечь число из текста веса")
+#             await save_debug_info(page, part, "PARSE_WEIGHT_FAIL", logger)
+#             return None, None
+
+#     except PlaywrightTimeout as e:
+#         logger.error(f"⏰ PlaywrightTimeout: {e}")
+#         await save_debug_info(page, part, f"TIMEOUT_{e.__class__.__name__}", logger)
+#         return None, None
+#     except Exception as e:
+#         logger.error(f"❌ armtek.ru {part}: {e}")
+#         await save_debug_info(page, part, f"ERROR_{type(e).__name__}", logger)
+#         return None, None
+
+
 async def scrape_weight_armtek(
     page: Page, part: str, logger: logging.Logger
 ) -> tuple[str, None]:
     """
-    Парсер armtek.ru:
-    1) сразу открывает https://armtek.ru/search?text=<part>
-    2) закрывает диалог выбора города, если он есть
-    3) если виден список (product_list) — заходит в первую позицию
-    4) на странице карточки (product-card-info) ищет вес по значению с 'кг'
+    Armtek.ru - ДИНАМИКА + ТВОИ селекторы + fallback blob-капча!
     """
-    logger.info(f"🌐 armtek.ru: {part}")
-
     try:
-        # 1. Переход сразу на поиск по артикулу
+        # 1. Goto поиск
         search_url = f"{BASE_URL}/search?text={part}"
-        logger.info(f"➡️ Открываю страницу поиска: {search_url}")
-        await page.goto(search_url, timeout=WAIT_TIMEOUT)
-        logger.info(f"📍 URL после goto: {page.url}")
+        await page.goto(search_url, wait_until="domcontentloaded")
 
-        # 2. Закрываем/подтверждаем окно выбора города, если оно всплыло
+        # 2. Город
         await close_city_dialog_if_any(page, logger)
 
-        await page.wait_for_timeout(1500)
+        # 🔥 Ждем контейнер списка (из конфига) - просто attached, не visible
+        try:
+            await page.wait_for_selector(
+                SELECTORS["armtek"]["product_list"],  # .results-list
+                timeout=10000,
+                state="attached",
+            )
+        except:
+            pass  # Продолжаем, даже если нет списка
 
-        # 3. Селекторы
-        list_selector = SELECTORS["armtek"]["product_list"]
-        cards_selector = SELECTORS["armtek"]["product_cards"]
-
-        list_loc = page.locator(list_selector)
-        cards_loc = page.locator(cards_selector)
-
-        list_count = await list_loc.count()
-        cards_count = await cards_loc.count()
-        logger.info(f"📊 list_count={list_count}, cards_count={cards_count}")
-
-        product_cards = None
-
-        # 4. Если есть список — заходим в первый элемент
-        if list_count > 0 and cards_count == 0:
-            logger.info("📜 Найден список товаров, ищу первый элемент")
-            first_item = list_loc.locator("div.scroll-item.ng-star-inserted").first
-            if await first_item.count() == 0:
-                logger.warning("ℹ️ Не найден ни один scroll-item")
-                await save_debug_info(page, part, "NO_SCROLL_ITEM", logger)
+        # Проверяем "не найдено" с коротким таймаутом
+        try:
+            not_found = page.get_by_text("Товары не найдены")
+            if await not_found.wait_for(timeout=3000):
+                logger.info("%s: не найдена", part)
                 return None, None
+        except:
+            pass  # Нет "не найдено" - ищем товары
 
-            first_link = first_item.locator("a").first
-            if await first_link.count() == 0:
-                logger.warning("ℹ️ В первом scroll-item нет ссылок <a>")
-                await save_debug_info(page, part, "NO_LINK_IN_SCROLL_ITEM", logger)
-                return None, None
-
-            href = await first_link.get_attribute("href")
-            logger.info(f"🔗 Переход по ссылке первого товара: {href}")
-
-            if href and href.startswith("/"):
-                target_url = BASE_URL + href
-            else:
-                target_url = href or search_url
-
-            await page.goto(target_url, timeout=WAIT_TIMEOUT)
-            logger.info(f"📍 URL после перехода по товару: {page.url}")
-
-            await page.wait_for_selector(cards_selector, timeout=10000)
-            product_cards = page.locator(cards_selector)
-
-        else:
-            if cards_count == 0:
-                logger.warning("ℹ️ Ни списка, ни карточек товара не найдено")
-                await save_debug_info(page, part, "NO_LIST_NO_CARDS", logger)
-                return None, None
-
-            logger.info("🧾 Найдены карточки товара на странице поиска")
-            product_cards = cards_loc
-
-        cards_found = await product_cards.count()
-        logger.info(
-            f"🧾 Карточек товара (product-card-info) на странице: {cards_found}"
+        # Ждем первую карточку (из конфига)
+        await page.wait_for_selector(
+            f"{SELECTORS['armtek']['product_list']} {SELECTORS['armtek']['product_cards']}",  # .results-list .scroll-item
+            timeout=10000,
+            state="attached",
         )
-        if cards_found == 0:
-            logger.warning("ℹ️ Карточка товара не найдена")
-            await save_debug_info(page, part, "NO_PRODUCT_CARD", logger)
+
+        # Переходим в первую карточку
+        first_link = page.locator(f"{SELECTORS['armtek']['product_list']} a").first
+        await first_link.wait_for(timeout=5000)
+        href = await first_link.get_attribute("href")
+        if not href:
             return None, None
+        await page.goto(BASE_URL + href, wait_until="domcontentloaded")
 
-        logger.info("✅ Карточка товара найдена, ищем вес")
+        # 🔥 КАПЧА (твоя логика!)
+        captcha_img = page.locator(SELECTORS["armtek"]["captcha_img"])
+        if await captcha_img.count() > 0:
+            logger.warning("⚠️ Капча!")
+            await solve_captcha_universal(
+                page, logger, "armtek", SELECTORS["armtek"]  # Все твои селекторы!
+            )
 
-        # 5. Проверка капчи
-        captcha_selector = SELECTORS["armtek"]["captcha_img"]
-        captcha_img = page.locator(captcha_selector)
-        captcha_count = await captcha_img.count()
-        captcha_visible = (
-            await captcha_img.first.is_visible() if captcha_count > 0 else False
-        )
-        if captcha_visible:
-            logger.warning("⚠️ Капча armtek.ru обнаружена")
-            if await solve_captcha_universal(
+        # Fallback blob-капча (твоя!)
+        blob_captcha = page.locator("sproit-ui-modal img[src*='blob']")
+        if await blob_captcha.count() > 0:
+            logger.warning("🔍 Blob-капча!")
+            await solve_captcha_universal(
                 page=page,
                 logger=logger,
                 site_key="armtek",
                 selectors={
-                    "captcha_img": SELECTORS["armtek"]["captcha_img"],
+                    "captcha_img": "sproit-ui-modal img[src*='blob']",
                     "captcha_input": SELECTORS["armtek"]["captcha_input"],
                     "submit": SELECTORS["armtek"]["captcha_submit"],
                 },
                 max_attempts=2,
-                scale_factor=2,  # при желании уменьшить/увеличить
-                check_changed=False,  # если капча у armtek не мигает
-                wait_after_submit_ms=3000,
-            ):
-                await page.wait_for_timeout(2000)
-            else:
-                logger.error("❌ Не удалось решить капчу")
-                await save_debug_info(page, part, "CAPTCHA_FAILED", logger)
-                return None, None
+            )
 
-        # 6. Ждём блок характеристик
-        try:
-            await page.wait_for_selector("product-key-value", timeout=5000)
-        except Exception:
-            logger.warning("⚠️ Не дождались product-key-value")
+        # Характеристики
+        await page.wait_for_selector("product-key-value")
 
-        # 7. Поиск веса по значению, содержащему "кг"
-        value_locator = product_cards.locator("span.font__body2")
-        values_count = await value_locator.count()
-        logger.info(f"⚖️ Найдено span.font__body2 в карточке: {values_count}")
+        # ТВОЙ вес-селектор
+        weight_values = page.locator(SELECTORS["armtek"]["weight_value"])
+        count = await weight_values.count()
 
-        weight_text = None
-        for i in range(values_count):
-            v = value_locator.nth(i)
-            txt = (await v.text_content() or "").strip()
-            if "кг" in txt:
-                logger.info(f"⚖️ Найден кандидат веса по 'кг': {txt}")
-                weight_text = txt
-                break
+        for i in range(count):
+            text = await weight_values.nth(i).text_content()
+            if text and "кг" in text:
+                import re
 
-        if not weight_text:
-            logger.info(f"ℹ️ Вес не найден в карточке: {part}")
-            await save_debug_info(page, part, "NO_WEIGHT_TEXT", logger)
-            return None, None
+                match = re.search(r"(\d+(?:[.,]\d+)?)\s*кг", text)
+                if match:
+                    weight = match.group(1).replace(",", ".")
+                    logger.info("%s: %s кг", part, weight)
+                    return weight, None
 
-        # 8. Парс веса из найденного текста
-        physical_match = re.search(r"(\d+(?:[.,]\d+)?)\s*кг", weight_text or "")
-        if physical_match:
-            physical_weight = physical_match.group(1).replace(",", ".")
-            logger.info(f"✅ armtek.ru: физ. вес={physical_weight} кг")
-            return physical_weight, None
-        else:
-            logger.warning("ℹ️ Не удалось извлечь число из текста веса")
-            await save_debug_info(page, part, "PARSE_WEIGHT_FAIL", logger)
-            return None, None
-
-    except PlaywrightTimeout as e:
-        logger.error(f"⏰ PlaywrightTimeout: {e}")
-        await save_debug_info(page, part, f"TIMEOUT_{e.__class__.__name__}", logger)
+        logger.warning("%s: вес не найден", part)
         return None, None
+
     except Exception as e:
-        logger.error(f"❌ armtek.ru {part}: {e}")
-        await save_debug_info(page, part, f"ERROR_{type(e).__name__}", logger)
+        logger.error("❌ %s: %s", part, str(e))
+        await save_debug_info(page, part, type(e).__name__, logger, "armtek")
         return None, None

@@ -426,3 +426,31 @@ def consolidate_weights(df):
 
     logger.info("✅ Консолидация весов завершена")
     return df
+
+
+async def save_debug_info(
+    page: Page,
+    part: str,
+    reason: str,
+    logger: logging.Logger = None,
+    site: str = "unknown",
+):
+    """DEBUG: скрин + HTML для armtek/japarts"""
+    if logger is None:
+        logger = logging.getLogger(__name__)
+
+    os.makedirs(f"debug_{site}", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    screenshot_path = f"debug_{site}/{reason}_{part}_{timestamp}.png"
+    await page.screenshot(path=screenshot_path)
+
+    html_path = f"debug_{site}/{reason}_{part}_{timestamp}.html"
+    html_content = await page.content()
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    logger.warning(f"📸 DEBUG {reason} {site} {part}:")
+    logger.warning(f"   📍 URL: {page.url}")
+    logger.warning(f"   🖼️ {screenshot_path}")
+    logger.warning(f"   📄 {html_path}")

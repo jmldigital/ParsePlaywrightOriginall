@@ -3,12 +3,12 @@
 С FALLBACK-скриншотами и HTML при ошибках!
 """
 
-import re
+import asyncio
 import os
 from datetime import datetime
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from config import SELECTORS
-from utils import get_site_logger
+from utils import get_site_logger, save_debug_info
 import logging
 
 logger = get_site_logger("japarts")
@@ -20,98 +20,125 @@ WAIT_TIMEOUT = 10000
 os.makedirs("debug_japarts", exist_ok=True)
 
 
-async def save_debug_info(page: Page, part: str, reason: str):
-    """Сохраняет скриншот + HTML + URL для анализа"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# async def scrape_weight_japarts(
+#     page: Page, part: str, logger: logging.Logger
+# ) -> tuple[str, str]:
+#     """
+#     Japarts.ru - ✅ ФИКС TypeError (await все!)
+#     """
+#     try:
+#         await page.goto(
+#             "https://www.japarts.ru/?id=price",
+#             wait_until="domcontentloaded",
+#             timeout=20000,
+#         )
 
-    # Скриншот
-    screenshot_path = f"debug_japarts/{reason}_{part}_{timestamp}.png"
-    await page.screenshot(path=screenshot_path)
+#         search_input = page.locator(SELECTORS["japarts"]["search_input"]).first
+#         await search_input.wait_for()
+#         await search_input.fill(part)
 
-    # HTML
-    html_path = f"debug_japarts/{reason}_{part}_{timestamp}.html"
-    html_content = await page.content()
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
+#         search_button = page.locator(SELECTORS["japarts"]["search_button"]).first
+#         await search_button.click()
 
-    # URL
-    current_url = page.url
-    logger.warning(f"📸 DEBUG {reason} для {part}:")
-    logger.warning(f"   📍 URL: {current_url}")
-    logger.warning(f"   🖼️  Скрин: {screenshot_path}")
-    logger.warning(f"   📄 HTML: {html_path}")
+#         await page.wait_for_timeout(5000)  # Таблица готова [file:43]
+
+#         content = await page.content()
+#         if "Записей по вашему запросу не найдено" in content:
+#             logger.info("%s: не найдена", part)
+#             return None, None
+
+#         # 🔥 ФИКС: await для всех async!
+#         font_locator = page.locator("font")
+#         font_count = await font_locator.count()
+
+#         if font_count == 0:
+#             logger.warning("%s: нет font", part)
+#             return None, None
+
+#         # Перебираем font (await text_content)
+#         for i in range(min(font_count, 20)):  # Max 20 для скорости
+#             font = font_locator.nth(i)
+#             text = await font.text_content()
+
+#             if text and "Вес" in text:
+#                 import re
+
+#                 p_match = re.search(r"Вес[:\s]*([\d.,]+)\s*кг", text, re.IGNORECASE)
+#                 v_match = re.search(
+#                     r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", text, re.IGNORECASE
+#                 )
+
+#                 pw = p_match.group(1).replace(",", ".") if p_match else None
+#                 vw = v_match.group(1).replace(",", ".") if v_match else None
+
+#                 if pw:
+#                     logger.info("%s: %s/%s (font #%d)", part, pw, vw or "-", i)
+#                     return pw, vw
+
+#         logger.warning("%s: вес не найден в %d font", part, font_count)
+#         return None, None
+
+#     except Exception as e:
+#         logger.error("❌ %s: %s", part, str(e))
+#         await save_debug_info(page, part, type(e).__name__)
+#         return None, None
 
 
 async def scrape_weight_japarts(
     page: Page, part: str, logger: logging.Logger
 ) -> tuple[str, str]:
     """
-    Парсер japarts.ru — DEBUG ТОЛЬКО при таймауте!
+    Japarts.ru - ✅ ФИНАЛ (без Locator комбо!)
     """
     try:
-        url = "https://www.japarts.ru/"
-        logger.info(f"🔍 japarts.ru: поиск весов для {part}")
-
-        await page.goto(url, wait_until="networkidle", timeout=WAIT_TIMEOUT)
-
-        search_input = page.locator(SELECTORS["japarts"]["search_input"])
-        search_button = page.locator(SELECTORS["japarts"]["search_button"])
-
-        await search_input.fill(part)
-        logger.info(f"✅ Артикул '{part}' введён")
-
-        await search_button.click()
-        logger.info("✅ Кнопка 'Найти' нажата")
-
-        await page.wait_for_load_state("networkidle", timeout=WAIT_TIMEOUT)
-        logger.info(f"📍 URL после поиска: {page.url}")
-
-        # 🆕 ПРОВЕРКА "НЕ НАЙДЕНО" ПЕРЕД дебагом!
-        html_content = await page.content()
-        if "Записей по вашему запросу не найдено" in html_content:
-            logger.info(f"🚫 {part}: Запись не найдена (нормально)")
-            return None, None
-
-        # Ищем веса
-        weight_locator = page.locator(SELECTORS["japarts"]["weight_row"])
-        if await weight_locator.count() == 0:
-            logger.warning(f"❌ Вес не найден для {part} (возможно аналоги без веса)")
-            return None, None
-
-        # Берем первый текст
-        weight_text = await weight_locator.first.text_content(timeout=1000)
-        if not weight_text or not weight_text.strip() or "Нет веса" in weight_text:
-            logger.warning(f"ℹ️  {part}: пусто или 'Нет веса'")
-            return None, None
-
-        logger.info(f"📏 japarts.ru: '{weight_text.strip()}'")
-
-        # Парсим
-        physical_match = re.search(
-            r"Вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE
+        await page.goto(
+            "https://www.japarts.ru/?id=price",
+            wait_until="domcontentloaded",
+            timeout=20000,
         )
-        volumetric_match = re.search(
+
+        search_input = page.locator(SELECTORS["japarts"]["search_input"]).first
+        await search_input.wait_for()
+        await search_input.fill(part)
+
+        search_button = page.locator(SELECTORS["japarts"]["search_button"]).first
+        await search_button.click()
+
+        # 🔥 ДИНАМИКА: короткая пауза + content (как раньше работало!)
+        try:
+            await page.wait_for_timeout(3000)
+        except asyncio.TimeoutError:  # Только таймаут Playwright
+            logger.warning(f"{part}: POST-wait timeout — debug saved")
+            await save_debug_info(page, part, "TimeoutError", logger, "japarts")
+
+        # БЫСТРАЯ проверка по content (0.5с, 100% надежно!)
+        content = await page.content()
+        if "Записей по вашему запросу не найдено" in content:
+            logger.info("%s: не найдена", part)
+            return None, None
+
+        # Вес (твой селектор)
+        weight_loc = page.locator(SELECTORS["japarts"]["weight_row"]).first
+        weight_text = await weight_loc.text_content(timeout=5000)
+
+        if not weight_text or "Нет веса" in weight_text:
+            logger.warning("%s: вес не найден '%s'", part, weight_text[:30])
+            return None, None
+
+        import re
+
+        p_match = re.search(r"Вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE)
+        v_match = re.search(
             r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE
         )
 
-        physical_weight = (
-            physical_match.group(1).replace(",", ".") if physical_match else None
-        )
-        volumetric_weight = (
-            volumetric_match.group(1).replace(",", ".") if volumetric_match else None
-        )
+        pw = p_match.group(1).replace(",", ".") if p_match else None
+        vw = v_match.group(1).replace(",", ".") if v_match else None
 
-        logger.info(
-            f"✅ japarts.ru: физ={physical_weight}кг, объем={volumetric_weight}кг"
-        )
-        return physical_weight, volumetric_weight
-
-    except PlaywrightTimeout as e:
-        # 🆕 DEBUG ТОЛЬКО при ТАЙМАУТЕ (капча/блокировка)!
-        await save_debug_info(page, part, f"TIMEOUT_{e.__class__.__name__}")
-        logger.error(f"⏰ Таймаут japarts.ru для {part} (возможна капча!): {e}")
-        return None, None
+        logger.info("%s: %s/%s", part, pw, vw or "-")
+        return pw, vw
 
     except Exception as e:
-        logger.error(f"❌ japarts.ru ошибка для {part}: {e}")
+        logger.error("❌ %s: %s", part, str(e))
+        await save_debug_info(page, part, type(e).__name__, logger, "japarts")
         return None, None

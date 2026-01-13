@@ -11,9 +11,9 @@ import sys  # 🆕 №1 — ПЕРВЫЙ!
 import io  # 🆕 №2
 import os  # 🆕 №3
 import pandas as pd
-import json
+import signal
 import math
-import random
+import multiprocessing
 from pathlib import Path
 from tqdm.asyncio import tqdm
 from dotenv import load_dotenv
@@ -48,6 +48,7 @@ from config import (
     ARMTEK_V_W,
     JPARTS_P_W,
     JPARTS_V_W,
+    TASK_TIMEOUT,
 )
 from utils import logger, preprocess_dataframe, consolidate_weights
 from state_manager import load_state, save_state
@@ -76,6 +77,18 @@ logger_st = get_site_logger("stparts")
 logger_jp = get_site_logger("japarts")
 logger_armtek = get_site_logger("armtek")
 
+stop_parsing = multiprocessing.Event()
+stop_parsing.clear()
+
+
+stop_files = ["STOP", "STOP.FLAG", "AIL_STOP"]
+for f in stop_files:
+    if os.path.exists(f):
+        os.remove(f)
+        logger.info("🧹 Удален %s", f)
+
+logger.info("🚀 Старт без STOP флагов!")
+
 
 def setup_event_loop_policy():
     if sys.platform.startswith("win"):
@@ -96,7 +109,7 @@ def send_telegram_process(msg):
             url, data={"chat_id": ADMIN_CHAT_ID, "text": f"🕐 Прогресс:\n{msg}"}
         )
     except Exception as e:
-        logger.error(f"Ошибка отправки прогресса в Telegram: {e}")
+        logger.error("Ошибка отправки прогресса в Telegram: %s", e)
 
 
 # === Telegram ===
@@ -109,7 +122,7 @@ def send_telegram_error(msg):
             url, data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Parser Error:\n{msg}"}
         )
     except Exception as e:
-        logger.error(f"Ошибка Telegram: {e}")
+        logger.error("Ошибка Telegram: %s", e)
 
 
 async def send_telegram_file(file_path, caption=None):
@@ -124,7 +137,7 @@ async def send_telegram_file(file_path, caption=None):
                 )
         logger.info("Файл отправлен в Telegram")
     except Exception as e:
-        logger.error(f"Ошибка отправки в Telegram: {e}")
+        logger.error("Ошибка отправки в Telegram: %s", e)
 
 
 # === Пул контекстов ===
@@ -165,7 +178,7 @@ class ContextPool:
                 await temp_context.close()
 
             # Создаём пул контекстов, загружая состояние
-            logger.info(f"Создаём {self.pool_size} контекстов с общей авторизацией...")
+            logger.info("Создаём %d контекстов...", self.pool_size)
             self.contexts = []  # очищаем на всякий случай
 
             for i in range(self.pool_size):
@@ -278,7 +291,7 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
 
             # 🔥 🔥 🔥 ПРАВИЛЬНАЯ ЛОГИКА РЕЖИМОВ (elif!) 🔥 🔥 🔥
             if WEIGHT:
-                logger.info(f"⚖️ [{idx}] Поиск весов для {part}")
+                # logger.info(f"⚖️ [{idx}] Поиск весов для {part}")
 
                 # Japarts PRIORITY
                 jp_physical, jp_volumetric = await scrape_weight_japarts(
@@ -288,19 +301,20 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
                 # Armtek FALLBACK (если НЕПОЛНЫЙ japarts)
                 armtek_physical, armtek_volumetric = None, None
                 if not jp_physical or not jp_volumetric:
-                    logger.info(
-                        f"🔄 Japarts: физ={jp_physical}, объём={jp_volumetric} → armtek.ru"
-                    )
+                    # logger.info(
+                    #     f"🔄 Japarts: физ={jp_physical}, объём={jp_volumetric} → armtek.ru"
+                    # )
                     armtek_physical, armtek_volumetric = await scrape_weight_armtek(
                         page2, part, logger_armtek
                     )
-                    logger.info(
-                        f"⚖️ [{idx}] Armtek вернул: физ={armtek_physical}, объём={armtek_volumetric} для {part}"
-                    )
+                    # logger.info(
+                    #     f"⚖️ [{idx}] Armtek вернул: физ={armtek_physical}, объём={armtek_volumetric} для {part}"
+                    # )
                 else:
-                    logger.info(
-                        f"⚖️ [{idx}] Japarts полный, armtek не вызываем: физ={jp_physical}, объём={jp_volumetric}"
-                    )
+                    pass
+                    # logger.info(
+                    #     f"⚖️ [{idx}] Japarts полный, armtek не вызываем: физ={jp_physical}, объём={jp_volumetric}"
+                    # )
 
             elif NAME:
                 # ИМЕНА — stparts + avtoformula
@@ -376,7 +390,7 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             ARMTEK_P_W: armtek_physical,
             ARMTEK_V_W: armtek_volumetric,
         }
-        logger.info(f"⚖️ [{idx}] Итог для WEIGHT: {part} → {result}")
+        logger.info(f"⚖️ [{idx}] Итог: {part} → {result}")
         return idx, result
     elif NAME:
         return idx, {"finde_name": result_name}
@@ -513,9 +527,12 @@ async def main_async():
         processed_count = 0
 
         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
+
             for coro in asyncio.as_completed(
                 [process_row_async(pool, *t) for t in tasks]
             ):
+                if stop_parsing.is_set():
+                    break
                 idx, result = await coro
                 if result:
                     for col, val in result.items():
@@ -525,6 +542,11 @@ async def main_async():
                 pbar.update(1)
                 results.append((idx, result))
                 processed_count += 1
+
+                # Проверка файла-флага каждые 10 задач или после каждой
+                if processed_count % 10 == 0 and Path("input/STOP.flag").exists():
+                    logger.info("🛑 STOP.flag detected → graceful exit!")
+                    break
 
                 # Промежуточное сохранение каждые 100 строк
                 if processed_count % TEMP_RAW == 0:
@@ -584,6 +606,12 @@ async def main_async():
 
 def main():
     setup_event_loop_policy()
+
+    def stop_handler(signum, frame):
+        stop_parsing.set()
+
+    signal.signal(signal.SIGTERM, stop_handler)
+
     asyncio.run(main_async())
 
 
