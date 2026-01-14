@@ -84,7 +84,7 @@ ARMTEK_V_W = "armtek_volumetric_weight"
 corrected_price = "corrected_price"
 
 
-TEMP_RAW = 20
+TEMP_RAW = 100
 
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = "1"  # ← или как у тебя в файле
@@ -139,10 +139,6 @@ SELECTORS = {
     "armtek": {
         "search_input": "input[data-test-id='search-input']",
         "search_button": "div.search-input__btn button",
-        # "captcha_img": "div.captcha__img-wrap img",
-        # "captcha_input": "div.captcha__input-wrapper input",
-        # "captcha_submit": "sproit-ui-button",
-        # ✅ КАПЧА В МОДАЛКЕ - новые селекторы
         "captcha_img": "sproit-ui-modal project-ui-captcha img",  # Модалка + img
         "captcha_input": "sproit-ui-modal project-ui-captcha input.sproit-ui-input__input",  # Модалка + input
         "captcha_submit": "sproit-ui-modal project-ui-captcha sproit-ui-button[color='primary']",  # Модалка + кнопка

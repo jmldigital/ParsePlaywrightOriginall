@@ -3,6 +3,7 @@ import logging
 import re
 import pandas as pd
 from pathlib import Path
+from datetime import datetime
 import json
 from config import (
     ARMTEK_P_W,
@@ -27,7 +28,7 @@ _logger = None
 
 
 import base64
-import datetime
+
 import io
 import os
 
@@ -133,7 +134,7 @@ async def solve_captcha_universal(
                         f"[{site_key}] ⚠️ Капча изменилась во время распознавания, пробуем ещё раз"
                     )
                     os.makedirs(f"screenshots/{site_key}/changed", exist_ok=True)
-                    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                     Image.open(io.BytesIO(original_img_bytes)).save(
                         f"screenshots/{site_key}/changed/original_{ts}.png"
                     )
