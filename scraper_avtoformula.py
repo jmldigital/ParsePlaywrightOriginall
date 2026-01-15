@@ -150,14 +150,14 @@ async def scrape_avtoformula_pw(
     try:
         # Пробуем сначала стандартный поиск
         await page.goto("https://www.avtoformula.ru", wait_until="networkidle")
-        logger.info(f"🌐 Страница загружена: avtoformula.ru")
+        # logger.info(f"🌐 Страница загружена: avtoformula.ru")
 
         # Устанавливаем режим "без аналогов"
         try:
             mode_select = page.locator("#smode")
             await mode_select.wait_for(state="visible", timeout=5000)
             await mode_select.select_option("A0")
-            logger.info("⚙️ Режим поиска установлен: без аналогов")
+            # logger.info("⚙️ Режим поиска установлен: без аналогов")
         except Exception as e:
             logger.warning(f"⚠️ Не удалось установить режим 'без аналогов': {e}")
 
@@ -166,7 +166,7 @@ async def scrape_avtoformula_pw(
         await article_field.wait_for(state="visible", timeout=10000)
         await article_field.fill(part)
         await page.locator(SELECTORS["avtoformula"]["search_button"]).click()
-        logger.info(f"🔍 Поиск артикула: {part}")
+        # logger.info(f"🔍 Поиск артикула: {part}")
 
         # Ожидание результатов
         start = time.time()
@@ -207,7 +207,7 @@ async def scrape_avtoformula_pw(
             rows = table.locator("tr")
             count = await rows.count()
             if count > 1:
-                logger.info(f"✅ Найдено строк: {count - 1}")
+                # logger.info(f"✅ Найдено строк: {count - 1}")
                 break
 
             if elapsed > MAX_WAIT_SECONDS:

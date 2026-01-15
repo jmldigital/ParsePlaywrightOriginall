@@ -19,14 +19,20 @@ from tqdm.asyncio import tqdm
 from dotenv import load_dotenv
 from config import reload_config  # ← импорт
 
+# 🔥 ГЛОБАЛЬНЫЙ UTF-8 для ВСЕГО
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
-# 🔥 КРОССПЛАТФОРМЕННЫЙ ФИКС ЭМОДЗИ
-if os.name == "nt":  # Только Windows
+if os.name == "nt":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
-from scraper_japarts import scrape_weight_japarts  # 🆕
+print("🟢 Глобальный UTF-8: 🚀 Тест прошел!")
+
+
+from scraper_japarts import scrape_weight_japarts
 from scraper_armtek import scrape_weight_armtek
 
 load_dotenv()
@@ -50,7 +56,12 @@ from config import (
     JPARTS_V_W,
     TASK_TIMEOUT,
 )
-from utils import logger, preprocess_dataframe, consolidate_weights
+from utils import (
+    logger,
+    preprocess_dataframe,
+    consolidate_weights,
+    clear_debug_folders_sync,
+)
 from state_manager import load_state, save_state
 from price_adjuster import adjust_prices_and_save
 import requests
@@ -80,6 +91,7 @@ logger_armtek = get_site_logger("armtek")
 stop_parsing = multiprocessing.Event()
 stop_parsing.clear()
 
+sites = ["avtoformula", "stparts", "japarts", "armtek"]
 
 stop_files = ["STOP", "STOP.FLAG", "AIL_STOP"]
 for f in stop_files:
@@ -390,7 +402,7 @@ async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
             ARMTEK_P_W: armtek_physical,
             ARMTEK_V_W: armtek_volumetric,
         }
-        logger.info(f"⚖️ [{idx}] Итог: {part} → {result}")
+        logger.info(f"⚖️ [{idx}] Total {part} → {result}")
         return idx, result
     elif NAME:
         return idx, {"finde_name": result_name}
@@ -606,6 +618,7 @@ async def main_async():
 
 def main():
     setup_event_loop_policy()
+    clear_debug_folders_sync(sites, logger)
 
     def stop_handler(signum, frame):
         stop_parsing.set()

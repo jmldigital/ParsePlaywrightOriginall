@@ -80,7 +80,7 @@ async def scrape_stparts_async(
     try:
         url = f"{BASE_URL}/search/{brand}/{part}"
         await page.goto(url)
-        logger.info(f"Загружена страница: {url}")
+        # logger.info(f"Загружена страница: {url}")
 
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
             logger.warning("Обнаружена капча на stparts.ru")
@@ -114,7 +114,7 @@ async def scrape_stparts_async(
             logger.info(f"Результаты не найдены для {brand} / {part}")
             return None, None
 
-        logger.info(f"Найдено {row_count} строк результатов")
+        # logger.info(f"Найдено {row_count} строк результатов")
 
         async def find_best_result(priority_search: bool):
             for i in range(row_count):
@@ -150,8 +150,12 @@ async def scrape_stparts_async(
                     price = parse_price(price_text)
                     if price is not None:
                         logger.info(
-                            f"✅ Найдено (бренд: {brand_in_row}, срок {delivery_min}): {price} ₽"
+                            "✅ Найдено (бренд: %s, срок %s): %s ₽",
+                            brand_in_row,
+                            delivery_min,
+                            price,
                         )
+
                         return price, delivery_min
                 except Exception as e:
                     logger.error(f"Ошибка обработки строки {i}: {e}")

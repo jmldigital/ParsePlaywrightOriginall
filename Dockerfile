@@ -27,6 +27,8 @@ RUN mkdir -p output cache cookies logs screenshots input temp
 # Переменные окружения (опционально, можно задать в docker-compose.yml)
 ENV TZ=Europe/Moscow
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+ENV LC_ALL=C.UTF-8
 
 # Точка входа — bot.py
 CMD ["python", "bot.py"]

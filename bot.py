@@ -198,14 +198,14 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global parse_task
 
     # 🆕 ОТЛАДКА - добавь эти 4 строки
-    await update.message.reply_text(f"🔍 DEBUG: parse_task={parse_task}")
-    if parse_task:
-        await update.message.reply_text(
-            f"🔍 DEBUG: PID={parse_task.pid}, poll={parse_task.poll()}"
-        )
-    await update.message.reply_text(
-        f"🔍 DEBUG: глобальная parse_task={globals().get('parse_task')}"
-    )
+    # await update.message.reply_text(f"🔍 DEBUG: parse_task={parse_task}")
+    # if parse_task:
+    #     await update.message.reply_text(
+    #         f"🔍 DEBUG: PID={parse_task.pid}, poll={parse_task.poll()}"
+    #     )
+    # await update.message.reply_text(
+    #     f"🔍 DEBUG: глобальная parse_task={globals().get('parse_task')}"
+    # )
 
     if not parse_task or parse_task.poll() is not None:
         await update.message.reply_text("ℹ️ **Парсер не запущен**")
@@ -281,7 +281,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(target_file)
         logger.info(f"✅ Файл сохранён: {target_file}")
 
-        await update.message.reply_text("✅ Файл загружен!\n🚀 Запускаю парсер...")
+        # await update.message.reply_text("✅ Файл загружен!\n🚀 Запускаю парсер...")
 
         # 🆕 Запуск парсера как отменяемую задачу
         global parse_task

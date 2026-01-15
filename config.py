@@ -139,14 +139,27 @@ SELECTORS = {
     "armtek": {
         "search_input": "input[data-test-id='search-input']",
         "search_button": "div.search-input__btn button",
-        "captcha_img": "sproit-ui-modal project-ui-captcha img",  # Модалка + img
+        # "captcha_img": "sproit-ui-modal project-ui-captcha img",  # Модалка + img
+        "captcha_img": "sproit-ui-modal img[src*='blob']",
         "captcha_input": "sproit-ui-modal project-ui-captcha input.sproit-ui-input__input",  # Модалка + input
         "captcha_submit": "sproit-ui-modal project-ui-captcha sproit-ui-button[color='primary']",  # Модалка + кнопка
-        "product_card": "product-card-info",
-        # "product_list": "div.list-view.sit-ui-smart-scroll__items",
-        "product_list": ".results-list",  # ✅ КОНТЕЙНЕР списка
-        "product_cards": ".scroll-item",
-        "weight_value": "div.product-key-values__item__values span.font__body2",
+        # "product_card": "product-card-info",
+        # "product_list": ".results-list",  # ✅ КОНТЕЙНЕР списка
+        # "product_cards": ".scroll-item",
+        # "weight_value": "div.product-key-values__item__values span.font__body2",
+        # 🔥 Ubuntu/Windows универсальные
+        "product_list": ".results-list",
+        "product_cards": ".scroll-item, div[data-id]",
+        "product_card": "product-card-info, [data-id]",
+        # 🎯 ВЕСА — множественные приоритеты
+        "weight_selectors": [
+            ".product-key-values__item__right-side span.font__body2",  # Right-side → span
+            ".product-key-values__item__values span.font__body2",  # Values → span
+            "[class*='right-side'] span[class*='font']",  # Right-side любой
+            "[class*='values'] span[class*='font']",  # Values любой
+            "span.font__body2:has-text('кг')",  # Быстрый
+            "span.font__body2",  # Основной
+        ],
     },
 }
 BAD_DETAIL_NAMES = {
