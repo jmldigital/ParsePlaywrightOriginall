@@ -91,7 +91,7 @@ INPUT_COL_ARTICLE = "1"  # ← или как у тебя в файле
 INPUT_COL_BRAND = "3"  # ← или "Производитель", "Brand" и т.п.
 input_price = "5"  # индекс колонки             # ← если нужно читать цену по имени
 
-MAX_WORKERS = 4
+MAX_WORKERS = 1
 
 
 # === Селекторы ===

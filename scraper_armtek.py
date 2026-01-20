@@ -7,6 +7,9 @@ import re
 import base64
 import os
 
+import asyncio
+from typing import Callable, Tuple
+
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from config import (
@@ -144,22 +147,526 @@ async def close_city_dialog_if_any(page: Page, logger: logging.Logger):
 
 #     return None, None
 
+# !!!!!!!!!!!!!!!!!Это работает для винды, на убунту виснет
+
+
+# async def scrape_weight_armtek(
+#     page: Page, part: str, logger: logging.Logger
+# ) -> tuple[str, None]:
+#     """
+#     Armtek.ru — упрощенная логика с project-ui-article-card
+#     """
+#     max_retries = 2
+#     sel = SELECTORS["armtek"]
+
+#     # Перед циклом attempt
+#     await page.add_init_script(
+#         """
+#     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+#     Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+#     Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en']});
+#     """
+#     )
+#     await page.set_extra_http_headers(
+#         {
+#             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+#             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+#             "Referer": "https://armtek.ru/",
+#         }
+#     )
+
+#     needs_captcha_check = False
+
+#     for attempt in range(max_retries + 1):
+#         try:
+#             # 1. Goto + город
+#             search_url = f"{BASE_URL}/search?text={part}"
+#             await page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
+
+#             # await close_city_dialog_if_any(page, logger)
+
+#             # 🔥 БЕСКОНЕЧНЫЙ ЦИКЛ: ждём успеха капчи
+#             max_captcha_retries = 20  # Большой лимит на всякий
+#             captcha_retry = 0
+
+#             if needs_captcha_check:
+#                 await page.wait_for_timeout(3000)
+
+#             while True:
+#                 captcha_modal = page.locator("sproit-ui-modal:has(project-ui-captcha)")
+#                 if await captcha_modal.count() == 0:
+#                     # logger.info(f"✅ No captcha for {part}, proceed")
+#                     break  # ✅ Нет капчи → дальше!
+
+#                 if captcha_retry >= max_captcha_retries:
+#                     logger.error(
+#                         f"❌ Max captcha retries {max_captcha_retries} for {part}"
+#                     )
+#                     raise Exception(f"captcha_timeout_{part}")
+
+#                 logger.warning(
+#                     f"🎯 Captcha attempt #{captcha_retry+1}/{max_captcha_retries}"
+#                 )
+#                 solved = await solve_captcha_universal(
+#                     page=page,
+#                     logger=logger,
+#                     site_key="armtek",
+#                     selectors={
+#                         "captcha_img": SELECTORS["armtek"]["captcha_img"],
+#                         "captcha_input": SELECTORS["armtek"]["captcha_input"],
+#                         "submit": SELECTORS["armtek"]["captcha_submit"],
+#                     },
+#                     max_attempts=2,
+#                 )
+
+#                 await page.wait_for_timeout(2000)
+
+#                 if solved:
+#                     logger.info(f"✅ Captcha SUCCESS for {part}")
+#                     needs_captcha_check = False
+#                     break  # ✅ РЕШЕНА → дальше!
+#                 else:
+#                     logger.warning(f"❌ Captcha failed, retrying...")
+#                     captcha_retry += 1
+#                     await page.wait_for_timeout(1000)  # Пауза между попытками
+
+#             # logger.info(f"🚀 Moving to cards for {part}")
+
+#             try:
+#                 await close_city_dialog_if_any(page, logger)
+#                 await page.wait_for_timeout(1000)  # Стабилизация
+#             except Exception as city_e:
+#                 logger.debug(f"Диалог города: {city_e} — продолжаем")
+
+#             # Жестко ждем КАРТОЧКИ 5 секунд — с retry!
+#             max_card_wait = 3
+#             for card_attempt in range(max_card_wait):
+#                 try:
+#                     await page.wait_for_selector(
+#                         "project-ui-article-card, app-article-card-tile, .scroll-item, div[data-id]",
+#                         timeout=5000,
+#                         state="attached",
+#                     )
+#                     logger.debug("✅ Карточки появились")
+#                     break
+#                 except:
+#                     if card_attempt < max_card_wait - 1:
+#                         logger.debug(f"⏳ Карточки ждем... попытка {card_attempt+1}")
+#                         await page.wait_for_timeout(1000)
+#                         continue
+#                     else:
+#                         # ❌ НЕ return! Пусть идет в большой except → капча
+
+#                         logger.warning("⏰ No cards visible — retry again")
+#                         needs_captcha_check = True
+#                         raise Exception("no_cards_after_wait")  # ← ВЫКИДЫВАЕМ!
+
+#             # 🔥 3. Ищем карточки (project-ui-article-card ИЛИ app-article-card-tile)
+#             card_selectors = [
+#                 "project-ui-article-card",
+#                 "app-article-card-tile",  # 🔥 Новый селектор!
+#                 sel["product_cards"],  # Резерв
+#             ]
+
+#             products = None
+#             for sel_name, selector in [
+#                 ("article-card", card_selectors[0]),
+#                 ("app-tile", card_selectors[1]),
+#                 *[(f"backup-{i}", s) for i, s in enumerate(card_selectors[2:], 1)],
+#             ]:
+#                 try:
+#                     count = await page.locator(selector).count()
+#                     if count > 0:
+#                         logger.debug(f"✅ {sel_name}: {count} шт по '{selector}'")
+#                         products = page.locator(selector)
+#                         break
+#                 except Exception as e:
+#                     logger.debug(f"{sel_name} skip: {e}")
+#                     continue
+
+#             if not products or await products.count() == 0:
+#                 logger.warning(f"❌ cards not found for {part}")
+#                 await save_debug_info(page, part, "no_cards_all", logger, "armtek")
+#                 return None, None
+
+#             # 4. Берем первую карточку и переходим по ссылке
+#             first_card = products.first
+#             first_link = first_card.locator("a").first
+#             href = await first_link.get_attribute("href", timeout=2000)
+#             if not href:
+#                 logger.warning(f"❌ link not found for {part}")
+#                 return None, None
+
+#             full_url = href if href.startswith("http") else BASE_URL + href
+#             await page.goto(full_url, wait_until="domcontentloaded", timeout=20000)
+
+#             # 5. Стабилизация + поиск веса в product-card-info
+#             await page.wait_for_load_state("domcontentloaded", timeout=5000)
+#             await page.evaluate("window.scrollTo(0, 0)")
+#             await page.wait_for_timeout(2000)
+
+#             # Ищем в product-card-info вместо product-key-value
+#             card_info = page.locator("product-card-info")
+#             if await card_info.count() == 0:
+#                 logger.warning(f"❌ product-card-info not found for {part}")
+#                 return "нету веса", None  # fallback
+
+#             # logger.info("✅ product-card-info найден, ищем вес")
+
+#             # 🔥 Ubuntu: клик "Все характеристики" если есть (один таймаут)
+#             tech_link = page.locator('a[href="#tech-info"]').first
+#             if await tech_link.count() > 0 and await tech_link.is_visible():
+#                 await tech_link.click(force=True)
+#                 # Ждем Angular + подгрузку одним wait_for_selector (5 сек)
+#                 # await page.wait_for_selector("product-card-info", timeout=2000)
+#                 await card_info.wait_for(state="visible", timeout=5000)
+
+#             # Перебор weight_selectors внутри product-card-info
+#             weight_selectors_list = sel["weight_selectors"]
+#             weight_found = False
+
+#             for retry in range(2):  # 2 попытки: обычная + с увеличенным таймаутом
+#                 for selector_idx, selector in enumerate(weight_selectors_list, 1):
+#                     try:
+#                         full_selector = f"product-card-info {selector}".strip()
+#                         weight_values = page.locator(full_selector)
+#                         count = await weight_values.count()
+
+#                         if count > 0:
+#                             logger.debug(
+#                                 f"🔍 #{selector_idx}: {count} elem ({selector[:30]}...)"
+#                             )
+
+#                         for i in range(count):
+#                             try:
+#                                 # Динамический таймаут: 1000ms обычный, 3000ms на повторной попытке
+#                                 timeout_ms = 3000 if retry > 0 else 1000
+#                                 text = await weight_values.nth(i).text_content(
+#                                     timeout=timeout_ms
+#                                 )
+
+#                                 if text and "кг" in str(text).lower():
+#                                     import re
+
+#                                     match = re.search(
+#                                         r"(\d+(?:[.,]\d+)?)\s*кг",
+#                                         str(text),
+#                                         re.IGNORECASE,
+#                                     )
+#                                     if match:
+#                                         weight = match.group(1).replace(",", ".")
+#                                         logger.info(
+#                                             "%s: %s кг (#%d, retry=%d)",
+#                                             part,
+#                                             weight,
+#                                             selector_idx,
+#                                             retry,
+#                                         )
+#                                         return weight, None
+#                             except:
+#                                 continue
+
+#                     except Exception as e:
+#                         logger.debug(f"Селектор #{selector_idx} skip: {e}")
+#                         continue
+
+#                 if retry == 0 and not weight_found:
+#                     logger.debug(
+#                         f"{part}:weight not found, repeat with extended timeout..."
+#                     )
+#                     await page.wait_for_timeout(2000)  # Даём Angular доработать
+#                 else:
+#                     break
+
+#             logger.warning(
+#                 "%s: weight not found in product-card-info (after 2 attempts)", part
+#             )
+#             return None, None
+
+#         except Exception as e:
+#             logger.error("❌ %s (trys %d): %s", part, attempt + 1, str(e))
+#             # 🔥 ФИКС ФЛАГА
+#             if "no_cards_after_wait" in str(e):
+#                 logger.info(f"🔄 No cards → Late captcha mode activated")
+#                 needs_captcha_check = True  # Подтверждаем флаг
+#             else:
+#                 needs_captcha_check = False  # Сброс
+#             await save_debug_info(
+#                 page, part, f"{type(e).__name__}_attempt{attempt}", logger, "armtek"
+#             )
+
+#     return None, None
+
+
+async def scrape_weight_armtek_inner(
+    page, part: str, logger, check_captcha: bool = False
+):
+    """check_captcha=True только после no_cards"""
+    sel = SELECTORS["armtek"]
+
+    # # 🔥 ПРОВЕРКА "НИЧЕГО НЕ НАЙДЕНО" — ПЕРВЫЙ ШАГ!
+    # try:
+    #     no_results = page.locator(
+    #         ".not-found__title:has-text('По вашему запросу'), .not-found, text=/ничего не найдено/i"
+    #     )
+    #     if await no_results.count() > 0:
+    #         logger.warning(f"❌ No search results for {part}")
+    #         await save_debug_info(page, part, "no_search_results", logger, "armtek")
+    #         raise Exception("no_search_results")  # ← КЛЮЧЕВОЕ: Exception!
+    # except:
+    #     pass
+
+    # 🔥 БЕСКОНЕЧНЫЙ ЦИКЛ КАПЧИ
+    if check_captcha:
+        logger.info(f"🔍 CAPTCHA MODE {part}")
+
+        max_captcha_retries = 2
+        captcha_retry = 0
+
+        # ✅ ЖДЁМ ЗАГРУЗКУ СТРАНИЦЫ
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except:
+            pass
+
+        # ⏰ УВЕЛИЧИВАЕМ ВРЕМЯ ОЖИДАНИЯ ПОЯВЛЕНИЯ КАПЧИ!
+        # Капча может появиться через 3-7 секунд после загрузки
+        await page.wait_for_timeout(5000)  # ✅ Было 2000, стало 5000
+
+        # 🎯 АКТИВНОЕ ОЖИДАНИЕ КАПЧИ
+        captcha_appeared = False
+        for wait_attempt in range(5):  # Проверяем 5 раз с интервалом 1 сек
+            captcha_modal = page.locator("sproit-ui-modal:has(project-ui-captcha)")
+            count = await captcha_modal.count()
+
+            if count > 0:
+                logger.info(f"🎯 Captcha modal detected (attempt {wait_attempt+1})")
+                captcha_appeared = True
+                break
+
+            logger.debug(f"⏳ Waiting for captcha modal... ({wait_attempt+1}/5)")
+            await page.wait_for_timeout(1000)
+
+        # Если капча не появилась за 10 секунд (5000 + 5*1000)
+        if not captcha_appeared:
+            logger.info(f"✅ No captcha appeared after waiting → cards {part}")
+            # Возможно, капчи действительно нет, продолжаем
+        else:
+            # ♻️ ЦИКЛ РЕШЕНИЯ КАПЧИ
+            while True:
+                captcha_modal = page.locator("sproit-ui-modal:has(project-ui-captcha)")
+                if await captcha_modal.count() == 0:
+                    logger.info(f"✅ Captcha SOLVED → cards {part}")
+                    break
+
+                if captcha_retry >= max_captcha_retries:
+                    logger.error(f"❌ Max captcha retries {max_captcha_retries} {part}")
+                    raise Exception(f"captcha_timeout_{part}")
+
+                logger.warning(
+                    f"🎯 Solving captcha #{captcha_retry+1}/{max_captcha_retries} {part}"
+                )
+
+                try:
+                    solved = await solve_captcha_universal(
+                        page=page,
+                        logger=logger,
+                        site_key="armtek",
+                        selectors={
+                            "captcha_img": SELECTORS["armtek"]["captcha_img"],
+                            "captcha_input": SELECTORS["armtek"]["captcha_input"],
+                            "submit": SELECTORS["armtek"]["captcha_submit"],
+                        },
+                        max_attempts=1,
+                    )
+                except Exception as captcha_error:
+                    logger.error(f"❌ Captcha solve error: {captcha_error}")
+                    solved = False
+
+                # ✅ Проверяем что капча действительно исчезла
+                await page.wait_for_timeout(3000)  # ✅ Было 2000, стало 3000
+
+                captcha_still_visible = await page.locator(
+                    "sproit-ui-modal:has(project-ui-captcha)"
+                ).count()
+
+                if solved and captcha_still_visible == 0:
+                    logger.info(f"✅ Captcha SUCCESS (disappeared) {part}")
+                    break
+                elif captcha_still_visible == 0:
+                    logger.info(f"✅ Captcha SOLVED by itself {part}")
+                    break
+                else:
+                    logger.warning(f"❌ Captcha still visible, retry {captcha_retry+1}")
+                    captcha_retry += 1
+                    await page.wait_for_timeout(2000)
+
+        await page.wait_for_timeout(1000)
+
+    # Город
+    try:
+        await close_city_dialog_if_any(page, logger)
+        await page.wait_for_timeout(1000)
+    except Exception as city_e:
+        logger.debug(f"Город: {city_e}")
+
+    # Карточки
+    max_card_wait = 4
+    for card_attempt in range(max_card_wait):
+        try:
+            await page.wait_for_selector(
+                "project-ui-article-card, app-article-card-tile, .scroll-item, div[data-id]",
+                timeout=10000,
+                state="attached",
+            )
+            await page.wait_for_timeout(1500)  # Стабилизация
+
+            logger.debug("✅ Карточки появились")
+            break
+        except:
+            if card_attempt < max_card_wait - 1:
+                logger.debug(f"⏳ Карточки #{card_attempt+1}")
+                await page.wait_for_timeout(1000)
+            else:
+                # 🔥 ПРОВЕРКА "НИЧЕГО НЕ НАЙДЕНО" — 0.1 сек!
+                try:
+                    no_results = page.locator(
+                        ".not-found__title, .not-found, text=/ничего не найдено/i"
+                    )
+                    if await no_results.count() > 0:
+                        logger.warning(f"❌ No search results: {part}")
+                        await save_debug_info(
+                            page, part, "no_search_results", logger, "armtek"
+                        )
+                        return None, None  # ← Выход БЕЗ retry!
+                except:
+                    pass
+                logger.warning("⏰ No cards → retry")
+                raise Exception("no_cards_after_wait")
+
+    # Продукты
+    card_selectors = [
+        "project-ui-article-card",
+        "app-article-card-tile",
+        sel["product_cards"],
+    ]
+
+    products = None
+    for sel_name, selector in [
+        ("article-card", card_selectors[0]),
+        ("app-tile", card_selectors[1]),
+        *[(f"backup-{i}", s) for i, s in enumerate(card_selectors[2:], 1)],
+    ]:
+        try:
+            count = await page.locator(selector).count()
+            if count > 0:
+                logger.debug(f"✅ {sel_name}: {count} по '{selector}'")
+                products = page.locator(selector)
+                break
+        except Exception as e:
+            logger.debug(f"{sel_name} skip: {e}")
+
+    if not products or await products.count() == 0:
+        logger.warning(f"❌ No products {part}")
+        await save_debug_info(page, part, "no_products", logger, "armtek")
+        return None, None
+
+    # Первая карточка
+    first_card = products.first
+    first_link = first_card.locator("a").first
+    href = await first_link.get_attribute("href", timeout=2000)
+    if not href:
+        logger.warning(f"❌ No link {part}")
+        return None, None
+
+    full_url = href if href.startswith("http") else BASE_URL + href
+    await page.goto(full_url, wait_until="domcontentloaded", timeout=20000)
+
+    # Вес
+    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+    await page.evaluate("window.scrollTo(0, 0)")
+    await page.wait_for_timeout(2000)
+
+    card_info = page.locator("product-card-info")
+    if await card_info.count() == 0:
+        return "нету веса", None
+
+    tech_link = page.locator('a[href="#tech-info"]').first
+    if await tech_link.count() > 0 and await tech_link.is_visible():
+        await tech_link.click(force=True)
+        await card_info.wait_for(state="visible", timeout=5000)
+
+    # Weight selectors
+    weight_selectors_list = sel["weight_selectors"]
+    for retry in range(2):
+        for selector_idx, selector in enumerate(weight_selectors_list, 1):
+            try:
+                full_selector = f"product-card-info {selector}".strip()
+                weight_values = page.locator(full_selector)
+                count = await weight_values.count()
+
+                if count > 0:
+                    logger.debug(f"🔍 #{selector_idx}: {count} ({selector[:30]}...)")
+
+                for i in range(count):
+                    try:
+                        timeout_ms = 3000 if retry > 0 else 1000
+                        text = await weight_values.nth(i).text_content(
+                            timeout=timeout_ms
+                        )
+
+                        if text and "кг" in str(text).lower():
+                            match = re.search(
+                                r"(\d+(?:[.,]\d+)?)\s*кг", str(text), re.IGNORECASE
+                            )
+                            if match:
+                                weight = match.group(1).replace(",", ".")
+                                logger.info(
+                                    f"{part}: {weight} кг (#{selector_idx}, retry={retry})"
+                                )
+                                return weight, None
+                    except:
+                        continue
+            except Exception as e:
+                logger.error(f"Weight error {part}: {e}")
+                raise
+
+        if retry == 0:
+            logger.debug(f"{part}: retry weights...")
+            await page.wait_for_timeout(2000)
+
+    logger.warning(f"{part}: no weight")
+    return None, None
+
+
+async def with_timeout(timeout_ms: int, coro: Callable, *args, **kwargs):
+    """Безопасный таймаут с ЯВНЫМИ ошибками."""
+    try:
+        task = asyncio.create_task(coro(*args, **kwargs))
+        return await asyncio.wait_for(task, timeout=timeout_ms / 1000.0)
+    except asyncio.TimeoutError:
+        raise Exception("GLOBAL_TIMEOUT")  # ✅ scrape_weight_armtek УВИДИТ!
+    except Exception as e:
+        raise e  # ✅ ПЕРЕДАЁТ no_cards_after_wait!
+
 
 async def scrape_weight_armtek(
     page: Page, part: str, logger: logging.Logger
-) -> tuple[str, None]:
+) -> Tuple[str, None]:
     """
-    Armtek.ru — упрощенная логика с project-ui-article-card
+    Armtek.ru с ГЛОБАЛЬНЫМ ТАЙМАУТОМ 4 минуты на случай зависания капчи.
     """
-    max_retries = 2
+    max_retries = 1
     sel = SELECTORS["armtek"]
+    GLOBAL_TIMEOUT_MS = 300000  # 4 минуты
+    check_captcha = False  # ← ИНИЦИАЛЬНО False!
 
-    # Перед циклом attempt
+    # Перед циклом: антидетект
     await page.add_init_script(
         """
-    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-    Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en']});
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru', 'en']});
     """
     )
     await page.set_extra_http_headers(
@@ -170,224 +677,32 @@ async def scrape_weight_armtek(
         }
     )
 
-    needs_captcha_check = False
-
-    for attempt in range(max_retries + 1):
+    for attempt in range(max_retries + 1):  # 0, 1
         try:
-            # 1. Goto + город
             search_url = f"{BASE_URL}/search?text={part}"
-            await page.goto(search_url, wait_until="domcontentloaded", timeout=10000)
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
 
-            # await close_city_dialog_if_any(page, logger)
-
-            # 🔥 БЕСКОНЕЧНЫЙ ЦИКЛ: ждём успеха капчи
-            max_captcha_retries = 20  # Большой лимит на всякий
-            captcha_retry = 0
-
-            if needs_captcha_check:
-                await page.wait_for_timeout(3000)
-
-            while True:
-                captcha_modal = page.locator("sproit-ui-modal:has(project-ui-captcha)")
-                if await captcha_modal.count() == 0:
-                    # logger.info(f"✅ No captcha for {part}, proceed")
-                    break  # ✅ Нет капчи → дальше!
-
-                if captcha_retry >= max_captcha_retries:
-                    logger.error(
-                        f"❌ Max captcha retries {max_captcha_retries} for {part}"
-                    )
-                    raise Exception(f"captcha_timeout_{part}")
-
-                logger.warning(
-                    f"🎯 Captcha attempt #{captcha_retry+1}/{max_captcha_retries}"
-                )
-                solved = await solve_captcha_universal(
-                    page=page,
-                    logger=logger,
-                    site_key="armtek",
-                    selectors={
-                        "captcha_img": SELECTORS["armtek"]["captcha_img"],
-                        "captcha_input": SELECTORS["armtek"]["captcha_input"],
-                        "submit": SELECTORS["armtek"]["captcha_submit"],
-                    },
-                    max_attempts=2,
-                )
-
-                await page.wait_for_timeout(2000)
-
-                if solved:
-                    logger.info(f"✅ Captcha SUCCESS for {part}")
-                    needs_captcha_check = False
-                    break  # ✅ РЕШЕНА → дальше!
-                else:
-                    logger.warning(f"❌ Captcha failed, retrying...")
-                    captcha_retry += 1
-                    await page.wait_for_timeout(1000)  # Пауза между попытками
-
-            # logger.info(f"🚀 Moving to cards for {part}")
-
-            try:
-                await close_city_dialog_if_any(page, logger)
-                await page.wait_for_timeout(1000)  # Стабилизация
-            except Exception as city_e:
-                logger.debug(f"Диалог города: {city_e} — продолжаем")
-
-            # Жестко ждем КАРТОЧКИ 5 секунд — с retry!
-            max_card_wait = 3
-            for card_attempt in range(max_card_wait):
-                try:
-                    await page.wait_for_selector(
-                        "project-ui-article-card, app-article-card-tile, .scroll-item, div[data-id]",
-                        timeout=5000,
-                        state="attached",
-                    )
-                    logger.debug("✅ Карточки появились")
-                    break
-                except:
-                    if card_attempt < max_card_wait - 1:
-                        logger.debug(f"⏳ Карточки ждем... попытка {card_attempt+1}")
-                        await page.wait_for_timeout(1000)
-                        continue
-                    else:
-                        # ❌ НЕ return! Пусть идет в большой except → капча
-
-                        logger.warning("⏰ No cards visible — retry again")
-                        needs_captcha_check = True
-                        raise Exception("no_cards_after_wait")  # ← ВЫКИДЫВАЕМ!
-
-            # 🔥 3. Ищем карточки (project-ui-article-card ИЛИ app-article-card-tile)
-            card_selectors = [
-                "project-ui-article-card",
-                "app-article-card-tile",  # 🔥 Новый селектор!
-                sel["product_cards"],  # Резерв
-            ]
-
-            products = None
-            for sel_name, selector in [
-                ("article-card", card_selectors[0]),
-                ("app-tile", card_selectors[1]),
-                *[(f"backup-{i}", s) for i, s in enumerate(card_selectors[2:], 1)],
-            ]:
-                try:
-                    count = await page.locator(selector).count()
-                    if count > 0:
-                        logger.debug(f"✅ {sel_name}: {count} шт по '{selector}'")
-                        products = page.locator(selector)
-                        break
-                except Exception as e:
-                    logger.debug(f"{sel_name} skip: {e}")
-                    continue
-
-            if not products or await products.count() == 0:
-                logger.warning(f"❌ cards not found for {part}")
-                await save_debug_info(page, part, "no_cards_all", logger, "armtek")
-                return None, None
-
-            # 4. Берем первую карточку и переходим по ссылке
-            first_card = products.first
-            first_link = first_card.locator("a").first
-            href = await first_link.get_attribute("href", timeout=2000)
-            if not href:
-                logger.warning(f"❌ link not found for {part}")
-                return None, None
-
-            full_url = href if href.startswith("http") else BASE_URL + href
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=20000)
-
-            # 5. Стабилизация + поиск веса в product-card-info
-            await page.wait_for_load_state("domcontentloaded", timeout=5000)
-            await page.evaluate("window.scrollTo(0, 0)")
-            await page.wait_for_timeout(2000)
-
-            # Ищем в product-card-info вместо product-key-value
-            card_info = page.locator("product-card-info")
-            if await card_info.count() == 0:
-                logger.warning(f"❌ product-card-info not found for {part}")
-                return "нету веса", None  # fallback
-
-            # logger.info("✅ product-card-info найден, ищем вес")
-
-            # 🔥 Ubuntu: клик "Все характеристики" если есть (один таймаут)
-            tech_link = page.locator('a[href="#tech-info"]').first
-            if await tech_link.count() > 0 and await tech_link.is_visible():
-                await tech_link.click(force=True)
-                # Ждем Angular + подгрузку одним wait_for_selector (5 сек)
-                # await page.wait_for_selector("product-card-info", timeout=2000)
-                await card_info.wait_for(state="visible", timeout=5000)
-
-            # Перебор weight_selectors внутри product-card-info
-            weight_selectors_list = sel["weight_selectors"]
-            weight_found = False
-
-            for retry in range(2):  # 2 попытки: обычная + с увеличенным таймаутом
-                for selector_idx, selector in enumerate(weight_selectors_list, 1):
-                    try:
-                        full_selector = f"product-card-info {selector}".strip()
-                        weight_values = page.locator(full_selector)
-                        count = await weight_values.count()
-
-                        if count > 0:
-                            logger.debug(
-                                f"🔍 #{selector_idx}: {count} elem ({selector[:30]}...)"
-                            )
-
-                        for i in range(count):
-                            try:
-                                # Динамический таймаут: 1000ms обычный, 3000ms на повторной попытке
-                                timeout_ms = 3000 if retry > 0 else 1000
-                                text = await weight_values.nth(i).text_content(
-                                    timeout=timeout_ms
-                                )
-
-                                if text and "кг" in str(text).lower():
-                                    import re
-
-                                    match = re.search(
-                                        r"(\d+(?:[.,]\d+)?)\s*кг",
-                                        str(text),
-                                        re.IGNORECASE,
-                                    )
-                                    if match:
-                                        weight = match.group(1).replace(",", ".")
-                                        logger.info(
-                                            "%s: %s кг (#%d, retry=%d)",
-                                            part,
-                                            weight,
-                                            selector_idx,
-                                            retry,
-                                        )
-                                        return weight, None
-                            except:
-                                continue
-
-                    except Exception as e:
-                        logger.debug(f"Селектор #{selector_idx} skip: {e}")
-                        continue
-
-                if retry == 0 and not weight_found:
-                    logger.debug(
-                        f"{part}:weight not found, repeat with extended timeout..."
-                    )
-                    await page.wait_for_timeout(2000)  # Даём Angular доработать
-                else:
-                    break
-
-            logger.warning(
-                "%s: weight not found in product-card-info (after 2 attempts)", part
+            result = await with_timeout(  # 4 мин на ВСЁ!
+                GLOBAL_TIMEOUT_MS,
+                scrape_weight_armtek_inner,
+                page,
+                part,
+                logger,
+                check_captcha,
             )
-            return None, None
+
+            if result[0]:  # Вес найден
+                return result
 
         except Exception as e:
-            logger.error("❌ %s (trys %d): %s", part, attempt + 1, str(e))
-            # 🔥 ФИКС ФЛАГА
-            if "no_cards_after_wait" in str(e):
-                logger.info(f"🔄 No cards → Late captcha mode activated")
-                needs_captcha_check = True  # Подтверждаем флаг
+            logger.error(f"❌ {part} (attempt {attempt+1}): {e}")
+
+            # ✅ ЛОВИТ GLOBAL_TIMEOUT + no_cards_after_wait!
+            if "no_cards_after_wait" in str(e) or "GLOBAL_TIMEOUT" in str(e):
+                check_captcha = True
             else:
-                needs_captcha_check = False  # Сброс
-            await save_debug_info(
-                page, part, f"{type(e).__name__}_attempt{attempt}", logger, "armtek"
-            )
+                check_captcha = False
+
+            await save_debug_info(page, part, f"attempt{attempt+1}", logger, "armtek")
 
     return None, None
