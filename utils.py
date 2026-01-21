@@ -2,6 +2,9 @@
 import logging
 import re
 import time
+import random
+import requests
+
 
 import pandas as pd
 from pathlib import Path
@@ -267,6 +270,72 @@ API_KEY_2CAPTCHA = os.getenv("API_KEY_2CAPTCHA")  # или откуда ты е�
 #             logger.error(f"[{site_key}] Не удалось сохранить обработанную капчу: {se}")
 
 #         return False
+
+
+class RateLimitException(Exception):
+    """Raised when armtek reports request‑limit exceeded."""
+
+    pass
+
+
+def get_2captcha_proxy() -> dict[str, str]:
+    """
+    Запрашивает у 2Captcha «белый список» прокси‑соединений.
+    Возвращает Ready‑to‑use словарь, который можно передать в
+    `browser.new_context(proxy=…)`.
+
+    Параметры берутся из config.py (через глобальные переменные).
+    """
+    from config import (  # импортируем только нужные константы
+        API_KEY_2CAPTCHA,
+        PROXY_COUNTRY,
+        PROXY_PROTOCOL,
+        PROXY_CONNECTIONS,
+        PROXY_IP,
+    )
+
+    # Формируем URL‑запрос
+    base_url = "https://api.rucaptcha.com/proxy/generate_white_list_connections"
+    params = {
+        "key": API_KEY_2CAPTCHA,
+        "country": PROXY_COUNTRY,
+        "protocol": PROXY_PROTOCOL,
+        "connection_count": str(PROXY_CONNECTIONS),
+    }
+    # Если передан конкретный IP‑адрес – добавляем его в запрос
+    if PROXY_IP:
+        params["ip"] = PROXY_IP
+
+    try:
+        logger.debug(f"🔎 Запрос к 2Captcha: {base_url}  params={params}")
+        resp = requests.get(base_url, params=params, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"❌ Ошибка запроса к 2Captcha: {e}")
+        raise RuntimeError("Не удалось получить список прокси от 2Captcha")
+
+    try:
+        payload = resp.json()
+    except json.JSONDecodeError:
+        logger.error(f"❌ Некорректный JSON от 2Captcha: {resp.text}")
+        raise RuntimeError("Ответ от 2Captcha не в JSON‑формате")
+
+    # Проверяем статус
+    if payload.get("status") != "OK":
+        logger.error(f"❌ 2Captcha вернул ошибку: {payload}")
+        raise RuntimeError(f"2Captcha error: {payload}")
+
+    # Список вида ["192.0.2.103:24008", "..."]
+    ip_list: List[str] = payload.get("data", [])
+    if not ip_list:
+        raise RuntimeError("2Captcha вернул пустой список прокси")
+
+    # Выбираем случайный прокси (можно реализовать round‑robin, FIFO и др.)
+    chosen = random.choice(ip_list)
+    proxy_url = f"http://{chosen}"  # Playwright принимает только http(s)‑прокси
+
+    logger.info(f"🔌 Выбран прокси {proxy_url}")
+    return {"server": proxy_url}
 
 
 async def solve_captcha_universal(

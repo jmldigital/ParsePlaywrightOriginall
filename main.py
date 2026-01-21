@@ -19,6 +19,8 @@ from tqdm.asyncio import tqdm
 from dotenv import load_dotenv
 from config import reload_config  # ← импорт
 
+from utils import RateLimitException, get_2captcha_proxy
+
 # 🔥 ГЛОБАЛЬНЫЙ UTF-8 для ВСЕГО
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
@@ -72,7 +74,13 @@ from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
 from auth import ensure_logged_in
 
 
-import sys
+async def safe_close_page(page):
+    """Безопасное закрытие страницы без ошибок"""
+    if page:
+        try:
+            await page.close()
+        except Exception:
+            pass  # игнорируем ошибки закрытия
 
 
 # ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
@@ -277,157 +285,171 @@ class ContextPool:
 #         logger.info(f"✅ {self.pool_size} простых контекстов готово")
 
 
-async def process_row_async(pool: ContextPool, idx: int, brand: str, part: str):
+async def process_row_async(
+    pool: ContextPool, browser: Browser, idx: int, brand: str, part: str
+):
+    """
+    Обрабатывает одну строку входного файла.
+    Поддерживает три режима (WEIGHT / NAME / PRICE) и умеет
+    переключать прокси только для armtek при Rate‑limit.
+    """
     from config import (
         ENABLE_WEIGHT_PARSING as WEIGHT,
         ENABLE_NAME_PARSING as NAME,
-        ENABLE_PRICE_PARSING as PRICE,  #
-    )  # 🆕 ЛОКАЛЬНЫЕ!
+        ENABLE_PRICE_PARSING as PRICE,
+    )
 
-    context = None
-    page1 = None  # Универсальная страница 1
-    page2 = None  # Универсальная страница 2
+    # ------------------- STOP‑флаг -------------------
+    if Path("input/STOP.flag").exists():
+        logger.info(f"🛑 [{idx}] STOP.flag → пропуск")
+        return idx, None
 
-    # Результаты по режимам (НЕ общие!)
-    result_price_st = None
-    result_price_avto = None
-    result_name = None
-    weight_jp = None
-    weight_armtek = None
-
-    for attempt in range(2):
+    # ======================= WEIGHT =======================
+    if WEIGHT:
         try:
             context = await pool.get_context()
-            page1 = await context.new_page()
-            page2 = await context.new_page()
+            page = await context.new_page()
 
-            # 🔥 🔥 🔥 ПРАВИЛЬНАЯ ЛОГИКА РЕЖИМОВ (elif!) 🔥 🔥 🔥
-            if WEIGHT:
-                # logger.info(f"⚖️ [{idx}] Поиск весов для {part}")
+            jp_physical, jp_volumetric = None, None
+            armtek_physical, armtek_volumetric = None, None
+            proxy_used = False
 
-                # Japarts PRIORITY
-                jp_physical, jp_volumetric = await scrape_weight_japarts(
-                    page1, part, logger_jp
-                )
+            # Japarts
+            logger.info(f"🔍 [{idx}] Japarts: {part}")
+            jp_physical, jp_volumetric = await scrape_weight_japarts(
+                page, part, logger_jp
+            )
 
-                # Armtek FALLBACK (если НЕПОЛНЫЙ japarts)
-                armtek_physical, armtek_volumetric = None, None
-                if not jp_physical or not jp_volumetric:
-                    # logger.info(
-                    #     f"🔄 Japarts: физ={jp_physical}, объём={jp_volumetric} → armtek.ru"
-                    # )
+            # Armtek только если Japarts fail
+            if not jp_physical or not jp_volumetric:
+                logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+
+                try:
                     armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                        page2, part, logger_armtek
+                        page, part, logger_armtek
                     )
-                    # logger.info(
-                    #     f"⚖️ [{idx}] Armtek вернул: физ={armtek_physical}, объём={armtek_volumetric} для {part}"
-                    # )
-                else:
-                    pass
-                    # logger.info(
-                    #     f"⚖️ [{idx}] Japarts полный, armtek не вызываем: физ={jp_physical}, объём={jp_volumetric}"
-                    # )
+                    logger.info(f"✅ [{idx}] Armtek OK: {part}")
 
-            elif NAME:
-                # ИМЕНА — stparts + avtoformula
-                detail_name_avto = None  # 🆕 ИНИЦИАЛИЗАЦИЯ!
-                detail_name = await scrape_stparts_name_async(page1, part, logger_st)
-
-                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
-                    if detail_name:
-                        logger.info(
-                            f"⚠️ stparts вернул '{detail_name}' для {part}, пробуем avtoformula"
-                        )
-
-                    detail_name_avto = await scrape_avtoformula_name_async(
-                        page2, part, logger_avto
+                except RateLimitException:
+                    logger.critical(
+                        f"🎯 [{idx}] MAIN.PY ЛОВИТ RateLimitException: {part}"
                     )
 
-                    if (
-                        detail_name_avto
-                        and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES
-                    ):
-                        detail_name = detail_name_avto
+                    # Закрываем старый
+                    await safe_close_page(page)
+                    try:
+                        await context.close()
+                    except:
+                        pass
+                    proxy_used = True
+
+                    # ПРОКСИ
+                    proxy_cfg = get_2captcha_proxy()
+                    if not proxy_cfg or "server" not in proxy_cfg:
+                        logger.error(f"❌ [{idx}] Нет прокси для {part}")
                     else:
-                        detail_name = "Detail"
-                        logger.info(
-                            f"❌ Не удалось найти нормальное название для {part}"
+                        logger.info(f"🔌 [{idx}] New proxy: {proxy_cfg['server']}")
+
+                        proxy_ctx = await browser.new_context(
+                            proxy=proxy_cfg,
+                            viewport={"width": 1920, "height": 1080},
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                         )
+                        proxy_page = await proxy_ctx.new_page()
 
-                result_name = detail_name
+                        try:
+                            logger.info(f"🌐 [{idx}] Proxy retry: {part}")
+                            armtek_physical, armtek_volumetric = (
+                                await scrape_weight_armtek(
+                                    proxy_page, part, logger_armtek
+                                )
+                            )
+                            logger.info(
+                                f"✅ [{idx}] PROXY SUCCESS {part}: {armtek_physical}"
+                            )
+                        finally:
+                            await safe_close_page(proxy_page)
+                            await proxy_ctx.close()
 
-            else:
-                # ЦЕНЫ — stparts + avtoformula (ВСЕГДА ОБОИ!)
-                result_price_st, result_price_avto = await asyncio.gather(
-                    scrape_stparts_async(page1, brand, part, logger_st),
-                    scrape_avtoformula_pw(page2, brand, part, logger_avto),
-                    return_exceptions=True,
-                )
+            # Результат
+            result = {
+                JPARTS_P_W: jp_physical,
+                JPARTS_V_W: jp_volumetric,
+                ARMTEK_P_W: armtek_physical,
+                ARMTEK_V_W: armtek_volumetric,
+            }
+            logger.info(f"⚖️ [{idx}] Total {part} → {result}")
+            return idx, result
 
-            # Проверка разлогина (для ЦЕН и ИМЕН)
-            if not WEIGHT:  # ← ТОЛЬКО НЕ веса!
-                # Проверяем avtoformula на разлогин
-                avto_result = result_price_avto if not NAME else detail_name_avto
-
-                if (
-                    isinstance(avto_result, Exception)
-                    and "зарегистрируйтесь" in str(avto_result).lower()
-                ):
-                    logger.warning(f"🔁 Разлогин avtoformula для {part}")
-                    await pool.refresh_cookies()
+        finally:
+            if not proxy_used:
+                await safe_close_page(page)
+                try:
+                    await context.new_page()
                     pool.release_context(context)
-                    context = None
-                    continue
+                    logger.debug(f"🔄 [{idx}] Context OK")
+                except:
+                    logger.debug(f"💀 [{idx}] Context dead")
 
-            break  # успех!
+    # ======================= NAME =======================
+    if NAME:
+        # Для названий нужен один контекст, два окна
+        context = await pool.get_context()
+        page1 = await context.new_page()
+        page2 = await context.new_page()
 
-        except asyncio.CancelledError as e:
-            logger.exception(f"Ошибка [{idx}] {brand}/{part}: {e}")
-            break
-        except Exception as e:
-            logger.error(f"Ошибка [{idx}] {brand}/{part}: {e}")
-            break
+        try:
+            detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+
+            if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
+                if detail_name:
+                    logger.info(
+                        f"⚠️ stparts вернул '{detail_name}' → пробуем avtoformula"
+                    )
+                detail_name_avto = await scrape_avtoformula_name_async(
+                    page2, part, logger_avto
+                )
+                if (
+                    detail_name_avto
+                    and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES
+                ):
+                    detail_name = detail_name_avto
+                else:
+                    detail_name = "Detail"
+                    logger.info(f"❌ Не удалось найти нормальное название для {part}")
+
+            return idx, {"finde_name": detail_name}
         finally:
             await safe_close_page(page1)
             await safe_close_page(page2)
-            if context:
-                pool.release_context(context)
+            pool.release_context(context)
 
-    # 🔥 ИТОГОВАЯ ОБРАБОТКА РЕЗУЛЬТАТОВ 🔥
+    # ======================= PRICE =======================
+    # Два окна (stparts + avtoformula)
+    context = await pool.get_context()
+    page1 = await context.new_page()
+    page2 = await context.new_page()
 
-    if WEIGHT:
-        result = {
-            JPARTS_P_W: jp_physical,
-            JPARTS_V_W: jp_volumetric,
-            ARMTEK_P_W: armtek_physical,
-            ARMTEK_V_W: armtek_volumetric,
-        }
-        logger.info(f"⚖️ [{idx}] Total {part} → {result}")
-        return idx, result
-    elif NAME:
-        return idx, {"finde_name": result_name}
-    else:
-        # ЦЕНЫ
+    try:
+        result_price_st, result_price_avto = await asyncio.gather(
+            scrape_stparts_async(page1, brand, part, logger_st),
+            scrape_avtoformula_pw(page2, brand, part, logger_avto),
+            return_exceptions=True,
+        )
         price_st, delivery_st = result_price_st if result_price_st else (None, None)
         price_avto, delivery_avto = (
             result_price_avto if result_price_avto else (None, None)
         )
-
         return idx, {
             stparts_price: price_st,
             stparts_delivery: delivery_st,
             avtoformula_price: price_avto,
             avtoformula_delivery: delivery_avto,
         }
-
-
-async def safe_close_page(page):
-    """Безопасное закрытие страницы без ошибок"""
-    if page:
-        try:
-            await page.close()
-        except Exception:
-            pass  # игнорируем ошибки закрытия
+    finally:
+        await safe_close_page(page1)
+        await safe_close_page(page2)
+        pool.release_context(context)
 
 
 async def main_async():
@@ -541,10 +563,10 @@ async def main_async():
         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
 
             for coro in asyncio.as_completed(
-                [process_row_async(pool, *t) for t in tasks]
+                [process_row_async(pool, browser, *t) for t in tasks]
             ):
-                if stop_parsing.is_set():
-                    break
+                # if stop_parsing.is_set():
+                #     break
                 idx, result = await coro
                 if result:
                     for col, val in result.items():
@@ -556,7 +578,8 @@ async def main_async():
                 processed_count += 1
 
                 # Проверка файла-флага каждые 10 задач или после каждой
-                if processed_count % 10 == 0 and Path("input/STOP.flag").exists():
+                # if processed_count % 10 == 0 and Path("input/STOP.flag").exists():
+                if Path("input/STOP.flag").exists():
                     logger.info("🛑 STOP.flag detected → graceful exit!")
                     break
 
@@ -570,9 +593,9 @@ async def main_async():
                         )
                     except Exception as e:
                         logger.error(
-                            f"❌ Ошибка при промежуточном сохранении Excel: {e}"
+                            f"❌ Ошибка при промежуточном сохранении Excel, но мы продолжаем: {e}"
                         )
-                        raise
+                        # raise -убрали чтобы не вываливалось все
 
                 # Отправка прогресса в Telegram при достижении контрольных точек
                 if (
