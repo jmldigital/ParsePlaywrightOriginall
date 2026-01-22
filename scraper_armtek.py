@@ -395,7 +395,7 @@ async def scrape_weight_armtek(
                 logger.warning(
                     f"🚦 RateLimit ВЫЯВЛЕН в ошибке внутри основной функции: {part}"
                 )
-                raise RateLimitException("rate_limit_detected")
+                return "NeedProxy", "NeedProxy"
 
             # Только потом остальные проверки
             if "captcha_detected" in err:

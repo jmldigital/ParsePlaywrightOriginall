@@ -12,10 +12,12 @@ AVTO_LOGIN = os.getenv("AVTO_LOGIN", "your_login_here")
 AVTO_PASSWORD = os.getenv("AVTO_PASSWORD", "your_password_here")
 
 API_KEY_2CAPTCHA = os.getenv("API_KEY_2CAPTCHA", "your_api_key_here")
-PROXY_COUNTRY = "ru"
-PROXY_PROTOCOL = "https"
+PROXY_COUNTRY = "Russia"
+PROXY_PROTOCOL = "http"
 PROXY_CONNECTIONS = 5
 PROXY_IP = "152.53.136.84"
+PROXY_USERNAME = "u038f310456a605c8"
+PROXY_PASSWORD = "u038f310456a605c1"
 
 # === Telegram ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8364237483AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s")

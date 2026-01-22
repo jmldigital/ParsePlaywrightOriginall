@@ -5,6 +5,7 @@
 - Автоматический re-login при разлогине
 - Разделённые логи по сайтам
 """
+import random
 from telegram import Bot
 import asyncio
 import sys  # 🆕 №1 — ПЕРВЫЙ!
@@ -285,180 +286,352 @@ class ContextPool:
 #         logger.info(f"✅ {self.pool_size} простых контекстов готово")
 
 
-async def process_row_async(
-    pool: ContextPool, browser: Browser, idx: int, brand: str, part: str
-):
+async def process_single_item(page, idx: int, brand: str, part: str):
     """
-    Обрабатывает одну строку входного файла.
-    Поддерживает три режима (WEIGHT / NAME / PRICE) и умеет
-    переключать прокси только для armtek при Rate‑limit.
+    Только логика парсинга БЕЗ создания контекстов!
+    Поддерживает WEIGHT/NAME/PRICE режимы.
+    Возвращает результат или "NeedProxy" при RateLimit.
     """
     from config import (
         ENABLE_WEIGHT_PARSING as WEIGHT,
         ENABLE_NAME_PARSING as NAME,
         ENABLE_PRICE_PARSING as PRICE,
+        JPARTS_P_W,
+        JPARTS_V_W,
+        ARMTEK_P_W,
+        ARMTEK_V_W,
+        stparts_price,
+        stparts_delivery,
+        avtoformula_price,
+        avtoformula_delivery,
     )
 
-    # ------------------- STOP‑флаг -------------------
-    if Path("input/STOP.flag").exists():
-        logger.info(f"🛑 [{idx}] STOP.flag → пропуск")
-        return idx, None
+    # Инициализация результатов
+    result = {}
 
-    # ======================= WEIGHT =======================
     if WEIGHT:
+        # ✅ ОТКЛЮЧЕНО JAPARTS ДЛЯ ТЕСТА!
+        jp_physical, jp_volumetric = None, None  # ← Принудительно None!
+
+        logger.info(f"🚀 [{idx}] ТЕСТ: ТОЛЬКО ARMTEK: {part}")
+
+        # ПРЯМО к Armtek!
+        # 🔥 ПРЯМО ЗДЕСЬ — добавьте/измените:
         try:
-            context = await pool.get_context()
-            page = await context.new_page()
-
-            jp_physical, jp_volumetric = None, None
-            armtek_physical, armtek_volumetric = None, None
-            proxy_used = False
-
-            # Japarts
-            logger.info(f"🔍 [{idx}] Japarts: {part}")
-            jp_physical, jp_volumetric = await scrape_weight_japarts(
-                page, part, logger_jp
+            armtek_physical, armtek_volumetric = await asyncio.wait_for(
+                scrape_weight_armtek(page, part, logger_armtek),
+                timeout=90.0,  # ← Было 15.0 → 90.0!
             )
+            logger.info(
+                f"🔍 [{idx}] Armtek result внутри process_raw: {armtek_physical=}, {armtek_volumetric=}"
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"⚠️ [{idx}] ARMTEK TIMEOUT!")
+            armtek_physical, armtek_volumetric = None, None
 
-            # Armtek только если Japarts fail
-            if not jp_physical or not jp_volumetric:
-                logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+        # 🧪 ДИАГНОСТИКА:
+        logger.info(
+            f"🧪 [{idx}] FINAL CHECK: physical='{armtek_physical}', vol='{armtek_volumetric}'"
+        )
 
-                try:
-                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                        page, part, logger_armtek
-                    )
-                    logger.info(f"✅ [{idx}] Armtek OK: {part}")
+        # 🆕 ИСПРАВЛЕНИЕ RateLimit!
+        # if armtek_physical == "NeedProxy" or armtek_volumetric == "NeedProxy":
+        if random.random() < 0.3:
+            logger.warning(
+                f"🚦 [{idx}] RateLimit → NeedProxy! внутри Process_single_item ловит"
+            )
+            return "NeedProxy"  # ← Worker поймает!
 
-                except RateLimitException:
-                    logger.critical(
-                        f"🎯 [{idx}] MAIN.PY ЛОВИТ RateLimitException: {part}"
-                    )
-
-                    # Закрываем старый
-                    await safe_close_page(page)
-                    try:
-                        await context.close()
-                    except:
-                        pass
-                    proxy_used = True
-
-                    # ПРОКСИ
-                    proxy_cfg = get_2captcha_proxy()
-                    if not proxy_cfg or "server" not in proxy_cfg:
-                        logger.error(f"❌ [{idx}] Нет прокси для {part}")
-                    else:
-                        logger.info(f"🔌 [{idx}] New proxy: {proxy_cfg['server']}")
-
-                        proxy_ctx = await browser.new_context(
-                            proxy=proxy_cfg,
-                            viewport={"width": 1920, "height": 1080},
-                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                        )
-                        proxy_page = await proxy_ctx.new_page()
-
-                        try:
-                            logger.info(f"🌐 [{idx}] Proxy retry: {part}")
-                            armtek_physical, armtek_volumetric = (
-                                await scrape_weight_armtek(
-                                    proxy_page, part, logger_armtek
-                                )
-                            )
-                            logger.info(
-                                f"✅ [{idx}] PROXY SUCCESS {part}: {armtek_physical}"
-                            )
-                        finally:
-                            await safe_close_page(proxy_page)
-                            await proxy_ctx.close()
-
-            # Результат
-            result = {
-                JPARTS_P_W: jp_physical,
-                JPARTS_V_W: jp_volumetric,
+        result.update(
+            {
+                JPARTS_P_W: None,  # ← Japarts отключён
+                JPARTS_V_W: None,  # ← Japarts отключён
                 ARMTEK_P_W: armtek_physical,
                 ARMTEK_V_W: armtek_volumetric,
             }
-            logger.info(f"⚖️ [{idx}] Total {part} → {result}")
-            return idx, result
+        )
 
-        finally:
-            if not proxy_used:
-                await safe_close_page(page)
-                try:
-                    await context.new_page()
-                    pool.release_context(context)
-                    logger.debug(f"🔄 [{idx}] Context OK")
-                except:
-                    logger.debug(f"💀 [{idx}] Context dead")
+    # # ======================= WEIGHT =======================
+    # if WEIGHT:
+    #     jp_physical, jp_volumetric = None, None
+    #     armtek_physical, armtek_volumetric = None, None
+
+    #     try:
+    #         # Japarts
+    #         logger.info(f"🔍 [{idx}] Japarts: {part}")
+    #         jp_physical, jp_volumetric = await scrape_weight_japarts(
+    #             page, part, logger_jp
+    #         )
+
+    #         # Armtek — ТОЛЬКО при Japarts fail
+    #         if not jp_physical or not jp_volumetric:
+    #             logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+
+    #             armtek_physical, armtek_volumetric = await scrape_weight_armtek(
+    #                 page, part, logger_armtek
+    #             )
+
+    #             # 🚨 RateLimit детектор!
+    #             if armtek_physical == "NeedProxy":
+    #                 logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
+    #                 return "NeedProxy"  # ← ПРОКИДЫВАЕМ НАВЕРХ!
+
+    #             # Сохраняем Armtek результат
+    #             result.update(
+    #                 {
+    #                     JPARTS_P_W: jp_physical,
+    #                     JPARTS_V_W: jp_volumetric,
+    #                     ARMTEK_P_W: armtek_physical,
+    #                     ARMTEK_V_W: armtek_volumetric,
+    #                 }
+    #             )
+
+    #         else:
+    #             # Только Japarts
+    #             result.update(
+    #                 {
+    #                     JPARTS_P_W: jp_physical,
+    #                     JPARTS_V_W: jp_volumetric,
+    #                     ARMTEK_P_W: None,
+    #                     ARMTEK_V_W: None,
+    #                 }
+    #             )
+
+    #     except Exception as e:
+    #         logger.error(f"❌ [{idx}] Weight parse error: {e}")
+    #         result.update(
+    #             {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
+    #         )
 
     # ======================= NAME =======================
     if NAME:
-        # Для названий нужен один контекст, два окна
-        context = await pool.get_context()
-        page1 = await context.new_page()
-        page2 = await context.new_page()
-
         try:
-            detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+            detail_name = await scrape_stparts_name_async(page, part, logger_st)
 
             if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
                 if detail_name:
-                    logger.info(
-                        f"⚠️ stparts вернул '{detail_name}' → пробуем avtoformula"
-                    )
-                detail_name_avto = await scrape_avtoformula_name_async(
-                    page2, part, logger_avto
+                    logger.info(f"⚠️ [{idx}] stparts '{detail_name}' → avtoformula")
+                detail_name = await scrape_avtoformula_name_async(
+                    page, part, logger_avto
                 )
-                if (
-                    detail_name_avto
-                    and detail_name_avto.lower().strip() not in BAD_DETAIL_NAMES
-                ):
-                    detail_name = detail_name_avto
-                else:
-                    detail_name = "Detail"
-                    logger.info(f"❌ Не удалось найти нормальное название для {part}")
 
-            return idx, {"finde_name": detail_name}
-        finally:
-            await safe_close_page(page1)
-            await safe_close_page(page2)
-            pool.release_context(context)
+                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
+                    detail_name = "Detail"
+                    logger.info(f"❌ [{idx}] Название не найдено: {part}")
+
+            result["finde_name"] = detail_name
+
+        except Exception as e:
+            logger.error(f"❌ [{idx}] Name parse error: {e}")
+            result["finde_name"] = "Detail"
 
     # ======================= PRICE =======================
-    # Два окна (stparts + avtoformula)
-    context = await pool.get_context()
-    page1 = await context.new_page()
-    page2 = await context.new_page()
+    if PRICE:
+        try:
+            # Для PRICE нужен отдельный page (но в worker мы передаём готовый)
+            result.update(
+                {
+                    stparts_price: None,
+                    stparts_delivery: None,
+                    avtoformula_price: None,
+                    avtoformula_delivery: None,
+                }
+            )
+            logger.warning(
+                f"⚠️ [{idx}] PRICE не поддерживается в single_item (нужны 2 page)"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ [{idx}] Price error: {e}")
+
+    logger.info(f"⚖️ [{idx}] Total {part} → {result}")
+    return result  # ← Нормальный результат
+
+
+async def worker(
+    worker_id: int,
+    queue: asyncio.Queue,
+    pool: ContextPool,
+    normal_browser: Browser,  # 🆕 Browser #1: ContextPool (Обычный)
+    proxy_browser: Browser,  # 🆕 Browser #2: Proxy задачи (С флагом proxy="per-context")
+    df: pd.DataFrame,
+    pbar,
+):
+    """
+    Worker с 2 БРАУЗЕРАМИ:
+    1. Пытается взять контекст из пула (normal_browser).
+    2. При RateLimit переключается на proxy_browser и СОХРАНЯЕТ этот контекст для следующих задач.
+    """
+    proxy_context = None  # Личный proxy_context, живет между итерациями цикла
 
     try:
-        result_price_st, result_price_avto = await asyncio.gather(
-            scrape_stparts_async(page1, brand, part, logger_st),
-            scrape_avtoformula_pw(page2, brand, part, logger_avto),
-            return_exceptions=True,
-        )
-        price_st, delivery_st = result_price_st if result_price_st else (None, None)
-        price_avto, delivery_avto = (
-            result_price_avto if result_price_avto else (None, None)
-        )
-        return idx, {
-            stparts_price: price_st,
-            stparts_delivery: delivery_st,
-            avtoformula_price: price_avto,
-            avtoformula_delivery: delivery_avto,
-        }
+        while not queue.empty():
+            try:
+                # Получаем задачу
+                idx_brand_part = await queue.get()
+                idx, brand, part = idx_brand_part
+
+                # STOP.flag проверка
+                if Path("input/STOP.flag").exists():
+                    logger.info(f"👷 Worker-{worker_id}: STOP.flag → выход")
+                    queue.task_done()
+                    break
+
+                # Инициализация переменных для текущей итерации
+                using_proxy = proxy_context is not None
+                pool_ctx_obj = None
+                page = None
+
+                # Результат обработки
+                result = None
+
+                try:
+                    # 🚦 ШАГ 1: ВЫБОР РЕЖИМА
+                    if not using_proxy:
+                        # НОРМАЛЬНЫЙ РЕЖИМ (берем из пула)
+                        pool_ctx_obj = await pool.get_context()
+                        context = pool_ctx_obj
+                        page = await context.new_page()
+                        # logger.debug(f"👷 Worker-{worker_id}: Pool context")
+                    else:
+                        # PROXY РЕЖИМ (используем свой личный контекст)
+                        context = proxy_context
+                        page = await context.new_page()
+                        logger.debug(f"👷 Worker-{worker_id}: Proxy context (Reuse)")
+
+                    # Основной парсинг
+                    try:
+                        result = await asyncio.wait_for(
+                            process_single_item(page, idx, brand, part), timeout=180.0
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"👷 Worker-{worker_id}: Ошибка парсинга {part}: {e}"
+                        )
+                        result = None
+
+                    # 🚦 ШАГ 2: ОБРАБОТКА RateLimit (ПЕРЕКЛЮЧЕНИЕ / РОТАЦИЯ)
+                    if result == "NeedProxy":
+                        logger.warning(
+                            f"👷 Worker-{worker_id}: 🚦 RateLimit на {part}. Переключение на прокси..."
+                        )
+
+                        # 1. Закрываем текущую страницу и освобождаем пул
+                        await safe_close_page(page)
+                        page = None  # Чтобы finally не пытался закрыть дважды
+
+                        if pool_ctx_obj:
+                            pool.release_context(pool_ctx_obj)
+                            pool_ctx_obj = None  # Сброс ссылки
+
+                        # 2. Если у нас УЖЕ был прокси, но он словил бан — закрываем его (Ротация)
+                        if proxy_context:
+                            logger.info(
+                                f"👷 Worker-{worker_id}: ♻️ Старый прокси забанен, меняем IP..."
+                            )
+                            await proxy_context.close()
+                            proxy_context = None
+
+                        # 3. Получаем конфиг прокси
+                        # ⚠️ ВАЖНО: get_2captcha_proxy должен возвращать словарь с 'server', 'username', 'password'!
+                        proxy_cfg = get_2captcha_proxy()
+
+                        if not proxy_cfg or "server" not in proxy_cfg:
+                            logger.error("❌ Прокси не получен или неверный формат")
+                        else:
+                            logger.debug(f"✅ Прокси‑конфиг: {proxy_cfg['server']}")
+
+                        if proxy_cfg and "server" in proxy_cfg:
+                            try:
+                                # 4. Создаем НОВЫЙ proxy_context
+                                proxy_context = await asyncio.wait_for(
+                                    proxy_browser.new_context(
+                                        proxy=proxy_cfg,  # ← Ваша get_2captcha_proxy() остается!
+                                        viewport={"width": 1920, "height": 1080},
+                                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                                        locale="ru-RU",
+                                        timezone_id="Europe/Moscow",  # ← КРИТИЧНО!
+                                        ignore_https_errors=True,
+                                        extra_http_headers={
+                                            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                                        },
+                                    ),
+                                    timeout=60.0,
+                                )
+                                logger.info(
+                                    f"👷 Worker-{worker_id}: ✅ Proxy подключен!"
+                                )
+
+                                # 5. RETRY (Повторная попытка с тем же товаром)
+                                page_retry = await proxy_context.new_page()
+
+                                # (Опционально) Проверка IP
+                                # await page_retry.goto("https://api.ipify.org", timeout=10000)
+
+                                result = await asyncio.wait_for(
+                                    process_single_item(page_retry, idx, brand, part),
+                                    timeout=120.0,  # Увеличенный таймаут для прокси
+                                )
+                                await safe_close_page(page_retry)
+
+                            except asyncio.TimeoutError:
+                                logger.error(
+                                    f"👷 Worker-{worker_id}: ❌ Proxy connection timeout!"
+                                )
+                                if proxy_context:
+                                    await proxy_context.close()
+                                    proxy_context = None
+                                result = None
+                            except Exception as e:
+                                logger.error(
+                                    f"👷 Worker-{worker_id}: ❌ Ошибка прокси: {e}"
+                                )
+                                if proxy_context:
+                                    await proxy_context.close()
+                                    proxy_context = None
+                                result = None
+                        else:
+                            logger.error(
+                                f"👷 Worker-{worker_id}: ❌ Не удалось получить конфиг прокси!"
+                            )
+                            result = None
+
+                    # ✅ СОХРАНЕНИЕ РЕЗУЛЬТАТА
+                    if result and result != "NeedProxy" and isinstance(result, dict):
+                        for col, val in result.items():
+                            df.at[idx, col] = val
+                        # logger.info(f"✅ [{idx}] {part} OK")
+
+                finally:
+                    # Очистка ресурсов ТЕКУЩЕЙ итерации
+                    if page:
+                        await safe_close_page(page)
+
+                    # Если использовали пул — возвращаем контекст
+                    if not using_proxy and pool_ctx_obj:
+                        pool.release_context(pool_ctx_obj)
+
+                    # ⚠️ ВАЖНО: Мы НЕ закрываем proxy_context здесь,
+                    # чтобы использовать его на следующей итерации while!
+
+                pbar.update(1)
+                queue.task_done()
+
+            except asyncio.TimeoutError:
+                logger.error(f"👷 Worker-{worker_id}: Task wait timeout!")
+                queue.task_done()
+            except Exception as e:
+                logger.error(f"👷 Worker-{worker_id}: Critical Worker Exception: {e}")
+                queue.task_done()
+
     finally:
-        await safe_close_page(page1)
-        await safe_close_page(page2)
-        pool.release_context(context)
+        # Глобальная очистка при выходе из воркера (конец очереди или ошибка)
+        if proxy_context:
+            await proxy_context.close()
+            logger.info(f"👷 Worker-{worker_id}: 👋 Proxy context закрыт")
 
 
 async def main_async():
-    # global ENABLE_NAME_PARSING
-    # # Перечитываем .env, чтобы подхватить изменения
-    # load_dotenv(override=True)
-
-    # Считываем переменную заново
-    # ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
     print("🚀 main.py ЗАПУЩЕН!")
     print(
         f"🔍 .env ДО reload: NAME={os.getenv('ENABLE_NAME_PARSING')}, WEIGHT={os.getenv('ENABLE_WEIGHT_PARSING')}"
@@ -483,10 +656,14 @@ async def main_async():
         ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
         ENABLE_NAME_PARSING as LOCAL_NAME,
         ENABLE_PRICE_PARSING as LOCAL_PRICE,
+        JPARTS_P_W,
+        JPARTS_V_W,
+        ARMTEK_P_W,
+        ARMTEK_V_W,
         BAD_DETAIL_NAMES,
     )
 
-    # Проверка ЛОКАЛЬНЫХ
+    # Проверка: только 1 режим активен
     active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
     if active_modes != 1:
         error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
@@ -504,9 +681,11 @@ async def main_async():
     logger.info(f"✅ Режим: {mode}")
     logger.info("=" * 60)
 
+    # 📊 Загрузка и подготовка DataFrame
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
 
+    # 🆕 Инициализация колонок
     for col in [
         stparts_price,
         stparts_delivery,
@@ -516,127 +695,100 @@ async def main_async():
         if col not in df.columns:
             df[col] = None
 
-    if LOCAL_NAME:
-        if "finde_name" not in df.columns:
-            df["finde_name"] = None
+    if LOCAL_NAME and "finde_name" not in df.columns:
+        df["finde_name"] = None
 
     if LOCAL_WEIGHT:
-        df[JPARTS_P_W] = None
-        df[JPARTS_V_W] = None
-        df[ARMTEK_P_W] = None
-        df[ARMTEK_V_W] = None
+        for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
+            if col not in df.columns:
+                df[col] = None
 
-    tasks = [
-        (idx, str(row[INPUT_COL_BRAND]).strip(), str(row[INPUT_COL_ARTICLE]).strip())
-        for idx, row in df.head(MAX_ROWS).iterrows()
-        if str(row[INPUT_COL_ARTICLE]).strip()
-    ]
+    # 🆕 Создание очереди задач
+    queue = asyncio.Queue()
+    total_tasks = 0
 
-    # Вычисляем контрольные точки прогресса
-    total_tasks = len(tasks)
+    for idx, row in df.head(MAX_ROWS).iterrows():
+        article = str(row[INPUT_COL_ARTICLE]).strip()
+        if article:
+            task = (idx, str(row[INPUT_COL_BRAND]).strip(), article)
+            queue.put_nowait(task)
+            total_tasks += 1
+
+    logger.info(f"📋 Задач в очереди: {total_tasks}")
+
+    # 🆕 Контрольные точки прогресса
     progress_checkpoints = {
-        math.ceil(total_tasks * 0.25),  # 25%
-        math.ceil(total_tasks * 0.50),  # 50%
-        math.ceil(total_tasks * 0.75),  # 75%
-        total_tasks,  # 100%
+        math.ceil(total_tasks * 0.25),
+        math.ceil(total_tasks * 0.50),
+        math.ceil(total_tasks * 0.75),
+        total_tasks,
     }
-    sent_progress = set()  # Чтобы не отправлять дважды
+    sent_progress = set()
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
+        # 🆕 BROWSER #1: ContextPool (БЕЗ proxy) — ОСТАЕТСЯ
+        normal_browser = await p.chromium.launch(
             headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
         )
 
-        if LOCAL_WEIGHT:
-            pool = ContextPool(
-                browser, pool_size=MAX_WORKERS, auth_avtoformula=False
-            )  # 🆕
-        else:
-            pool = ContextPool(browser, pool_size=MAX_WORKERS, auth_avtoformula=True)
+        # 2️⃣ PROXY browser (Firefox + per-context)
+        proxy_browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            proxy={"server": "http://per-context"},
+        )
 
-        # pool = ContextPool(browser, pool_size=MAX_WORKERS)
+        # ContextPool использует normal_browser (БЕЗ proxy ошибок!)
+        pool = ContextPool(
+            normal_browser,  # ← КРИТИЧНО!
+            pool_size=min(MAX_WORKERS, 5),
+            auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
+        )
         await pool.initialize()
 
-        results = []
-        processed_count = 0
-
         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
-
-            for coro in asyncio.as_completed(
-                [process_row_async(pool, browser, *t) for t in tasks]
-            ):
-                # if stop_parsing.is_set():
-                #     break
-                idx, result = await coro
-                if result:
-                    for col, val in result.items():
-                        df.at[idx, col] = val
-                    # logger.info(f"✅ [{idx}] Записаны значения в df: {result}")
-
-                pbar.update(1)
-                results.append((idx, result))
-                processed_count += 1
-
-                # Проверка файла-флага каждые 10 задач или после каждой
-                # if processed_count % 10 == 0 and Path("input/STOP.flag").exists():
-                if Path("input/STOP.flag").exists():
-                    logger.info("🛑 STOP.flag detected → graceful exit!")
-                    break
-
-                # Промежуточное сохранение каждые 100 строк
-                if processed_count % TEMP_RAW == 0:
-                    try:
-                        # df = preprocess_dataframe(df)
-                        await asyncio.to_thread(df.to_excel, TEMP_FILE, index=False)
-                        logger.info(
-                            f"💾 Промежуточное сохранение: {processed_count} строк обработано → {TEMP_FILE}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Ошибка при промежуточном сохранении Excel, но мы продолжаем: {e}"
-                        )
-                        # raise -убрали чтобы не вываливалось все
-
-                # Отправка прогресса в Telegram при достижении контрольных точек
-                if (
-                    processed_count in progress_checkpoints
-                    and processed_count not in sent_progress
-                ):
-                    percent = int(processed_count / total_tasks * 100)
-                    send_telegram_process(
-                        f"Прогресс: {percent}% ({processed_count} из {total_tasks})"
-                    )
-                    sent_progress.add(processed_count)
-
-        # Финальное сохранение
-        try:
-            # df = preprocess_dataframe(df)
-            output_file = get_output_file(mode)  # 🆕 + mode!
-
-            if LOCAL_PRICE:  # Только для цен
-                await asyncio.to_thread(adjust_prices_and_save, df, output_file)
-            elif LOCAL_WEIGHT:
-                pd.set_option("display.max_columns", None)
-                pd.set_option("display.width", 200)
-
-                logger.info(
-                    f"📊 Перед консолидацией:\n"
-                    f"{df[[INPUT_COL_ARTICLE, JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]].head(20)}"
+            # 🆕 Workers получают ОБОИХ браузеров!
+            workers = [
+                asyncio.create_task(
+                    worker(i, queue, pool, normal_browser, proxy_browser, df, pbar)
                 )
-                df = await asyncio.to_thread(consolidate_weights, df)
-                await asyncio.to_thread(df.to_excel, output_file, index=False)
-                logger.info(f"💾 Веса сохранены: {output_file}")
-            elif LOCAL_NAME:
-                await asyncio.to_thread(df.to_excel, output_file, index=False)
-                logger.info(f"💾 Имена сохранены: {output_file}")
+                for i in range(min(MAX_WORKERS, 5))
+            ]
 
-            # await asyncio.to_thread(adjust_prices_and_save, df, output_file)
+            # Ждём завершения ВСЕХ задач
+            await queue.join()
+            logger.info("✅ Очередь задач завершена!")
+
+            # Graceful shutdown воркеров
+            for w in workers:
+                w.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+        # 🔄 Финальная обработка
+        logger.info("🔄 Финальная обработка...")
+        if LOCAL_WEIGHT:
+            df = await asyncio.to_thread(consolidate_weights, df)
+            logger.info("✅ Веса консолидированы!")
+
+        # 💾 Финальное сохранение
+        try:
+            output_file = get_output_file(mode)
+            if LOCAL_PRICE:
+                await asyncio.to_thread(adjust_prices_and_save, df, output_file)
+            else:
+                await asyncio.to_thread(df.to_excel, output_file, index=False)
+
+            logger.info(f"💾 Финальный файл: {output_file}")
+            await send_telegram_file(output_file, f"✅ {mode} завершены!")
+
         except Exception as e:
-            logger.error(f"❌ Ошибка при финальном сохранении Excel: {e}")
-        # await send_telegram_file(output_file) дулировалась отсылка файла
+            logger.error(f"❌ Финальное сохранение: {e}")
+
+        # 🧹 Cleanup ОБОИХ браузеров
         await pool.close_all()
-        await browser.close()
-        logger.info("🎉 Завершено")
+        await normal_browser.close()
+        await proxy_browser.close()
+        logger.info("🎉 Завершено!")
 
 
 def main():
