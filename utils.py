@@ -44,8 +44,6 @@ from twocaptcha import TwoCaptcha
 from PIL import Image
 from playwright.async_api import Page
 
-API_KEY_2CAPTCHA = os.getenv("API_KEY_2CAPTCHA")  # или откуда ты его берёшь
-
 
 # async def solve_captcha_universal(
 #     page: Page,
@@ -278,6 +276,416 @@ class RateLimitException(Exception):
     pass
 
 
+import asyncio
+import base64
+import io
+from datetime import datetime
+from pathlib import Path
+from PIL import Image
+from playwright.async_api import Page
+from twocaptcha import TwoCaptcha
+
+
+async def solve_captcha_universal(
+    page: Page,
+    logger,
+    site_key: str,
+    selectors: dict,
+    max_attempts: int = 3,
+    scale_factor: int = 3,
+    check_changed: bool = True,  # Для обратной совместимости (игнорируется)
+    wait_after_submit_ms: int = 2000,
+) -> bool:
+    """
+    Упрощённое решение капчи через 2Captcha.
+    Убрано: избыточные проверки, дублирование скриншотов, сложная структура папок.
+    """
+
+    # Инициализируем solver внутри функции
+    solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+    captcha_img = page.locator(selectors["captcha_img"])
+
+    if not await captcha_img.is_visible():
+        logger.info(f"[{site_key}] Капча не найдена")
+        return False
+
+    for attempt in range(1, max_attempts + 1):
+        logger.info(f"[{site_key}] Попытка {attempt}/{max_attempts}")
+
+        try:
+            # 1. Получаем скриншот капчи
+            img_bytes = await captcha_img.screenshot()
+            img = Image.open(io.BytesIO(img_bytes))
+
+            # 2. Масштабируем если нужно
+            if scale_factor > 1:
+                new_size = (img.width * scale_factor, img.height * scale_factor)
+                img = img.resize(new_size, Image.BICUBIC)
+                logger.info(f"[{site_key}] Увеличено до {img.size}")
+
+            # 3. Конвертируем в base64
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            # 4. Отправляем в 2Captcha
+            logger.info(f"[{site_key}] Отправка в 2Captcha...")
+            result = await asyncio.wait_for(
+                asyncio.to_thread(solver.normal, captcha_base64), timeout=90.0
+            )
+
+            captcha_text = result.get("code", "").upper().strip()
+
+            if not captcha_text:
+                logger.warning(f"[{site_key}] Пустой ответ от 2Captcha")
+                await asyncio.sleep(3)
+                continue
+
+            logger.info(f"[{site_key}] Распознано: '{captcha_text}'")
+
+            # 5. Сохраняем для отладки (опционально)
+            await _save_debug_screenshot(img, site_key, captcha_text, "sent")
+
+            # 6. Вводим капчу
+            input_el = page.locator(selectors["captcha_input"])
+            await input_el.clear()
+            await input_el.fill(captcha_text)
+            logger.info(f"[{site_key}] Введено: '{captcha_text}'")
+
+            # 7. Отправляем форму
+            submit_button = page.locator(selectors["submit"])
+            if await submit_button.is_visible():
+                await submit_button.click()
+                logger.info(f"[{site_key}] Submit нажат")
+
+            # 8. Ждём и проверяем результат
+            await page.wait_for_timeout(2000)
+
+            if not await captcha_img.is_visible():
+                logger.info(f"[{site_key}] ✅ Успех! Капча исчезла")
+                await _save_debug_screenshot(img, site_key, captcha_text, "success")
+                return True
+            else:
+                logger.warning(f"[{site_key}] ❌ Капча всё ещё видна")
+                await _save_debug_screenshot(img, site_key, captcha_text, "failed")
+                await asyncio.sleep(3)
+
+        except asyncio.TimeoutError:
+            logger.error(f"[{site_key}] Таймаут 2Captcha")
+            await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"[{site_key}] Ошибка: {e}")
+            await asyncio.sleep(5)
+
+    logger.error(f"[{site_key}] Исчерпаны попытки ({max_attempts})")
+    return False
+
+
+async def _save_debug_screenshot(
+    img: Image.Image, site_key: str, captcha_text: str, status: str
+) -> None:
+    """Сохранение скриншота для отладки."""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = Path(f"screenshots/{site_key}/{status}")
+        folder.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{captcha_text}_{timestamp}.png"
+        img.save(folder / filename)
+    except Exception:
+        pass  # Не критично если не сохранилось
+
+
+# async def solve_captcha_universal(
+#     page: Page,
+#     logger,
+#     site_key: str,
+#     selectors: dict,
+#     max_attempts: int = 3,
+#     scale_factor: int = 3,
+#     check_changed: bool = True,
+#     wait_after_submit_ms: int = 2000,
+# ) -> bool:
+#     """
+#     Универсальное решение капчи через 2Captcha.
+#     ✅ Pre-check стабильности + fill_*.png + правильные имена файлов
+#     """
+#     solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+#     captcha_text = None
+#     img = None
+#     original_img_bytes = None
+
+#     try:
+#         captcha_img = page.locator(selectors["captcha_img"])
+
+#         # Если капчи нет — выходим
+#         if not await captcha_img.is_visible():
+#             logger.info(f"[{site_key}] CAPTCHA not visible")
+#             return False
+
+#         for attempt in range(1, max_attempts + 1):
+#             logger.info(
+#                 f"[{site_key}] 📸 Screenshot of the captcha (attempt {attempt}/{max_attempts})"
+#             )
+
+#             # 1) Скриншот
+#             original_img_bytes = await captcha_img.screenshot()
+#             logger.info(
+#                 f"[{site_key}] 📸 Captcha screenshot received, size: {len(original_img_bytes)} bytes"
+#             )
+
+#             if not original_img_bytes or len(original_img_bytes) < 100:
+#                 raise Exception("The image data is empty or too small")
+
+#             # ✅ PRE-CHECK СТАБИЛЬНОСТИ (экономия баланса 2Captcha)
+#             if check_changed:
+#                 logger.info(f"[{site_key}] 🔍 Pre-check: captcha stability...")
+#                 await asyncio.sleep(0.5)
+#                 stable_count = 0
+#                 for stability_check in range(3):
+#                     orig_bytes = await captcha_img.screenshot()
+#                     await asyncio.sleep(0.8)
+#                     new_bytes = await captcha_img.screenshot()
+#                     if orig_bytes == new_bytes:
+#                         stable_count += 1
+#                     else:
+#                         logger.warning(
+#                             f"[{site_key}] ⚠️ Unstable (check {stability_check+1}/3)"
+#                         )
+
+#                 if stable_count < 2:
+#                     logger.warning(f"[{site_key}] ⚠️ Too unstable → next attempt")
+#                     if attempt < max_attempts:
+#                         await asyncio.sleep(3)
+#                     continue
+
+#             # 2) Открываем и масштабируем
+#             img = Image.open(io.BytesIO(original_img_bytes))
+#             logger.info(
+#                 f"[{site_key}] ✅ Image opened: {img.format} {img.size} {img.mode}"
+#             )
+
+#             if scale_factor != 1:
+#                 img = img.resize(
+#                     (img.width * scale_factor, img.height * scale_factor),
+#                     Image.BICUBIC,
+#                 )
+#                 logger.info(
+#                     f"[{site_key}] 🔍 Enlarged to: {img.size}, scale={scale_factor}"
+#                 )
+
+#             # 3) Готовим base64 (НЕ сохраняем пока!)
+#             buf = io.BytesIO()
+#             img.save(buf, format="PNG")
+#             captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+#             # 4) Отправляем в 2Captcha с retry
+#             await asyncio.sleep(2)
+#             logger.info(f"[{site_key}] 🚀 Sending to 2Captcha...")
+#             captcha_text = None
+
+#             for api_attempt in range(3):
+#                 try:
+#                     logger.info(f"[{site_key}] 🔄 2Captcha attempt {api_attempt+1}/3")
+#                     result = await asyncio.wait_for(
+#                         asyncio.to_thread(solver.normal, captcha_base64),
+#                         timeout=90.0,
+#                     )
+
+#                     # Сохраняем ответ
+#                     ts_resp = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                     response_dir = f"screenshots/{site_key}/sent"
+#                     os.makedirs(response_dir, exist_ok=True)
+#                     response_path = f"{response_dir}/response_attempt{attempt}_{api_attempt}_{ts_resp}.json"
+#                     with open(response_path, "w") as f:
+#                         json.dump(result, f, indent=2)
+
+#                     logger.info(f"[{site_key}] 📥 Response: {response_path}")
+#                     logger.info(f"[{site_key}] RAW: {result}")
+
+#                     captcha_text = result.get("code")
+#                     if captcha_text:
+#                         logger.info(f"[{site_key}] ✅ Recognized: '{captcha_text}'")
+#                         break
+#                     else:
+#                         logger.warning(f"[{site_key}] ⚠️ Empty code")
+
+#                 except asyncio.TimeoutError:
+#                     logger.error(f"[{site_key}] ⏰ TIMEOUT {api_attempt+1}/3")
+#                 except Exception as e:
+#                     logger.error(f"[{site_key}] ❌ ERROR {api_attempt+1}/3: {e}")
+
+#                 if api_attempt < 2 and not captcha_text:
+#                     await asyncio.sleep(10 + api_attempt * 10)
+
+#             # Проверка результата 2Captcha
+#             if not captcha_text:
+#                 logger.error(f"[{site_key}] ❌ Failed recognition after 3 API attempts")
+#                 if attempt < max_attempts:
+#                     await asyncio.sleep(5)
+#                 continue
+
+#             # ✅ ВЕРХНИЙ РЕГИСТР + сохранение ПОСЛЕ 2Captcha
+#             captcha_text = captcha_text.upper().strip()
+#             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             sent_dir = f"screenshots/{site_key}/sent"
+#             os.makedirs(sent_dir, exist_ok=True)
+
+#             # Сохраняем с правильным текстом!
+#             sent_path = f"{sent_dir}/{captcha_text}_attempt{attempt}_{ts}.png"
+#             img.save(sent_path)
+#             logger.info(f"[{site_key}] 📤 SENT с текстом: {sent_path}")
+
+#             # ✅ FINAL check_changed ПЕРЕД fill()
+#             if check_changed:
+#                 await asyncio.sleep(0.2)
+#                 try:
+#                     current_img_bytes = await captcha_img.screenshot()
+#                     if current_img_bytes != original_img_bytes:
+#                         logger.warning(
+#                             f"[{site_key}] ⚠️ Changed after solve! Was '{captcha_text}' → RETRY"
+#                         )
+#                         changed_dir = f"screenshots/{site_key}/changed"
+#                         os.makedirs(changed_dir, exist_ok=True)
+#                         Image.open(io.BytesIO(original_img_bytes)).save(
+#                             f"{changed_dir}/was_{captcha_text}_{ts}.png"
+#                         )
+#                         Image.open(io.BytesIO(current_img_bytes)).save(
+#                             f"{changed_dir}/now_{ts}.png"
+#                         )
+#                         continue
+#                 except Exception as e:
+#                     logger.warning(f"[{site_key}] Check failed: {e}")
+
+#             # 5) ВВОД капчи
+#             try:
+#                 input_el = page.locator(selectors["captcha_input"])
+#                 await input_el.clear()
+#                 await input_el.fill(captcha_text)
+#                 logger.info(f"[{site_key}] ✅ Entered: '{captcha_text}'")
+
+#                 # ✅ СКРИНШОТ ПОСЛЕ FILL! (диагностика)
+#                 fill_bytes = await captcha_img.screenshot()
+#                 fill_dir = f"screenshots/{site_key}/fill"
+#                 os.makedirs(fill_dir, exist_ok=True)
+#                 fill_path = f"{fill_dir}/{captcha_text}_after_fill_{ts}.png"
+#                 Image.open(io.BytesIO(fill_bytes)).save(fill_path)
+#                 logger.info(f"[{site_key}] 📸 After fill: {fill_path}")
+
+#             except Exception as e:
+#                 logger.error(f"[{site_key}] ❌ Fill error: {e}")
+#                 continue
+
+#             # 6) Submit (ЕДИНСТВЕННЫЙ!)
+#             try:
+#                 submit_button = page.locator(selectors["submit"])
+#                 if await submit_button.is_visible():
+#                     await submit_button.click()
+#                     logger.info(f"[{site_key}] ✅ Submit clicked")
+#                 else:
+#                     logger.warning(f"[{site_key}] ⚠️ Submit not visible")
+#             except Exception as e:
+#                 logger.error(f"[{site_key}] ❌ Submit error: {e}")
+#                 continue
+
+#             # 7) Ждём + проверка
+#             logger.info(f"[{site_key}] ⏳ Waiting {wait_after_submit_ms}ms...")
+#             await page.wait_for_timeout(wait_after_submit_ms)
+
+#             success = False
+#             try:
+#                 # ✅ Быстрая проверка видимости
+#                 if not await captcha_img.is_visible():
+#                     logger.info(f"[{site_key}] ✅ SUCCESS! Captcha gone!")
+
+#                     # Success скриншот
+#                     success_dir = f"screenshots/{site_key}/success"
+#                     os.makedirs(success_dir, exist_ok=True)
+#                     success_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                     success_path = (
+#                         f"{success_dir}/success_{captcha_text}_{success_ts}.png"
+#                     )
+#                     img.save(success_path)
+#                     logger.info(f"[{site_key}] 🎉 Success saved: {success_path}")
+#                     success = True  # ← ФЛАГ!
+
+#                 else:
+#                     logger.warning(f"[{site_key}] ⚠️ Still visible → FAILED")
+
+#             except Exception as e:
+#                 logger.warning(f"[{site_key}] Visibility check: {e}")
+
+#             # ❌ FAILED БЛОК ТОЛЬКО если НЕ success!
+#             if not success:
+#                 ts_failed = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                 failed_dir = f"screenshots/{site_key}/failed"
+#                 os.makedirs(failed_dir, exist_ok=True)
+
+#                 try:
+#                     # 1️⃣ ТЕКУЩАЯ капча (гарантированно этой итерации!)
+#                     failed_captcha_bytes = await captcha_img.screenshot()
+#                     failed_captcha_path = f"{failed_dir}/captcha_{captcha_text}_attempt{attempt}_{ts_failed}.png"
+#                     Image.open(io.BytesIO(failed_captcha_bytes)).save(
+#                         failed_captcha_path
+#                     )
+#                     logger.info(
+#                         f"[{site_key}] 🎯 FAILED CAPTCHA: {failed_captcha_path}"
+#                     )
+
+#                     # 2️⃣ Полная страница
+#                     await page.screenshot(
+#                         path=f"{failed_dir}/page_failed_{captcha_text}_attempt{attempt}_{ts_failed}.png"
+#                     )
+
+#                     # 3️⃣ Processed (оригинал)
+#                     processed_dir = f"screenshots/{site_key}/processed"
+#                     os.makedirs(processed_dir, exist_ok=True)
+#                     img.save(
+#                         f"{processed_dir}/processed_{captcha_text}_attempt{attempt}_{ts_failed}.png"
+#                     )
+
+#                 except Exception as e:
+#                     logger.error(f"[{site_key}] Failed save error: {e}")
+
+#             # ✅ Если success — выходим, иначе continue
+#             if success:
+#                 return True
+
+#             # Задержка перед следующей попыткой
+#             if attempt < max_attempts:
+#                 delay = 3 + attempt * 2
+#                 logger.info(f"[{site_key}] ⏳ Wait {delay}s → next")
+#                 await page.wait_for_timeout(delay * 1000)
+
+#         logger.error(f"[{site_key}] ❌ Max attempts exceeded ({max_attempts})")
+#         return False
+
+#     except Exception as e:
+#         logger.error(f"[{site_key}] ❌ Critical error: {e}", exc_info=True)
+#         ts_error = datetime.now().strftime("%Y%m%d_%H%M%S")
+#         label = captcha_text if captcha_text else "unknown"
+
+#         error_dir = f"screenshots/{site_key}/errors"
+#         os.makedirs(error_dir, exist_ok=True)
+#         try:
+#             await page.screenshot(path=f"{error_dir}/error_page_{label}_{ts_error}.png")
+#         except Exception as se:
+#             logger.error(f"[{site_key}] Screenshot save error: {se}")
+
+#         if img is not None:
+#             try:
+#                 os.makedirs(f"screenshots/{site_key}/processed", exist_ok=True)
+#                 img.save(
+#                     f"screenshots/{site_key}/processed/error_processed_{label}_{ts_error}.png"
+#                 )
+#             except Exception as se:
+#                 logger.error(f"[{site_key}] Processed save error: {se}")
+
+#         return False
+
+
 # def get_2captcha_proxy() -> dict[str, str]:
 #     """
 #     Запрашивает у 2Captcha whitelist прокси + возвращает словарь для Playwright
@@ -391,292 +799,292 @@ def get_2captcha_proxy() -> dict[str, str]:
     }
 
 
-async def solve_captcha_universal(
-    page: Page,
-    logger,
-    site_key: str,
-    selectors: dict,
-    max_attempts: int = 3,
-    scale_factor: int = 3,
-    check_changed: bool = True,
-    wait_after_submit_ms: int = 5000,
-) -> bool:
-    """
-    Универсальное решение капчи через 2Captcha.
-    """
-    solver = TwoCaptcha(API_KEY_2CAPTCHA)
+# async def solve_captcha_universal(
+#     page: Page,
+#     logger,
+#     site_key: str,
+#     selectors: dict,
+#     max_attempts: int = 3,
+#     scale_factor: int = 3,
+#     check_changed: bool = True,
+#     wait_after_submit_ms: int = 5000,
+# ) -> bool:
+#     """
+#     Универсальное решение капчи через 2Captcha.
+#     """
+#     solver = TwoCaptcha(API_KEY_2CAPTCHA)
 
-    captcha_text = None
-    img = None
-    original_img_bytes = None
+#     captcha_text = None
+#     img = None
+#     original_img_bytes = None
 
-    try:
-        captcha_img = page.locator(selectors["captcha_img"])
+#     try:
+#         captcha_img = page.locator(selectors["captcha_img"])
 
-        # Если капчи нет — выходим
-        if not await captcha_img.is_visible():
-            logger.info(f"[{site_key}] CAPTCHA not visible")
-            return False
+#         # Если капчи нет — выходим
+#         if not await captcha_img.is_visible():
+#             logger.info(f"[{site_key}] CAPTCHA not visible")
+#             return False
 
-        for attempt in range(1, max_attempts + 1):
-            logger.info(
-                f"[{site_key}] 📸 Screenshot of the captcha (attempt {attempt}/{max_attempts})"
-            )
+#         for attempt in range(1, max_attempts + 1):
+#             logger.info(
+#                 f"[{site_key}] 📸 Screenshot of the captcha (attempt {attempt}/{max_attempts})"
+#             )
 
-            # 1) Скриншот
-            original_img_bytes = await captcha_img.screenshot()
-            logger.info(
-                f"[{site_key}] 📸 Captcha screenshot received, size: {len(original_img_bytes)} bytes"
-            )
+#             # 1) Скриншот
+#             original_img_bytes = await captcha_img.screenshot()
+#             logger.info(
+#                 f"[{site_key}] 📸 Captcha screenshot received, size: {len(original_img_bytes)} bytes"
+#             )
 
-            if not original_img_bytes or len(original_img_bytes) < 100:
-                raise Exception("The image data is empty or too small")
+#             if not original_img_bytes or len(original_img_bytes) < 100:
+#                 raise Exception("The image data is empty or too small")
 
-            # 2) Открываем и масштабируем
-            img = Image.open(io.BytesIO(original_img_bytes))
-            logger.info(
-                f"[{site_key}] ✅ The image is open: {img.format} {img.size} {img.mode}"
-            )
+#             # 2) Открываем и масштабируем
+#             img = Image.open(io.BytesIO(original_img_bytes))
+#             logger.info(
+#                 f"[{site_key}] ✅ The image is open: {img.format} {img.size} {img.mode}"
+#             )
 
-            if scale_factor != 1:
-                img = img.resize(
-                    (img.width * scale_factor, img.height * scale_factor),
-                    Image.BICUBIC,
-                )
-                logger.info(
-                    f"[{site_key}] 🔍 The image is enlarged to: {img.size}, scale={scale_factor}"
-                )
+#             if scale_factor != 1:
+#                 img = img.resize(
+#                     (img.width * scale_factor, img.height * scale_factor),
+#                     Image.BICUBIC,
+#                 )
+#                 logger.info(
+#                     f"[{site_key}] 🔍 The image is enlarged to: {img.size}, scale={scale_factor}"
+#                 )
 
-            # 3) Готовим base64
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+#             # 3) Готовим base64
+#             buf = io.BytesIO()
+#             img.save(buf, format="PNG")
+#             captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-            # Сохраняем отправленную капчу
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sent_dir = f"screenshots/{site_key}/sent"
-            os.makedirs(sent_dir, exist_ok=True)
-            sent_path = f"{sent_dir}/sent_attempt{attempt}_{ts}.png"
-            img.save(sent_path)
-            logger.info(f"[{site_key}] 📤 SENT PNG: {sent_path}")
+#             # Сохраняем отправленную капчу
+#             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             sent_dir = f"screenshots/{site_key}/sent"
+#             os.makedirs(sent_dir, exist_ok=True)
+#             sent_path = f"{sent_dir}/sent_attempt{attempt}_{ts}.png"
+#             img.save(sent_path)
+#             logger.info(f"[{site_key}] 📤 SENT PNG: {sent_path}")
 
-            # 4) Отправляем в 2Captcha с retry
-            await asyncio.sleep(3)
-            logger.info(f"[{site_key}] Sending a captcha to 2Captcha")
+#             # 4) Отправляем в 2Captcha с retry
+#             await asyncio.sleep(3)
+#             logger.info(f"[{site_key}] Sending a captcha to 2Captcha")
 
-            captcha_text = None
+#             captcha_text = None
 
-            # ✅ ИСПРАВЛЕНО: Правильная логика retry для 2Captcha
-            for api_attempt in range(3):
-                try:
-                    logger.info(f"[{site_key}] 🔄 2Captcha attempt {api_attempt+1}/3")
+#             # ✅ ИСПРАВЛЕНО: Правильная логика retry для 2Captcha
+#             for api_attempt in range(3):
+#                 try:
+#                     logger.info(f"[{site_key}] 🔄 2Captcha attempt {api_attempt+1}/3")
 
-                    # ✅ Увеличен таймаут до 150 секунд
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(solver.normal, captcha_base64),
-                        timeout=90.0,  # ✅ Было 220, стало 150
-                    )
+#                     # ✅ Увеличен таймаут до 150 секунд
+#                     result = await asyncio.wait_for(
+#                         asyncio.to_thread(solver.normal, captcha_base64),
+#                         timeout=90.0,  # ✅ Было 220, стало 150
+#                     )
 
-                    # Сохраняем ответ
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    response_path = f"screenshots/{site_key}/sent/response_attempt{attempt}_{api_attempt}_{ts}.json"
-                    with open(response_path, "w") as f:
-                        json.dump(result, f, indent=2)
+#                     # Сохраняем ответ
+#                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                     response_path = f"screenshots/{site_key}/sent/response_attempt{attempt}_{api_attempt}_{ts}.json"
+#                     with open(response_path, "w") as f:
+#                         json.dump(result, f, indent=2)
 
-                    logger.info(f"[{site_key}] 📥 Response saved")
-                    logger.info(f"[{site_key}] 2Captcha RAW RESPONSE: {result}")
+#                     logger.info(f"[{site_key}] 📥 Response saved")
+#                     logger.info(f"[{site_key}] 2Captcha RAW RESPONSE: {result}")
 
-                    captcha_text = result.get("code")
-                    if captcha_text:
-                        logger.info(
-                            f"[{site_key}] ✅ Captcha recognized: {captcha_text}"
-                        )
-                        break  # ✅ Успех - выходим из цикла retry
-                    else:
-                        logger.warning(f"[{site_key}] ⚠️ Empty code in response")
+#                     captcha_text = result.get("code")
+#                     if captcha_text:
+#                         logger.info(
+#                             f"[{site_key}] ✅ Captcha recognized: {captcha_text}"
+#                         )
+#                         break  # ✅ Успех - выходим из цикла retry
+#                     else:
+#                         logger.warning(f"[{site_key}] ⚠️ Empty code in response")
 
-                except asyncio.TimeoutError:
-                    logger.error(
-                        f"[{site_key}] ⏰ 2Captcha TIMEOUT (attempt {api_attempt+1}/3)"
-                    )
-                    # 🔥 ДИАГНОСТИКА
-                    try:
-                        # 1. Быстрая проверка баланса (1–2 сек)
-                        balance = await asyncio.wait_for(
-                            asyncio.to_thread(solver.balance), timeout=5.0
-                        )
-                        logger.warning(f"[{site_key}] 💰 Balance OK: ${balance}")
-                    except:
-                        logger.error(f"[{site_key}] ❌ Balance check FAILED!")
+#                 except asyncio.TimeoutError:
+#                     logger.error(
+#                         f"[{site_key}] ⏰ 2Captcha TIMEOUT (attempt {api_attempt+1}/3)"
+#                     )
+#                     # 🔥 ДИАГНОСТИКА
+#                     try:
+#                         # 1. Быстрая проверка баланса (1–2 сек)
+#                         balance = await asyncio.wait_for(
+#                             asyncio.to_thread(solver.balance), timeout=5.0
+#                         )
+#                         logger.warning(f"[{site_key}] 💰 Balance OK: ${balance}")
+#                     except:
+#                         logger.error(f"[{site_key}] ❌ Balance check FAILED!")
 
-                    try:
-                        # 2. Status API (0.5 сек)
-                        status = await asyncio.wait_for(
-                            asyncio.to_thread(solver.getbalance), timeout=3.0
-                        )
-                        logger.warning(f"[{site_key}] 📊 2Captcha status: {status}")
-                    except:
-                        logger.error(f"[{site_key}] ❌ Status check FAILED!")
+#                     try:
+#                         # 2. Status API (0.5 сек)
+#                         status = await asyncio.wait_for(
+#                             asyncio.to_thread(solver.getbalance), timeout=3.0
+#                         )
+#                         logger.warning(f"[{site_key}] 📊 2Captcha status: {status}")
+#                     except:
+#                         logger.error(f"[{site_key}] ❌ Status check FAILED!")
 
-                except Exception as e:
-                    logger.error(
-                        f"[{site_key}] ❌ 2Captcha ERROR (attempt {api_attempt+1}/3): {e}"
-                    )
+#                 except Exception as e:
+#                     logger.error(
+#                         f"[{site_key}] ❌ 2Captcha ERROR (attempt {api_attempt+1}/3): {e}"
+#                     )
 
-                # ✅ BACKOFF между попытками (но НЕ после успеха!)
-                if api_attempt < 2 and not captcha_text:
-                    backoff_delay = 5 + api_attempt * 10  # 10s, 20s
-                    logger.info(
-                        f"[{site_key}] ⏳ Waiting {backoff_delay}s before retry..."
-                    )
-                    await asyncio.sleep(backoff_delay)
+#                 # ✅ BACKOFF между попытками (но НЕ после успеха!)
+#                 if api_attempt < 2 and not captcha_text:
+#                     backoff_delay = 5 + api_attempt * 10  # 10s, 20s
+#                     logger.info(
+#                         f"[{site_key}] ⏳ Waiting {backoff_delay}s before retry..."
+#                     )
+#                     await asyncio.sleep(backoff_delay)
 
-            # ✅ После всех попыток проверяем результат
-            if not captcha_text:
-                logger.error(
-                    f"[{site_key}] ❌ Failed to recognize captcha after 3 API attempts"
-                )
-                # Пробуем следующую попытку (attempt)
-                if attempt < max_attempts:
-                    logger.info(f"[{site_key}] 🔄 Trying with new captcha image...")
-                    await asyncio.sleep(5)
-                    continue
-                else:
-                    return False
+#             # ✅ После всех попыток проверяем результат
+#             if not captcha_text:
+#                 logger.error(
+#                     f"[{site_key}] ❌ Failed to recognize captcha after 3 API attempts"
+#                 )
+#                 # Пробуем следующую попытку (attempt)
+#                 if attempt < max_attempts:
+#                     logger.info(f"[{site_key}] 🔄 Trying with new captcha image...")
+#                     await asyncio.sleep(5)
+#                     continue
+#                 else:
+#                     return False
 
-            # ✅ ВЕРХНИЙ РЕГИСТР
-            captcha_text = captcha_text.upper().strip()
-            logger.info(f"[{site_key}] ✅ Captcha in upper register: '{captcha_text}'")
+#             # ✅ ВЕРХНИЙ РЕГИСТР
+#             captcha_text = captcha_text.upper().strip()
+#             logger.info(f"[{site_key}] ✅ Captcha in upper register: '{captcha_text}'")
 
-            # 5) (опционально) проверяем, не изменилась ли капча
-            if check_changed:
-                await asyncio.sleep(1)  # Даём время на обновление
-                try:
-                    current_img_bytes = await captcha_img.screenshot()
-                    if current_img_bytes != original_img_bytes:
-                        logger.warning(
-                            f"[{site_key}] ⚠️ Captcha changed during recognition, retrying..."
-                        )
-                        os.makedirs(f"screenshots/{site_key}/changed", exist_ok=True)
-                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        Image.open(io.BytesIO(original_img_bytes)).save(
-                            f"screenshots/{site_key}/changed/original_{ts}.png"
-                        )
-                        Image.open(io.BytesIO(current_img_bytes)).save(
-                            f"screenshots/{site_key}/changed/changed_{ts}.png"
-                        )
-                        continue  # следующая попытка
-                except Exception as e:
-                    logger.warning(
-                        f"[{site_key}] Could not check if captcha changed: {e}"
-                    )
+#             # 5) (опционально) проверяем, не изменилась ли капча
+#             if check_changed:
+#                 await asyncio.sleep(1)  # Даём время на обновление
+#                 try:
+#                     current_img_bytes = await captcha_img.screenshot()
+#                     if current_img_bytes != original_img_bytes:
+#                         logger.warning(
+#                             f"[{site_key}] ⚠️ Captcha changed during recognition, retrying..."
+#                         )
+#                         os.makedirs(f"screenshots/{site_key}/changed", exist_ok=True)
+#                         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                         Image.open(io.BytesIO(original_img_bytes)).save(
+#                             f"screenshots/{site_key}/changed/original_{ts}.png"
+#                         )
+#                         Image.open(io.BytesIO(current_img_bytes)).save(
+#                             f"screenshots/{site_key}/changed/changed_{ts}.png"
+#                         )
+#                         continue  # следующая попытка
+#                 except Exception as e:
+#                     logger.warning(
+#                         f"[{site_key}] Could not check if captcha changed: {e}"
+#                     )
 
-            # 6) Вводим капчу
-            try:
-                input_el = page.locator(selectors["captcha_input"])
-                await input_el.clear()  # ✅ Очищаем перед вводом
-                await input_el.fill(captcha_text)
-                logger.info(f"[{site_key}] ✅ Captcha entered: '{captcha_text}'")
-            except Exception as e:
-                logger.error(f"[{site_key}] ❌ Failed to enter captcha: {e}")
-                continue
+#             # 6) Вводим капчу
+#             try:
+#                 input_el = page.locator(selectors["captcha_input"])
+#                 await input_el.clear()  # ✅ Очищаем перед вводом
+#                 await input_el.fill(captcha_text)
+#                 logger.info(f"[{site_key}] ✅ Captcha entered: '{captcha_text}'")
+#             except Exception as e:
+#                 logger.error(f"[{site_key}] ❌ Failed to enter captcha: {e}")
+#                 continue
 
-            # 7) Нажимаем submit
-            try:
-                submit_sel = selectors["submit"]
-                submit_button = page.locator(submit_sel)
+#             # 7) Нажимаем submit
+#             try:
+#                 submit_sel = selectors["submit"]
+#                 submit_button = page.locator(submit_sel)
 
-                # ✅ Проверяем что кнопка видима
-                if not await submit_button.is_visible():
-                    logger.warning(
-                        f"[{site_key}] ⚠️ Submit button not visible: {submit_sel}"
-                    )
+#                 # ✅ Проверяем что кнопка видима
+#                 if not await submit_button.is_visible():
+#                     logger.warning(
+#                         f"[{site_key}] ⚠️ Submit button not visible: {submit_sel}"
+#                     )
 
-                await submit_button.click()
-                logger.info(f"[{site_key}] ✅ Button pressed ({submit_sel})")
-            except Exception as e:
-                logger.error(f"[{site_key}] ❌ Failed to click submit: {e}")
-                continue
+#                 await submit_button.click()
+#                 logger.info(f"[{site_key}] ✅ Button pressed ({submit_sel})")
+#             except Exception as e:
+#                 logger.error(f"[{site_key}] ❌ Failed to click submit: {e}")
+#                 continue
 
-            # 8) Ждём обновления страницы
-            logger.info(
-                f"[{site_key}] ⏳ Waiting {wait_after_submit_ms}ms after submit..."
-            )
-            await page.wait_for_timeout(wait_after_submit_ms)
+#             # 8) Ждём обновления страницы
+#             logger.info(
+#                 f"[{site_key}] ⏳ Waiting {wait_after_submit_ms}ms after submit..."
+#             )
+#             await page.wait_for_timeout(wait_after_submit_ms)
 
-            # 9) Проверяем, исчезла ли капча
-            try:
-                is_still_visible = await captcha_img.is_visible()
+#             # 9) Проверяем, исчезла ли капча
+#             try:
+#                 is_still_visible = await captcha_img.is_visible()
 
-                if not is_still_visible:
-                    logger.info(f"[{site_key}] ✅ Captcha successfully resolved!")
+#                 if not is_still_visible:
+#                     logger.info(f"[{site_key}] ✅ Captcha successfully resolved!")
 
-                    os.makedirs(f"screenshots/{site_key}/success", exist_ok=True)
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    success_path = f"screenshots/{site_key}/success/success_{captcha_text}_{ts}.png"
-                    img.save(success_path)
-                    logger.info(
-                        f"[{site_key}] 🎉 Success captcha saved: {success_path}"
-                    )
-                    return True
-                else:
-                    logger.warning(
-                        f"[{site_key}] ⚠️ Captcha still visible after attempt {attempt}/{max_attempts}"
-                    )
-            except Exception as e:
-                logger.warning(f"[{site_key}] Could not check captcha visibility: {e}")
+#                     os.makedirs(f"screenshots/{site_key}/success", exist_ok=True)
+#                     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#                     success_path = f"screenshots/{site_key}/success/success_{captcha_text}_{ts}.png"
+#                     img.save(success_path)
+#                     logger.info(
+#                         f"[{site_key}] 🎉 Success captcha saved: {success_path}"
+#                     )
+#                     return True
+#                 else:
+#                     logger.warning(
+#                         f"[{site_key}] ⚠️ Captcha still visible after attempt {attempt}/{max_attempts}"
+#                     )
+#             except Exception as e:
+#                 logger.warning(f"[{site_key}] Could not check captcha visibility: {e}")
 
-            # Капча не ушла — делаем лог и идём на следующую попытку
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            os.makedirs(f"screenshots/{site_key}/failed", exist_ok=True)
+#             # Капча не ушла — делаем лог и идём на следующую попытку
+#             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#             os.makedirs(f"screenshots/{site_key}/failed", exist_ok=True)
 
-            try:
-                await page.screenshot(
-                    path=f"screenshots/{site_key}/failed/page_failed_{captcha_text}_{ts}.png"
-                )
-            except:
-                pass
+#             try:
+#                 await page.screenshot(
+#                     path=f"screenshots/{site_key}/failed/page_failed_{captcha_text}_{ts}.png"
+#                 )
+#             except:
+#                 pass
 
-            try:
-                os.makedirs(f"screenshots/{site_key}/processed", exist_ok=True)
-                img.save(
-                    f"screenshots/{site_key}/processed/processed_{captcha_text}_{ts}.png"
-                )
-            except:
-                pass
+#             try:
+#                 os.makedirs(f"screenshots/{site_key}/processed", exist_ok=True)
+#                 img.save(
+#                     f"screenshots/{site_key}/processed/processed_{captcha_text}_{ts}.png"
+#                 )
+#             except:
+#                 pass
 
-            # ✅ Задержка перед следующей попыткой
-            if attempt < max_attempts:
-                delay = 3 + attempt * 2  # 5s, 7s, 9s
-                logger.info(f"[{site_key}] ⏳ Waiting {delay}s before next attempt...")
-                await page.wait_for_timeout(delay * 1000)
+#             # ✅ Задержка перед следующей попыткой
+#             if attempt < max_attempts:
+#                 delay = 3 + attempt * 2  # 5s, 7s, 9s
+#                 logger.info(f"[{site_key}] ⏳ Waiting {delay}s before next attempt...")
+#                 await page.wait_for_timeout(delay * 1000)
 
-        logger.error(f"[{site_key}] ❌ Maximum attempts exceeded ({max_attempts})")
-        return False
+#         logger.error(f"[{site_key}] ❌ Maximum attempts exceeded ({max_attempts})")
+#         return False
 
-    except Exception as e:
-        logger.error(f"[{site_key}] ❌ Captcha solution error: {e}", exc_info=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        label = captcha_text if captcha_text else "unknown"
+#     except Exception as e:
+#         logger.error(f"[{site_key}] ❌ Captcha solution error: {e}", exc_info=True)
+#         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+#         label = captcha_text if captcha_text else "unknown"
 
-        try:
-            os.makedirs(f"screenshots/{site_key}/errors", exist_ok=True)
-            await page.screenshot(
-                path=f"screenshots/{site_key}/errors/error_page_{label}_{ts}.png"
-            )
-        except Exception as se:
-            logger.error(f"[{site_key}] Couldn't save screenshot: {se}")
+#         try:
+#             os.makedirs(f"screenshots/{site_key}/errors", exist_ok=True)
+#             await page.screenshot(
+#                 path=f"screenshots/{site_key}/errors/error_page_{label}_{ts}.png"
+#             )
+#         except Exception as se:
+#             logger.error(f"[{site_key}] Couldn't save screenshot: {se}")
 
-        try:
-            if img is not None:
-                os.makedirs(f"screenshots/{site_key}/processed", exist_ok=True)
-                img.save(
-                    f"screenshots/{site_key}/processed/error_processed_{label}_{ts}.png"
-                )
-        except Exception as se:
-            logger.error(f"[{site_key}] Couldn't save processed captcha: {se}")
+#         try:
+#             if img is not None:
+#                 os.makedirs(f"screenshots/{site_key}/processed", exist_ok=True)
+#                 img.save(
+#                     f"screenshots/{site_key}/processed/error_processed_{label}_{ts}.png"
+#                 )
+#         except Exception as se:
+#             logger.error(f"[{site_key}] Couldn't save processed captcha: {se}")
 
-        return False
+#         return False
 
 
 # def get_site_logger(site_name: str) -> logging.Logger:

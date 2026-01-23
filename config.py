@@ -1,5 +1,6 @@
 # config.py
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 import logging
 
@@ -26,7 +27,8 @@ SEND_TO_TELEGRAM = True
 
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
-TEMP_FILE = "output/наличие_temp.xlsx"
+TEMP_FILES_DIR = Path("output/temp_files")
+TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)  # Авто-создание при импорте!
 COOKIE_FILE = "output/avtoformula_cookies.json"
 STATE_FILE = "output/state.json"
 CACHE_FILE = "output/cache.json"
@@ -93,7 +95,7 @@ ARMTEK_V_W = "armtek_volumetric_weight"
 corrected_price = "corrected_price"
 
 
-TEMP_RAW = 100
+TEMP_RAW = 10
 
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = "1"  # ← или как у тебя в файле

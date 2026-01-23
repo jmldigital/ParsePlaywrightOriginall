@@ -150,10 +150,7 @@ async def scrape_stparts_async(
                     price = parse_price(price_text)
                     if price is not None:
                         logger.info(
-                            "✅ Найдено (бренд: %s, срок %s): %s ₽",
-                            brand_in_row,
-                            delivery_min,
-                            price,
+                            "✅ %s (срок: %s): %s ₽", brand_in_row, delivery_min, price
                         )
 
                         return price, delivery_min
