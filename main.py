@@ -58,6 +58,7 @@ from config import (
     JPARTS_P_W,
     JPARTS_V_W,
     TASK_TIMEOUT,
+    PROXY_TIMOUT,
 )
 from utils import (
     logger,
@@ -102,13 +103,16 @@ stop_parsing.clear()
 
 sites = ["avtoformula", "stparts", "japarts", "armtek"]
 
-stop_files = ["STOP", "STOP.FLAG", "AIL_STOP"]
-for f in stop_files:
-    if os.path.exists(f):
-        os.remove(f)
-        logger.info("🧹 Удален %s", f)
+INPUT_DIR = Path("input")
 
-logger.info("🚀 Старт без STOP флагов!")
+stop_files = ["STOP", "STOP.flag", "AIL_STOP"]
+for name in stop_files:
+    path = INPUT_DIR / name
+    if path.exists():
+        path.unlink()
+        logger.info("🧹 Удален %s", path)
+
+logger.info("🚀 Старт без STOP флагов в input/")
 
 
 def setup_event_loop_policy():
@@ -308,100 +312,100 @@ async def process_single_item(page, idx: int, brand: str, part: str):
 
     # Инициализация результатов
     result = {}
-
-    if WEIGHT:
-        # ✅ ОТКЛЮЧЕНО JAPARTS ДЛЯ ТЕСТА!
-        jp_physical, jp_volumetric = None, None  # ← Принудительно None!
-
-        logger.info(f"🚀 [{idx}] ТЕСТ: ТОЛЬКО ARMTEK: {part}")
-
-        # ПРЯМО к Armtek!
-        # 🔥 ПРЯМО ЗДЕСЬ — добавьте/измените:
-        try:
-            armtek_physical, armtek_volumetric = await asyncio.wait_for(
-                scrape_weight_armtek(page, part, logger_armtek),
-                timeout=90.0,  # ← Было 15.0 → 90.0!
-            )
-            logger.info(
-                f"🔍 [{idx}] Armtek result внутри process_raw: {armtek_physical=}, {armtek_volumetric=}"
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"⚠️ [{idx}] ARMTEK TIMEOUT!")
-            armtek_physical, armtek_volumetric = None, None
-
-        # 🧪 ДИАГНОСТИКА:
-        logger.info(
-            f"🧪 [{idx}] FINAL CHECK: physical='{armtek_physical}', vol='{armtek_volumetric}'"
-        )
-
-        # 🆕 ИСПРАВЛЕНИЕ RateLimit!
-        # if armtek_physical == "NeedProxy" or armtek_volumetric == "NeedProxy":
-        if random.random() < 0.3:
-            logger.warning(
-                f"🚦 [{idx}] RateLimit → NeedProxy! внутри Process_single_item ловит"
-            )
-            return "NeedProxy"  # ← Worker поймает!
-
-        result.update(
-            {
-                JPARTS_P_W: None,  # ← Japarts отключён
-                JPARTS_V_W: None,  # ← Japarts отключён
-                ARMTEK_P_W: armtek_physical,
-                ARMTEK_V_W: armtek_volumetric,
-            }
-        )
-
-    # # ======================= WEIGHT =======================
+    # Дя теста----------------------
     # if WEIGHT:
-    #     jp_physical, jp_volumetric = None, None
-    #     armtek_physical, armtek_volumetric = None, None
+    #     # ✅ ОТКЛЮЧЕНО JAPARTS ДЛЯ ТЕСТА!
+    #     jp_physical, jp_volumetric = None, None  # ← Принудительно None!
 
+    #     logger.info(f"🚀 [{idx}] ТЕСТ: ТОЛЬКО ARMTEK: {part}")
+
+    #     # ПРЯМО к Armtek!
+    #     # 🔥 ПРЯМО ЗДЕСЬ — добавьте/измените:
     #     try:
-    #         # Japarts
-    #         logger.info(f"🔍 [{idx}] Japarts: {part}")
-    #         jp_physical, jp_volumetric = await scrape_weight_japarts(
-    #             page, part, logger_jp
+    #         armtek_physical, armtek_volumetric = await asyncio.wait_for(
+    #             scrape_weight_armtek(page, part, logger_armtek),
+    #             timeout=90.0,  # ← Было 15.0 → 90.0!
     #         )
-
-    #         # Armtek — ТОЛЬКО при Japarts fail
-    #         if not jp_physical or not jp_volumetric:
-    #             logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
-
-    #             armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-    #                 page, part, logger_armtek
-    #             )
-
-    #             # 🚨 RateLimit детектор!
-    #             if armtek_physical == "NeedProxy":
-    #                 logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
-    #                 return "NeedProxy"  # ← ПРОКИДЫВАЕМ НАВЕРХ!
-
-    #             # Сохраняем Armtek результат
-    #             result.update(
-    #                 {
-    #                     JPARTS_P_W: jp_physical,
-    #                     JPARTS_V_W: jp_volumetric,
-    #                     ARMTEK_P_W: armtek_physical,
-    #                     ARMTEK_V_W: armtek_volumetric,
-    #                 }
-    #             )
-
-    #         else:
-    #             # Только Japarts
-    #             result.update(
-    #                 {
-    #                     JPARTS_P_W: jp_physical,
-    #                     JPARTS_V_W: jp_volumetric,
-    #                     ARMTEK_P_W: None,
-    #                     ARMTEK_V_W: None,
-    #                 }
-    #             )
-
-    #     except Exception as e:
-    #         logger.error(f"❌ [{idx}] Weight parse error: {e}")
-    #         result.update(
-    #             {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
+    #         logger.info(
+    #             f"🔍 [{idx}] Armtek result внутри process_raw: {armtek_physical=}, {armtek_volumetric=}"
     #         )
+    #     except asyncio.TimeoutError:
+    #         logger.error(f"⚠️ [{idx}] ARMTEK TIMEOUT!")
+    #         armtek_physical, armtek_volumetric = None, None
+
+    #     # 🧪 ДИАГНОСТИКА:
+    #     logger.info(
+    #         f"🧪 [{idx}] FINAL CHECK: physical='{armtek_physical}', vol='{armtek_volumetric}'"
+    #     )
+
+    #     # 🆕 ИСПРАВЛЕНИЕ RateLimit!
+    #     # if armtek_physical == "NeedProxy" or armtek_volumetric == "NeedProxy":
+    #     if random.random() < 0.3:
+    #         logger.warning(
+    #             f"🚦 [{idx}] RateLimit → NeedProxy! внутри Process_single_item ловит"
+    #         )
+    #         return "NeedProxy"  # ← Worker поймает!
+
+    #     result.update(
+    #         {
+    #             JPARTS_P_W: None,  # ← Japarts отключён
+    #             JPARTS_V_W: None,  # ← Japarts отключён
+    #             ARMTEK_P_W: armtek_physical,
+    #             ARMTEK_V_W: armtek_volumetric,
+    #         }
+    #     )
+
+    # ======================= WEIGHT =======================
+    if WEIGHT:
+        jp_physical, jp_volumetric = None, None
+        armtek_physical, armtek_volumetric = None, None
+
+        try:
+            # Japarts
+            logger.info(f"🔍 [{idx}] Japarts: {part}")
+            jp_physical, jp_volumetric = await scrape_weight_japarts(
+                page, part, logger_jp
+            )
+
+            # Armtek — ТОЛЬКО при Japarts fail
+            if not jp_physical or not jp_volumetric:
+                logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+
+                armtek_physical, armtek_volumetric = await scrape_weight_armtek(
+                    page, part, logger_armtek
+                )
+
+                # 🚨 RateLimit детектор!
+                if armtek_physical == "NeedProxy":
+                    logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
+                    return "NeedProxy"  # ← ПРОКИДЫВАЕМ НАВЕРХ!
+
+                # Сохраняем Armtek результат
+                result.update(
+                    {
+                        JPARTS_P_W: jp_physical,
+                        JPARTS_V_W: jp_volumetric,
+                        ARMTEK_P_W: armtek_physical,
+                        ARMTEK_V_W: armtek_volumetric,
+                    }
+                )
+
+            else:
+                # Только Japarts
+                result.update(
+                    {
+                        JPARTS_P_W: jp_physical,
+                        JPARTS_V_W: jp_volumetric,
+                        ARMTEK_P_W: None,
+                        ARMTEK_V_W: None,
+                    }
+                )
+
+        except Exception as e:
+            logger.error(f"❌ [{idx}] Weight parse error: {e}")
+            result.update(
+                {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
+            )
 
     # ======================= NAME =======================
     if NAME:
@@ -456,6 +460,11 @@ async def worker(
     proxy_browser: Browser,  # 🆕 Browser #2: Proxy задачи (С флагом proxy="per-context")
     df: pd.DataFrame,
     pbar,
+    total_tasks: int,
+    progress_checkpoints: set,
+    sent_progress: set,
+    counter: dict,
+    counter_lock: asyncio.Lock,
 ):
     """
     Worker с 2 БРАУЗЕРАМИ:
@@ -502,7 +511,8 @@ async def worker(
                     # Основной парсинг
                     try:
                         result = await asyncio.wait_for(
-                            process_single_item(page, idx, brand, part), timeout=180.0
+                            process_single_item(page, idx, brand, part),
+                            timeout=TASK_TIMEOUT,
                         )
                     except Exception as e:
                         logger.warning(
@@ -548,9 +558,12 @@ async def worker(
                                     proxy_browser.new_context(
                                         proxy=proxy_cfg,  # ← Ваша get_2captcha_proxy() остается!
                                         viewport={"width": 1920, "height": 1080},
-                                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                                        device_scale_factor=1.0,
+                                        is_mobile=False,
+                                        has_touch=False,
                                         locale="ru-RU",
-                                        timezone_id="Europe/Moscow",  # ← КРИТИЧНО!
+                                        timezone_id="Europe/Moscow",
+                                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                                         ignore_https_errors=True,
                                         extra_http_headers={
                                             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -570,7 +583,7 @@ async def worker(
 
                                 result = await asyncio.wait_for(
                                     process_single_item(page_retry, idx, brand, part),
-                                    timeout=120.0,  # Увеличенный таймаут для прокси
+                                    timeout=PROXY_TIMOUT,  # Увеличенный таймаут для прокси
                                 )
                                 await safe_close_page(page_retry)
 
@@ -615,6 +628,21 @@ async def worker(
                     # чтобы использовать его на следующей итерации while!
 
                 pbar.update(1)
+
+                # Обновление общего прогресса и отправка в Telegram
+                async with counter_lock:
+                    counter["processed"] += 1
+                    processed_count = counter["processed"]
+
+                    if (
+                        processed_count in progress_checkpoints
+                        and processed_count not in sent_progress
+                    ):
+                        percent = int(processed_count / total_tasks * 100)
+                        send_telegram_process(
+                            f"Прогресс: {percent}% ({processed_count} из {total_tasks})"
+                        )
+                        sent_progress.add(processed_count)
                 queue.task_done()
 
             except asyncio.TimeoutError:
@@ -724,6 +752,8 @@ async def main_async():
         total_tasks,
     }
     sent_progress = set()
+    counter = {"processed": 0}
+    counter_lock = asyncio.Lock()
 
     async with async_playwright() as p:
         # 🆕 BROWSER #1: ContextPool (БЕЗ proxy) — ОСТАЕТСЯ
@@ -741,7 +771,7 @@ async def main_async():
         # ContextPool использует normal_browser (БЕЗ proxy ошибок!)
         pool = ContextPool(
             normal_browser,  # ← КРИТИЧНО!
-            pool_size=min(MAX_WORKERS, 5),
+            pool_size=MAX_WORKERS,
             auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
         )
         await pool.initialize()
@@ -750,9 +780,22 @@ async def main_async():
             # 🆕 Workers получают ОБОИХ браузеров!
             workers = [
                 asyncio.create_task(
-                    worker(i, queue, pool, normal_browser, proxy_browser, df, pbar)
+                    worker(
+                        i,
+                        queue,
+                        pool,
+                        normal_browser,
+                        proxy_browser,
+                        df,
+                        pbar,
+                        total_tasks,
+                        progress_checkpoints,
+                        sent_progress,
+                        counter,
+                        counter_lock,
+                    )
                 )
-                for i in range(min(MAX_WORKERS, 5))
+                for i in range(MAX_WORKERS)
             ]
 
             # Ждём завершения ВСЕХ задач

@@ -4,6 +4,8 @@
 """
 
 import re
+
+import random
 from utils import RateLimitException
 import os
 
@@ -371,6 +373,27 @@ async def scrape_weight_armtek(
         try:
             search_url = f"{BASE_URL}/search?text={part}"
             await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
+
+            await page.wait_for_timeout(
+                2000 + random.randint(0, 3000)
+            )  # случайная задержка
+            # # 👁️ Движение мыши
+            # start_x, start_y = 100, 100
+            # end_x, end_y = 400, 300
+            # steps = 5
+            # for i in range(steps + 1):
+            #     x = start_x + (end_x - start_x) * i // steps
+            #     y = start_y + (end_y - start_y) * i // steps
+            #     await page.mouse.move(x, y)
+            #     await page.wait_for_timeout(100 + random.randint(0, 200))
+
+            # # 🖱️ Клик в "пустое место"
+            # await page.mouse.click(50, 50)
+            # await page.wait_for_timeout(500)
+
+            # # 📥 Прокрутка
+            # await page.evaluate("window.scrollTo(0, document.body.scrollHeight / 3)")
+            # await page.wait_for_timeout(1000 + random.randint(0, 1000))
 
             result = await with_timeout(  # 4 мин на ВСЁ!
                 GLOBAL_TIMEOUT_MS,

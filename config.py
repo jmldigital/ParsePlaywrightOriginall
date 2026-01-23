@@ -22,7 +22,7 @@ PROXY_PASSWORD = "u038f310456a605c1"
 # === Telegram ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8364237483AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-4688651319"))
-SEND_TO_TELEGRAM = False
+SEND_TO_TELEGRAM = True
 
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
@@ -74,7 +74,8 @@ DEFAULT_WAIT = 15
 CAPTCHA_WAIT = 5
 MAX_RETRIES = 3
 RETRY_DELAY = 2
-TASK_TIMEOUT = 90
+TASK_TIMEOUT = 180
+PROXY_TIMOUT = 120
 
 # === Колонки для поиска цен ===
 stparts_price = "stparts_price"
