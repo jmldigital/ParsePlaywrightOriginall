@@ -56,6 +56,16 @@ async def diagnose_error_state(page: Page, part: str, logger):
     # ⏰ 6 сек на полную загрузку + анимации
     await page.wait_for_timeout(6000)
 
+    # 🔥 0️⃣ CLOUDFLARE ПЕРВЫМ!
+    try:
+        cloudflare = page.locator("text='Проверяем, человек ли вы'")
+        await cloudflare.wait_for(state="visible", timeout=4000)
+        logger.warning(f"☁️ CLOUDFLARE: {part}")
+        await save_debug_info(page, part, "cloudflare", logger, "armtek")
+        return "cloudflare"  # Маленькими! ✅
+    except:
+        pass
+
     # 1️⃣ RATE LIMIT
     try:
         rate_limit_modal = page.locator(
@@ -103,86 +113,6 @@ async def diagnose_error_state(page: Page, part: str, logger):
     return "global_timeout"
 
 
-# async def scrape_weight_armtek(
-#     page: Page, part: str, logger
-# ) -> Tuple[str | None, str | None]:
-#     """
-#     Простой парсер ARMTEK:
-#     - Находит капчу → return "NeedCaptcha"
-#     - RateLimit → return "NeedProxy", "NeedProxy"
-#     - Нет результатов → None, None
-#     - Вес → "1.23", None
-#     """
-
-#     # 1. Переход на поиск
-#     search_url = f"https://armtek.ru/search?text={part}"
-#     await page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
-
-#     # 2. Закрытие города
-#     await close_city_dialog_if_any(page, logger)
-
-#     # 3. Ждём карточки (15 сек)
-#     try:
-#         await page.wait_for_selector(
-#             "project-ui-article-card, app-article-card-tile, .scroll-item, div[data-id]",
-#             timeout=15000,
-#         )
-#     except PlaywrightTimeout:
-#         # 🎯 ДИАГНОСТИКА состояний
-#         error_type = await diagnose_error_state(page, part, logger)
-#         if error_type == "rate_limit":
-#             return "NeedProxy", "NeedProxy"
-#         elif error_type == "captcha_detected":
-#             return "NeedCaptcha", "NeedCaptcha"  # ← КРИТИЧНО!
-#         elif error_type == "no_search_results":
-#             return None, None
-#         else:
-#             return None, None
-
-#     # 4. Берём первую карточку → вес
-#     products = page.locator("project-ui-article-card, app-article-card-tile")
-#     if await products.count() == 0:
-#         return None, None
-
-#     first_card = products.first
-#     href = await first_card.locator("a").first.get_attribute("href")
-#     if not href:
-#         return None, None
-
-#     # 5. Открываем карточку → ищем вес
-#     full_url = href if href.startswith("http") else "https://armtek.ru" + href
-#     await page.goto(full_url, wait_until="domcontentloaded", timeout=15000)
-
-#     # Тех. характеристики
-#     tech_link = page.locator('a[href="#tech-info"]').first
-#     if await tech_link.count() > 0:
-#         await tech_link.click()
-
-#     # Ищем вес по селекторам
-#     weight_selectors = SELECTORS["armtek"]["weight_selectors"]
-#     for selector in weight_selectors:
-#         weights = page.locator(f"product-card-info {selector}")
-#         count = await weights.count()
-
-#         for i in range(count):
-#             try:
-#                 text = await weights.nth(i).text_content(timeout=2000)
-#                 if text and "кг" in str(text).lower():
-#                     match = re.search(
-#                         r"(\d+(?:[.,]\d+)?)\s*кг", str(text), re.IGNORECASE
-#                     )
-#                     if match:
-#                         weight = match.group(1).replace(",", ".")
-#                         logger.info(f"✅ ARMTEK {part}: {weight} кг")
-#                         return weight, None
-#             except:
-#                 continue
-
-#     logger.warning(f"❌ ARMTEK {part}: вес не найден")
-#     await save_debug_info(page, part, "not_found", logger, "armtek")
-#     return None, None
-
-
 async def scrape_weight_armtek(
     page: Page, part: str, logger
 ) -> Tuple[str | None, str | None]:
@@ -192,7 +122,10 @@ async def scrape_weight_armtek(
 
     # 1. Поиск
     search_url = f"https://armtek.ru/search?text={part}"
-    await page.goto(search_url, wait_until="domcontentloaded", timeout=15000)
+    await page.goto(search_url, wait_until="domcontentloaded", timeout=45000)
+    # это временная пепяка
+    await page.wait_for_timeout(5000)
+
     await close_city_dialog_if_any(page, logger)
 
     # 2. 🔥 СТАБИЛЬНОЕ ожидание карточек (как в старом)
@@ -201,7 +134,7 @@ async def scrape_weight_armtek(
         try:
             await page.wait_for_selector(
                 "project-ui-article-card, app-article-card-tile, .scroll-item, div[data-id]",
-                timeout=10000,
+                timeout=45000,
                 state="attached",
             )
             await page.wait_for_timeout(1500)  # ✅ Стабилизация!
@@ -217,6 +150,8 @@ async def scrape_weight_armtek(
                     return "NeedProxy", "NeedProxy"
                 elif error_type == "captcha_detected":
                     return "NeedCaptcha", "NeedCaptcha"
+                elif error_type == "cloudflare":
+                    return "ClaudFlare", "ClaudFlare"
                 elif error_type == "no_search_results":
                     return None, None
                 else:

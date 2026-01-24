@@ -553,181 +553,230 @@ async def process_single_item(
     # Инициализация результатов
     result = {}
     # Дя теста----------------------
-    # if WEIGHT:
-    #     # ✅ ОТКЛЮЧЕНО JAPARTS ДЛЯ ТЕСТА!
-    #     jp_physical, jp_volumetric = None, None  # ← Принудительно None!
+    if WEIGHT:
+        # 🧪 Симуляция прокси-циклов
+        if not hasattr(process_single_item, "proxy_cycle"):
+            process_single_item.proxy_cycle = {"count": 0, "phase": 0}
 
-    #     logger.info(f"🚀 [{idx}] ТЕСТ: ТОЛЬКО ARMTEK: {part}")
+        cycle = process_single_item.proxy_cycle
+        cycle["count"] += 1
 
-    #     # ПРЯМО к Armtek!
-    #     # 🔥 ПРЯМО ЗДЕСЬ — добавьте/измените:
-    #     try:
-    #         armtek_physical, armtek_volumetric = await asyncio.wait_for(
-    #             scrape_weight_armtek(page, part, logger_armtek),
-    #             timeout=90.0,  # ← Было 15.0 → 90.0!
-    #         )
-    #         logger.info(
-    #             f"🔍 [{idx}] Armtek result внутри process_raw: {armtek_physical=}, {armtek_volumetric=}"
-    #         )
-    #     except asyncio.TimeoutError:
-    #         logger.error(f"⚠️ [{idx}] ARMTEK TIMEOUT!")
-    #         armtek_physical, armtek_volumetric = None, None
+        logger.info(
+            f"🚀 [{idx}] ТЕСТ цикл {cycle['count']}/phase{cycle['phase']}: {part}"
+        )
 
-    #     # 🧪 ДИАГНОСТИКА:
-    #     logger.info(
-    #         f"🧪 [{idx}] FINAL CHECK: physical='{armtek_physical}', vol='{armtek_volumetric}'"
-    #     )
+        # ✅ ТОЛЬКО new_page() БЕЗ параметров:
+        page1 = await context.new_page()  # ✅
 
-    #     # 🆕 ИСПРАВЛЕНИЕ RateLimit!
-    #     # if armtek_physical == "NeedProxy" or armtek_volumetric == "NeedProxy":
-    #     if random.random() < 0.3:
-    #         logger.warning(
-    #             f"🚦 [{idx}] RateLimit → NeedProxy! внутри Process_single_item ловит"
-    #         )
-    #         return "NeedProxy"  # ← Worker поймает!
+        # Human-like!
+        await page1.add_init_script(
+            """
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
+        """
+        )
+        await page1.goto("about:blank")
+        await page1.wait_for_timeout(2000)  # "Просмотр главной"
 
-    #     result.update(
-    #         {
-    #             JPARTS_P_W: None,  # ← Japarts отключён
-    #             JPARTS_V_W: None,  # ← Japarts отключён
-    #             ARMTEK_P_W: armtek_physical,
-    #             ARMTEK_V_W: armtek_volumetric,
-    #         }
-    #     )
+        try:
+            # ARMTEK
+            armtek_physical, armtek_volumetric = await asyncio.wait_for(
+                scrape_weight_armtek(page1, part, logger_armtek),
+                timeout=120.0,  # 2 минуты на Cloudflare!
+            )
+            logger.info(
+                f"🔍 [{idx}] ARMTEK: phys={armtek_physical}, vol={armtek_volumetric}"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ [{idx}] ARMTEK: {e}")
+            armtek_physical = armtek_volumetric = None
+
+        # 🔥 КАПЧА!
+        if armtek_physical == "NeedCaptcha":
+            logger.info(f"🔒 [{idx}] Капча ARMTEK")
+            success = await captcha_manager.solve_captcha(
+                page=page1,
+                logger=logger_armtek,
+                site_key="armtek",
+                selectors=SELECTORS.get("armtek", {}),
+            )
+            await safe_close_page(page1)
+
+            if success:
+                logger.info(f"🔓 [{idx}] Капча OK")
+                # Можно retry, но для теста продолжаем
+            else:
+                logger.warning(f"❌ [{idx}] Капча fail")
+                result.update({ARMTEK_P_W: None, ARMTEK_V_W: None})
+        else:
+            await safe_close_page(page1)
+
+        # 🔥 ПРОКСИ-ЦИКЛЫ (по 10)
+        if cycle["count"] <= 10:  # 1: без прокси
+            logger.info(f"📡 [{idx}] ФАЗА 1: без прокси")
+
+        elif cycle["count"] <= 20:  # 2: прокси 1
+            logger.warning(f"🚦 [{idx}] ФАЗА 2: NeedProxy 1")
+            cycle["phase"] = 1
+            await safe_close_page(page1)
+            return "NeedProxy"  # Worker → proxy!
+
+        elif cycle["count"] <= 30:  # 3: прокси 2
+            logger.warning(f"🚦 [{idx}] ФАЗА 3: NeedProxy 2")
+            cycle["phase"] = 2
+            await safe_close_page(page1)
+            return "NeedProxy"
+
+        else:  # 4+: прокси 2
+            logger.info(f"📡 [{idx}] ФАЗА 4: прокси 2")
+
+        # ✅ Запись в result (как оригинал)
+        result.update(
+            {
+                JPARTS_P_W: None,
+                JPARTS_V_W: None,
+                ARMTEK_P_W: armtek_physical,
+                ARMTEK_V_W: armtek_volumetric,
+            }
+        )
+
+        logger.info(f"📊 [{idx}] Записано: ARMTEK_P_W={armtek_physical}")
+        # НЕ return — result глобальный!
 
     # ======================= WEIGHT =======================
 
-    if WEIGHT:
-        max_retries = 2
+    # if WEIGHT:
+    #     max_retries = 2
 
-        for attempt in range(max_retries + 1):
-            # page1 = None
+    #     for attempt in range(max_retries + 1):
+    #         # page1 = None
 
-            try:
-                # 🆕 Новая страница каждый retry
-                page1 = await context.new_page()
+    #         try:
+    #             # 🆕 Новая страница каждый retry
+    #             page1 = await context.new_page()
 
-                jp_physical, jp_volumetric = None, None
-                armtek_physical, armtek_volumetric = None, None
+    #             jp_physical, jp_volumetric = None, None
+    #             armtek_physical, armtek_volumetric = None, None
 
-                # 1️⃣ Japarts (первый приоритет)
-                jp_physical, jp_volumetric = await scrape_weight_japarts(
-                    page1, part, logger_jp
-                )
+    #             # 1️⃣ Japarts (первый приоритет)
+    #             jp_physical, jp_volumetric = await scrape_weight_japarts(
+    #                 page1, part, logger_jp
+    #             )
 
-                # 🆕 Проверка капчи Japarts
-                if jp_physical == "NeedCaptcha" or jp_volumetric == "NeedCaptcha":
-                    logger.info(
-                        f"🔒 [{idx}] Капча на japarts (попытка {attempt+1}/{max_retries+1})"
-                    )
-                    success = await captcha_manager.solve_captcha(
-                        page=page1,
-                        logger=logger_jp,
-                        site_key="japarts",
-                        selectors={
-                            "captcha_img": SELECTORS.get("japarts", {}).get(
-                                "captcha_img"
-                            ),
-                            "captcha_input": SELECTORS.get("japarts", {}).get(
-                                "captcha_input"
-                            ),
-                            "captcha_submit": SELECTORS.get("japarts", {}).get(
-                                "captcha_submit"
-                            ),
-                        },
-                    )
+    #             # 🆕 Проверка капчи Japarts
+    #             if jp_physical == "NeedCaptcha" or jp_volumetric == "NeedCaptcha":
+    #                 logger.info(
+    #                     f"🔒 [{idx}] Капча на japarts (попытка {attempt+1}/{max_retries+1})"
+    #                 )
+    #                 success = await captcha_manager.solve_captcha(
+    #                     page=page1,
+    #                     logger=logger_jp,
+    #                     site_key="japarts",
+    #                     selectors={
+    #                         "captcha_img": SELECTORS.get("japarts", {}).get(
+    #                             "captcha_img"
+    #                         ),
+    #                         "captcha_input": SELECTORS.get("japarts", {}).get(
+    #                             "captcha_input"
+    #                         ),
+    #                         "captcha_submit": SELECTORS.get("japarts", {}).get(
+    #                             "captcha_submit"
+    #                         ),
+    #                     },
+    #                 )
 
-                    await safe_close_page(page1)
-                    page1 = None
+    #                 await safe_close_page(page1)
+    #                 page1 = None
 
-                    if success:
-                        continue  # Retry
-                    else:
-                        return "CaptchaFailed"
+    #                 if success:
+    #                     continue  # Retry
+    #                 else:
+    #                     return "CaptchaFailed"
 
-                # 2️⃣ Armtek ТОЛЬКО при Japarts fail
-                if not jp_physical or not jp_volumetric:
-                    logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+    #             # 2️⃣ Armtek ТОЛЬКО при Japarts fail
+    #             if not jp_physical or not jp_volumetric:
+    #                 logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
 
-                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                        page1, part, logger_armtek
-                    )
+    #                 armtek_physical, armtek_volumetric = await scrape_weight_armtek(
+    #                     page1, part, logger_armtek
+    #                 )
 
-                    # 🆕 Проверка капчи Armtek
-                    if (
-                        armtek_physical == "NeedCaptcha"
-                        or armtek_volumetric == "NeedCaptcha"
-                    ):
-                        logger.info(
-                            f"🔒 [{idx}] Капча на armtek (попытка {attempt+1}/{max_retries+1})"
-                        )
-                        success = await captcha_manager.solve_captcha(
-                            page=page1,
-                            logger=logger_armtek,
-                            site_key="armtek",
-                            selectors={
-                                "captcha_img": SELECTORS.get("armtek", {}).get(
-                                    "captcha_img"
-                                ),
-                                "captcha_input": SELECTORS.get("armtek", {}).get(
-                                    "captcha_input"
-                                ),
-                                "captcha_submit": SELECTORS.get("armtek", {}).get(
-                                    "captcha_submit"
-                                ),
-                            },
-                        )
+    #                 # 🆕 Проверка капчи Armtek
+    #                 if (
+    #                     armtek_physical == "NeedCaptcha"
+    #                     or armtek_volumetric == "NeedCaptcha"
+    #                 ):
+    #                     logger.info(
+    #                         f"🔒 [{idx}] Капча на armtek (попытка {attempt+1}/{max_retries+1})"
+    #                     )
+    #                     success = await captcha_manager.solve_captcha(
+    #                         page=page1,
+    #                         logger=logger_armtek,
+    #                         site_key="armtek",
+    #                         selectors={
+    #                             "captcha_img": SELECTORS.get("armtek", {}).get(
+    #                                 "captcha_img"
+    #                             ),
+    #                             "captcha_input": SELECTORS.get("armtek", {}).get(
+    #                                 "captcha_input"
+    #                             ),
+    #                             "captcha_submit": SELECTORS.get("armtek", {}).get(
+    #                                 "captcha_submit"
+    #                             ),
+    #                         },
+    #                     )
 
-                        await safe_close_page(page1)
-                        page1 = None
+    #                     await safe_close_page(page1)
+    #                     page1 = None
 
-                        if success:
-                            continue  # Retry
-                        else:
-                            return "CaptchaFailed"
+    #                     if success:
+    #                         continue  # Retry
+    #                     else:
+    #                         return "CaptchaFailed"
 
-                    # 🚨 RateLimit (остается как есть)
-                    if armtek_physical == "NeedProxy":
-                        logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
-                        await safe_close_page(page1)
-                        return "NeedProxy"
+    #                 # 🚨 RateLimit (остается как есть)
+    #                 if armtek_physical == "NeedProxy":
+    #                     logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
+    #                     await safe_close_page(page1)
+    #                     return "NeedProxy"
 
-                    # ✅ Armtek результат
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: armtek_physical,
-                            ARMTEK_V_W: armtek_volumetric,
-                        }
-                    )
+    #                 # ✅ Armtek результат
+    #                 result.update(
+    #                     {
+    #                         JPARTS_P_W: jp_physical,
+    #                         JPARTS_V_W: jp_volumetric,
+    #                         ARMTEK_P_W: armtek_physical,
+    #                         ARMTEK_V_W: armtek_volumetric,
+    #                     }
+    #                 )
 
-                else:
-                    # ✅ Только Japarts
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: None,
-                            ARMTEK_V_W: None,
-                        }
-                    )
+    #             else:
+    #                 # ✅ Только Japarts
+    #                 result.update(
+    #                     {
+    #                         JPARTS_P_W: jp_physical,
+    #                         JPARTS_V_W: jp_volumetric,
+    #                         ARMTEK_P_W: None,
+    #                         ARMTEK_V_W: None,
+    #                     }
+    #                 )
 
-                await safe_close_page(page1)
-                break  # ✅ Успех!
+    #             await safe_close_page(page1)
+    #             break  # ✅ Успех!
 
-            except Exception as e:
-                logger.error(
-                    f"❌ [{idx}] Weight parse error (попытка {attempt+1}): {e}"
-                )
-                await safe_close_page(page1)
-                if attempt < max_retries:
-                    continue
+    #         except Exception as e:
+    #             logger.error(
+    #                 f"❌ [{idx}] Weight parse error (попытка {attempt+1}): {e}"
+    #             )
+    #             await safe_close_page(page1)
+    #             if attempt < max_retries:
+    #                 continue
 
-            # Если все попытки исчерпаны
-            result.update(
-                {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
-            )
+    #         # Если все попытки исчерпаны
+    #         result.update(
+    #             {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
+    #         )
 
     # ======================= NAME =======================
     if NAME:
@@ -1057,6 +1106,40 @@ async def worker(
                             await proxy_context.close()
                             proxy_context = None
                         result = None
+            elif result == "CloudFlare":  # 🔥 НОВОЕ!
+                logger.warning(
+                    f"👷 Worker-{worker_id}: ☁️ CloudFlare на {part}. 30 сек cooldown → БЕЗ прокси!"
+                )
+
+                # Cleanup прокси
+                if pool_ctx_obj:
+                    pool.release_context(pool_ctx_obj)
+                    pool_ctx_obj = None
+                if proxy_context:
+                    await proxy_context.close()
+                    proxy_context = None
+
+                # ⏳ 30 СЕКУНД PAUZA
+                await asyncio.sleep(30)
+
+                # 🔄 НОРМАЛЬНЫЙ КОНТЕКСТ (БЕЗ ПРОКСИ)
+                normal_context = (
+                    await normal_browser.new_context(  # Твой normal_browser
+                        viewport={"width": 1920, "height": 1080},
+                        locale="ru-RU",
+                        timezone_id="Europe/Moscow",
+                        user_agent="Mozilla/5.0...",
+                    )
+                )
+
+                # Retry БЕЗ прокси
+                result = await asyncio.wait_for(
+                    process_single_item(normal_context, idx, brand, part),
+                    timeout=120.0,  # 2 мин на нормальный
+                )
+
+                await normal_context.close()
+                normal_context = None
 
             pbar.update(1)
 
