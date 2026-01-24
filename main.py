@@ -114,59 +114,6 @@ for name in stop_files:
 
 logger.info("🚀 Старт без STOP флагов в input/")
 
-TEMP_FILES_DIR.mkdir(exist_ok=True)
-
-
-def get_temp_file(worker_id: int):
-    """Файл для конкретного worker"""
-    return TEMP_FILES_DIR / f"temp_worker_{worker_id:02d}.xlsx"
-
-
-async def merge_temp_files(df_template: pd.DataFrame, mode: str):
-    """
-    Merge ВСЕХ файлов из TEMP_FILES_DIR в df_template
-    """
-
-    logger.info(f"🔄 Merge из {TEMP_FILES_DIR}...")
-
-    df_merged = df_template.copy()
-    merged_count = 0
-
-    # Загружаем ВСЕ temp_worker_*.xlsx
-    if TEMP_FILES_DIR.exists():
-        for temp_file in TEMP_FILES_DIR.glob("temp_worker_*.xlsx"):
-            try:
-                temp_df = pd.read_excel(temp_file)
-                logger.info(f"📂 [{merged_count+1}] {temp_file.name}")
-
-                # Merge по индексу
-                for idx in temp_df.index:
-                    if idx in df_merged.index:
-                        for col in temp_df.columns:
-                            if col != "idx":  # Игнорируем служебные
-                                df_merged.at[idx, col] = temp_df.at[idx, col]
-
-                temp_file.unlink()  # Cleanup
-                merged_count += 1
-
-            except Exception as e:
-                logger.warning(f"⚠️ Пропуск {temp_file}: {e}")
-
-        # Полная очистка директории
-        # try:
-        #     for leftover in TEMP_FILES_DIR.glob("*"):
-        #         leftover.unlink()
-        #     TEMP_FILES_DIR.rmdir()
-        #     logger.info("🧹 TEMP_FILES_DIR очищена")
-        # except:
-        #     logger.warning("⚠️ Не удалось полностью очистить TEMP_FILES_DIR")
-
-    else:
-        logger.warning("⚠️ TEMP_FILES_DIR не существует")
-
-    logger.info(f"✅ Merge завершён! Объедено файлов: {merged_count}")
-    return df_merged
-
 
 def setup_event_loop_policy():
     if sys.platform.startswith("win"):
@@ -222,6 +169,11 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
     """Финальная обработка + сохранение (для normal/extreme stop)"""
     logger.info(f"🔄 Финализация ({mode})...")
 
+    # 🆕 ЛОКАЛЬНЫЕ КОПИИ!
+    local_weight = ENABLE_WEIGHT_PARSING
+    local_price = ENABLE_PRICE_PARSING
+    local_name = ENABLE_NAME_PARSING
+
     # 🆕 Проверяем DataFrame
     if df is None or df.empty:
         logger.error("❌ DataFrame пустой или None!")
@@ -249,15 +201,15 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             if col not in df.columns:
                 df[col] = None
 
-        if ENABLE_WEIGHT_PARSING:
+        if local_weight:
             for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
                 if col not in df.columns:
                     df[col] = None
 
-        if ENABLE_NAME_PARSING and "finde_name" not in df.columns:
+        if local_name and "finde_name" not in df.columns:
             df["finde_name"] = None
 
-        if ENABLE_WEIGHT_PARSING:  # Режим весов
+        if local_weight:  # Режим весов
             df = await asyncio.to_thread(consolidate_weights, df)
             logger.info("✅ Веса консолидированы")
 
@@ -269,20 +221,20 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
 
         logger.info(f"💾 Сохраняем в: {output_file}")
 
-        if ENABLE_PRICE_PARSING:
+        if local_price:
             await asyncio.to_thread(adjust_prices_and_save, df, output_file)
         else:
             await asyncio.to_thread(df.to_excel, output_file, index=False)
 
         logger.info(f"✅ Сохранено: {output_file}")
-        await send_telegram_file(output_file, f"✅ {mode} завершены!")
+        # await send_telegram_file(output_file, f"✅ {mode} завершены!")
 
     except Exception as e:
         logger.error(
             f"❌ Ошибка при сохранении Excel с форматированием: {e}", exc_info=True
         )
         # 🆕 Emergency save без форматирования
-        emergency_file = output_file.replace(".xlsx", "_emergency.xlsx")
+        emergency_file = output_file.replace(".csv", "_emergency..csv")
         try:
             await asyncio.to_thread(df.to_excel, emergency_file, index=False)
             logger.info(f"💾 Emergency save: {emergency_file}")
@@ -489,14 +441,14 @@ async def process_single_item(page1, idx: int, brand: str, part: str):
 
         try:
             # Japarts
-            logger.info(f"🔍 [{idx}] Japarts: {part}")
+            # logger.info(f"🔍 [{idx}] Japarts: {part}")
             jp_physical, jp_volumetric = await scrape_weight_japarts(
                 page1, part, logger_jp
             )
 
             # Armtek — ТОЛЬКО при Japarts fail
             if not jp_physical or not jp_volumetric:
-                logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+                # logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
 
                 armtek_physical, armtek_volumetric = await scrape_weight_armtek(
                     page1, part, logger_armtek
@@ -533,7 +485,7 @@ async def process_single_item(page1, idx: int, brand: str, part: str):
             result.update(
                 {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
             )
-        logger.info(f"📊 [{idx}] WEIGHT result: {result}")
+        logger.info(f"📊 [{idx}] {part} result: {result}")
         return result  # 🔥 🔥 ДОБАВИТЬ ЭТУ СТРОКУ! 🔥 🔥
 
     # ======================= NAME =======================
@@ -597,254 +549,6 @@ async def process_single_item(page1, idx: int, brand: str, part: str):
     return result  # Общий return в конце
 
 
-# async def worker(
-#     worker_id: int,
-#     queue: asyncio.Queue,
-#     pool: ContextPool,
-#     normal_browser: Browser,  # 🆕 Browser #1: ContextPool (Обычный)
-#     proxy_browser: Browser,  # 🆕 Browser #2: Proxy задачи (С флагом proxy="per-context")
-#     df: pd.DataFrame,
-#     pbar,
-#     total_tasks: int,
-#     progress_checkpoints: set,
-#     sent_progress: set,
-#     counter: dict,
-#     counter_lock: asyncio.Lock,
-# ):
-#     """
-#     Worker с 2 БРАУЗЕРАМИ:
-#     1. Пытается взять контекст из пула (normal_browser).
-#     2. При RateLimit переключается на proxy_browser и СОХРАНЯЕТ этот контекст для следующих задач.
-#     """
-#     proxy_context = None  # Личный proxy_context, живет между итерациями цикла
-
-#     try:
-#         while not queue.empty():
-#             try:
-#                 # Получаем задачу
-#                 idx_brand_part = await queue.get()
-#                 idx, brand, part = idx_brand_part
-
-#                 # В worker() блок STOP.flag:
-#                 if Path("input/STOP.flag").exists():
-#                     logger.info(f"👷 Worker-{worker_id}: STOP.flag → graceful stop")
-
-#                     # ✅ НИЧЕГО НЕ САЛАЕМ! Просто выходим
-#                     queue.task_done()
-#                     break  # ← Graceful exit, df уже обновлён в памяти!
-
-#                 # Инициализация переменных для текущей итерации
-#                 using_proxy = proxy_context is not None
-#                 pool_ctx_obj = None
-#                 page = None
-
-#                 # Результат обработки
-#                 result = None
-
-#                 try:
-#                     # 🚦 ШАГ 1: ВЫБОР РЕЖИМА
-#                     if not using_proxy:
-#                         # НОРМАЛЬНЫЙ РЕЖИМ (берем из пула)
-#                         pool_ctx_obj = await pool.get_context()
-#                         context = pool_ctx_obj
-#                         page1 = await context.new_page()
-#                         # logger.debug(f"👷 Worker-{worker_id}: Pool context")
-#                     else:
-#                         # PROXY РЕЖИМ (используем свой личный контекст)
-#                         context = proxy_context
-#                         page1 = await context.new_page()
-#                         logger.debug(f"👷 Worker-{worker_id}: Proxy context (Reuse)")
-
-#                     # Основной парсинг
-#                     try:
-#                         result = await asyncio.wait_for(
-#                             process_single_item(page1, idx, brand, part),
-#                             timeout=TASK_TIMEOUT,
-#                         )
-#                     except Exception as e:
-#                         logger.warning(
-#                             f"👷 Worker-{worker_id}: Ошибка парсинга {part}: {e}"
-#                         )
-#                         result = None
-
-#                     if result == "ReauthNeeded":
-#                         await pool.refresh_cookies()  # Как в старом!
-#                         await queue.put((idx, brand, part))  # Вернуть задачу в очередь
-#                         continue
-
-#                     # 🚦 ШАГ 2: ОБРАБОТКА RateLimit (ПЕРЕКЛЮЧЕНИЕ / РОТАЦИЯ)
-#                     if result == "NeedProxy":
-#                         logger.warning(
-#                             f"👷 Worker-{worker_id}: 🚦 RateLimit на {part}. Переключение на прокси..."
-#                         )
-
-#                         # 1. Закрываем текущую страницу и освобождаем пул
-#                         await safe_close_page(page1)
-#                         page = None  # Чтобы finally не пытался закрыть дважды
-
-#                         if pool_ctx_obj:
-#                             pool.release_context(pool_ctx_obj)
-#                             pool_ctx_obj = None  # Сброс ссылки
-
-#                         # 2. Если у нас УЖЕ был прокси, но он словил бан — закрываем его (Ротация)
-#                         if proxy_context:
-#                             logger.info(
-#                                 f"👷 Worker-{worker_id}: ♻️ Старый прокси забанен, меняем IP..."
-#                             )
-#                             await proxy_context.close()
-#                             proxy_context = None
-
-#                         # 3. Получаем конфиг прокси
-#                         # ⚠️ ВАЖНО: get_2captcha_proxy должен возвращать словарь с 'server', 'username', 'password'!
-#                         proxy_cfg = get_2captcha_proxy()
-
-#                         if not proxy_cfg or "server" not in proxy_cfg:
-#                             logger.error("❌ Прокси не получен или неверный формат")
-#                         else:
-#                             logger.debug(f"✅ Прокси‑конфиг: {proxy_cfg['server']}")
-
-#                         if proxy_cfg and "server" in proxy_cfg:
-#                             try:
-#                                 # 4. Создаем НОВЫЙ proxy_context
-#                                 proxy_context = await asyncio.wait_for(
-#                                     proxy_browser.new_context(
-#                                         proxy=proxy_cfg,  # ← Ваша get_2captcha_proxy() остается!
-#                                         viewport={"width": 1920, "height": 1080},
-#                                         device_scale_factor=1.0,
-#                                         is_mobile=False,
-#                                         has_touch=False,
-#                                         locale="ru-RU",
-#                                         timezone_id="Europe/Moscow",
-#                                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-#                                         ignore_https_errors=True,
-#                                         extra_http_headers={
-#                                             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-#                                         },
-#                                     ),
-#                                     timeout=60.0,
-#                                 )
-#                                 logger.info(
-#                                     f"👷 Worker-{worker_id}: ✅ Proxy подключен!"
-#                                 )
-
-#                                 # 5. RETRY (Повторная попытка с тем же товаром)
-#                                 page_retry = await proxy_context.new_page()
-
-#                                 # (Опционально) Проверка IP
-#                                 # await page_retry.goto("https://api.ipify.org", timeout=10000)
-
-#                                 result = await asyncio.wait_for(
-#                                     process_single_item(page_retry, idx, brand, part),
-#                                     timeout=PROXY_TIMOUT,  # Увеличенный таймаут для прокси
-#                                 )
-#                                 await safe_close_page(page_retry)
-
-#                             except asyncio.TimeoutError:
-#                                 logger.error(
-#                                     f"👷 Worker-{worker_id}: ❌ Proxy connection timeout!"
-#                                 )
-#                                 if proxy_context:
-#                                     await proxy_context.close()
-#                                     proxy_context = None
-#                                 result = None
-#                             except Exception as e:
-#                                 logger.error(
-#                                     f"👷 Worker-{worker_id}: ❌ Ошибка прокси: {e}"
-#                                 )
-#                                 if proxy_context:
-#                                     await proxy_context.close()
-#                                     proxy_context = None
-#                                 result = None
-#                         else:
-#                             logger.error(
-#                                 f"👷 Worker-{worker_id}: ❌ Не удалось получить конфиг прокси!"
-#                             )
-#                             result = None
-
-#                     # ✅ СОХРАНЕНИЕ РЕЗУЛЬТАТА
-#                     if result and result != "NeedProxy" and isinstance(result, dict):
-#                         for col, val in result.items():
-#                             df.at[idx, col] = val
-#                         # logger.info(f"✅ [{idx}] {part} OK")
-
-#                 finally:
-#                     # Очистка ресурсов ТЕКУЩЕЙ итерации
-#                     if page:
-#                         await safe_close_page(page1)
-
-#                     # Если использовали пул — возвращаем контекст
-#                     if not using_proxy and pool_ctx_obj:
-#                         pool.release_context(pool_ctx_obj)
-
-#                     # ⚠️ ВАЖНО: Мы НЕ закрываем proxy_context здесь,
-#                     # чтобы использовать его на следующей итерации while!
-
-#                 pbar.update(1)
-
-#                 # Обновление общего прогресса и отправка в Telegram
-#                 async with counter_lock:
-#                     counter["processed"] += 1
-#                     processed_count = counter["processed"]
-
-#                     # 🆕 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ каждые TEMP_RAW строк!
-#                     if processed_count % TEMP_RAW == 0:
-#                         try:
-#                             # Атомарное + engine fix
-#                             import tempfile, shutil
-
-#                             fd, temp_path = tempfile.mkstemp(suffix=".xlsx")
-#                             os.close(fd)
-
-#                             with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
-#                                 df.to_excel(writer, index=False)
-
-#                             shutil.move(temp_path, TEMP_FILE)
-#                             logger.info(f"💾 Atomic: {processed_count}/{total_tasks}")
-#                         except Exception as e:
-#                             logger.error(f"❌ Atomic save: {e}")
-
-#                     # 🆕 Отправка прогресса!
-#                     if (
-#                         processed_count in progress_checkpoints
-#                         and processed_count not in sent_progress
-#                     ):
-#                         percent = int(processed_count / total_tasks * 100)
-#                         send_telegram_process(
-#                             f"Прогресс: {percent}% ({processed_count} из {total_tasks})"
-#                         )
-#                         sent_progress.add(processed_count)
-#                 queue.task_done()
-
-#             except asyncio.TimeoutError:
-#                 logger.error(f"👷 Worker-{worker_id}: Task wait timeout!")
-#                 queue.task_done()
-#             except Exception as e:
-#                 logger.error(f"👷 Worker-{worker_id}: Critical Worker Exception: {e}")
-#                 queue.task_done()
-
-#     finally:
-#         # 🆕 ПОЛНАЯ очистка!
-#         try:
-#             # Страницы
-#             if "page1" in locals():
-#                 await safe_close_page(page1)
-#             if "page_retry" in locals():
-#                 await safe_close_page(page_retry)
-
-#             # Контексты
-#             if proxy_context:
-#                 await proxy_context.close()
-#                 logger.info(f"👷 Worker-{worker_id}: Proxy closed")
-
-#             # Pool context
-#             if "pool_ctx_obj" in locals() and pool_ctx_obj:
-#                 pool.release_context(pool_ctx_obj)
-#                 logger.info(f"👷 Worker-{worker_id}: Pool released")
-
-#         except Exception as e:
-#             logger.error(f"👷 Worker-{worker_id} cleanup error: {e}")
-
-
 async def worker(
     worker_id: int,
     queue: asyncio.Queue,
@@ -866,7 +570,7 @@ async def worker(
     """
     proxy_context = None
 
-    my_temp_file = get_temp_file(worker_id)
+    # my_temp_file = get_temp_file(worker_id)
 
     while True:  # ← Изменено: while True вместо queue.empty()
         idx_brand_part = None
@@ -981,38 +685,23 @@ async def worker(
                             await proxy_context.close()
                             proxy_context = None
                         result = None
-            # else:
-            #     logger.error(f"👷 Worker-{worker_id}: ❌ Нет прокси!")
-            #     result = None
 
-            # ✅ СОХРАНЕНИЕ РЕЗУЛЬТАТА (финальная версия)
-            if result and isinstance(result, dict):
-                # logger.info(f"🔍 [{idx}] SAVE DEBUG: result={result}")
-
-                # Инициализация колонок
-                for col in result.keys():
-                    if col not in df.columns:
-                        # logger.info(f"➕ [{idx}] Колонка '{col}'")
-                        df[col] = pd.NA
-
-                first_col = next(iter(result))
-                before_val = df.at[idx, first_col]
-
-                # 🔧 ОЧИСТКА None → pd.NA
-                for col, val in result.items():
-                    clean_val = pd.NA if val is None else val
-                    df.at[idx, col] = clean_val
-                    logger.debug(f"📝 [{idx}] {col} ← {repr(clean_val)}")
-
-                after_val = df.at[idx, first_col]
-
-                # logger.info(
-                #     f"✅ [{idx}] СТАТУС: {repr(before_val)} → {repr(after_val)} | "
-                #     f"non-null +1"
-                # )
             pbar.update(1)
 
-            # ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ + DEBUG
+            # 🆕 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ + DEBUG
+            if result and not isinstance(result, (str, Exception)):
+                async with counter_lock:
+                    if isinstance(result, dict):
+                        for col, val in result.items():
+                            if pd.notna(val):
+                                df.at[idx, col] = val
+                    elif isinstance(result, tuple) and len(result) == 2:
+                        real_idx, data = result
+                        for col, val in data.items():
+                            if pd.notna(val):
+                                df.at[real_idx, col] = val
+
+            # прогресс в телеграм
             async with counter_lock:
                 counter["processed"] += 1
                 processed_count = counter["processed"]
@@ -1021,36 +710,7 @@ async def worker(
                     f"📊 Progress: {processed_count}/{total_tasks}, df.shape={df.shape}"
                 )
 
-                # 🔥 КАЖДЫЙ WORKER ПИШЕТ В СВОЙ ФАЙЛ
-                if processed_count % TEMP_RAW == 0:
-                    my_temp_file = get_temp_file(worker_id)
-                    my_temp_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    try:
-                        # DEBUG: состояние df перед save
-                        null_count = df.isna().sum().sum()
-                        logger.info(
-                            f"💾 PRE-SAVE: processed={processed_count}, "
-                            f"shape={df.shape}, nulls={null_count}"
-                        )
-
-                        df.to_excel(my_temp_file, index=False, engine="openpyxl")
-
-                        # ✅ ПРОВЕРЯЕМ записанный файл!
-                        test_df = pd.read_excel(my_temp_file)
-                        test_nulls = test_df.isna().sum().sum()
-                        logger.info(
-                            f"💾 ✅ {my_temp_file.name}: "
-                            f"shape={test_df.shape}, nulls={test_nulls}, "
-                            f"rows_saved={len(test_df)} [{processed_count}/{total_tasks}]"
-                        )
-
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Worker-{worker_id} save FAILED: {e}", exc_info=True
-                        )
-
-                # Telegram прогресс
+                # Telegram прогресс (без изменений)
                 if (
                     processed_count in progress_checkpoints
                     and processed_count not in sent_progress
@@ -1093,396 +753,6 @@ async def worker(
         logger.error(f"👷 Worker-{worker_id} final cleanup error: {e}")
 
 
-# async def main_async():
-#     print("🚀 main.py ЗАПУЩЕН!")
-#     print(
-#         f"🔍 .env ДО reload: NAME={os.getenv('ENABLE_NAME_PARSING')}, WEIGHT={os.getenv('ENABLE_WEIGHT_PARSING')}"
-#     )
-
-#     reload_config()
-
-#     # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
-#     from config import (
-#         INPUT_FILE,
-#         TEMP_FILE,
-#         TEMP_RAW,
-#         MAX_ROWS,
-#         MAX_WORKERS,
-#         INPUT_COL_BRAND,
-#         INPUT_COL_ARTICLE,
-#         get_output_file,
-#         stparts_price,
-#         stparts_delivery,
-#         avtoformula_price,
-#         avtoformula_delivery,
-#         ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
-#         ENABLE_NAME_PARSING as LOCAL_NAME,
-#         ENABLE_PRICE_PARSING as LOCAL_PRICE,
-#         JPARTS_P_W,
-#         JPARTS_V_W,
-#         ARMTEK_P_W,
-#         ARMTEK_V_W,
-#         BAD_DETAIL_NAMES,
-#     )
-
-#     # Проверка: только 1 режим активен
-#     active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
-#     if active_modes != 1:
-#         error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
-#         logger.error(error_msg)
-#         return
-
-#     # Режим
-#     if LOCAL_WEIGHT:
-#         mode = "ВЕСА"
-#     elif LOCAL_NAME:
-#         mode = "ИМЕНА"
-#     else:
-#         mode = "ЦЕНЫ"
-
-#     logger.info(f"✅ Режим: {mode}")
-#     logger.info("=" * 60)
-
-#     # 📊 Загрузка и подготовка DataFrame
-#     df = pd.read_excel(INPUT_FILE)
-#     df = preprocess_dataframe(df)
-
-#     # 🆕 Инициализация колонок
-#     for col in [
-#         stparts_price,
-#         stparts_delivery,
-#         avtoformula_price,
-#         avtoformula_delivery,
-#     ]:
-#         if col not in df.columns:
-#             df[col] = None
-
-#     if LOCAL_NAME and "finde_name" not in df.columns:
-#         df["finde_name"] = None
-
-#     if LOCAL_WEIGHT:
-#         for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-#             if col not in df.columns:
-#                 df[col] = None
-
-#     # 🆕 Создание очереди задач
-#     queue = asyncio.Queue()
-#     total_tasks = 0
-
-#     for idx, row in df.head(MAX_ROWS).iterrows():
-#         article = str(row[INPUT_COL_ARTICLE]).strip()
-#         if article:
-#             task = (idx, str(row[INPUT_COL_BRAND]).strip(), article)
-#             queue.put_nowait(task)
-#             total_tasks += 1
-
-#     logger.info(f"📋 Задач в очереди: {total_tasks}")
-
-#     # 🆕 Контрольные точки прогресса
-#     progress_checkpoints = {
-#         math.ceil(total_tasks * 0.25),
-#         math.ceil(total_tasks * 0.50),
-#         math.ceil(total_tasks * 0.75),
-#         total_tasks,
-#     }
-#     sent_progress = set()
-#     counter = {"processed": 0}
-#     counter_lock = asyncio.Lock()
-
-#     async with async_playwright() as p:
-#         # 🆕 BROWSER #1: ContextPool (БЕЗ proxy) — ОСТАЕТСЯ
-#         normal_browser = await p.chromium.launch(
-#             headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-#         )
-
-#         # 2️⃣ PROXY browser (Firefox + per-context)
-#         proxy_browser = await p.chromium.launch(
-#             headless=True,
-#             args=["--no-sandbox", "--disable-dev-shm-usage"],
-#             proxy={"server": "http://per-context"},
-#         )
-
-#         # ContextPool использует normal_browser (БЕЗ proxy ошибок!)
-#         pool = ContextPool(
-#             normal_browser,  # ← КРИТИЧНО!
-#             pool_size=MAX_WORKERS,
-#             auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
-#         )
-#         await pool.initialize()
-
-#         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
-#             # 🆕 Workers получают ОБОИХ браузеров!
-#             workers = [
-#                 asyncio.create_task(
-#                     worker(
-#                         i,
-#                         queue,
-#                         pool,
-#                         normal_browser,
-#                         proxy_browser,
-#                         df,
-#                         pbar,
-#                         total_tasks,
-#                         progress_checkpoints,
-#                         sent_progress,
-#                         counter,
-#                         counter_lock,
-#                     )
-#                 )
-#                 for i in range(MAX_WORKERS)
-#             ]
-
-#             # Вместо await queue.join():
-#             while not queue.empty():
-#                 if Path("input/STOP.flag").exists():
-#                     logger.warning("🛑 GLOBAL STOP!")
-#                     for w in workers:
-#                         w.cancel()
-#                     await asyncio.gather(*workers, return_exceptions=True)
-
-#                     # 🆕 Исправленная финализация при STOP
-#                     try:
-#                         # Загружаем TEMP с preprocess
-#                         if Path(TEMP_FILE).exists():
-#                             df_final = pd.read_excel(TEMP_FILE)
-#                             df_final = preprocess_dataframe(df_final)  # 🆕 КРИТИЧНО!
-#                             await finalize_processing(df_final, mode)
-#                         else:
-#                             logger.warning("⚠️ TEMP_FILE не найден при STOP")
-#                     except Exception as e:
-#                         logger.error(f"❌ Финализация при STOP failed: {e}")
-#                     return  # ← Выход!
-
-#                 await asyncio.sleep(0.1)  # Лёгкая проверка
-
-#             # Ждём завершения ВСЕХ задач
-#             await queue.join()
-#             logger.info("✅ Очередь задач завершена!")
-
-#             # Graceful shutdown воркеров
-#             for w in workers:
-#                 w.cancel()
-#             await asyncio.gather(*workers, return_exceptions=True)
-
-#         # 🆕 ЕДИНАЯ ФИНАЛИЗАЦИЯ через функцию!
-#     try:
-#         await finalize_processing(df, mode)  # Автоматически определит режим и сохранит!
-#     except Exception as e:
-#         logger.error(f"❌ Финальная обработка: {e}")
-
-#         # 🧹 Cleanup ОБОИХ браузеров
-#         await pool.close_all()
-#         await normal_browser.close()
-#         await proxy_browser.close()
-#         logger.info("🎉 Завершено!")
-
-
-# async def main_async():
-#     print("🚀 main.py ЗАПУЩЕН!")
-#     print(
-#         f"🔍 .env ДО reload: NAME={os.getenv('ENABLE_NAME_PARSING')}, WEIGHT={os.getenv('ENABLE_WEIGHT_PARSING')}"
-#     )
-
-#     reload_config()
-#     TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
-
-#     # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
-#     from config import (
-#         INPUT_FILE,
-#         MAX_ROWS,
-#         MAX_WORKERS,
-#         INPUT_COL_BRAND,
-#         INPUT_COL_ARTICLE,
-#         get_output_file,
-#         stparts_price,
-#         stparts_delivery,
-#         avtoformula_price,
-#         avtoformula_delivery,
-#         ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
-#         ENABLE_NAME_PARSING as LOCAL_NAME,
-#         ENABLE_PRICE_PARSING as LOCAL_PRICE,
-#         JPARTS_P_W,
-#         JPARTS_V_W,
-#         ARMTEK_P_W,
-#         ARMTEK_V_W,
-#         BAD_DETAIL_NAMES,
-#     )
-
-#     # Проверка: только 1 режим активен
-#     active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
-#     if active_modes != 1:
-#         error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
-#         logger.error(error_msg)
-#         return
-
-#     # Режим
-#     if LOCAL_WEIGHT:
-#         mode = "ВЕСА"
-#     elif LOCAL_NAME:
-#         mode = "ИМЕНА"
-#     else:
-#         mode = "ЦЕНЫ"
-
-#     logger.info(f"✅ Режим: {mode}")
-#     logger.info("=" * 60)
-
-#     # 📊 Загрузка и подготовка DataFrame
-#     df = pd.read_excel(INPUT_FILE)
-#     df = preprocess_dataframe(df)
-
-#     # 🆕 Инициализация колонок
-#     for col in [
-#         stparts_price,
-#         stparts_delivery,
-#         avtoformula_price,
-#         avtoformula_delivery,
-#     ]:
-#         if col not in df.columns:
-#             df[col] = None
-
-#     if LOCAL_NAME and "finde_name" not in df.columns:
-#         df["finde_name"] = None
-
-#     if LOCAL_WEIGHT:
-#         for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-#             if col not in df.columns:
-#                 df[col] = None
-
-#     # 🆕 Создание очереди задач
-#     queue = asyncio.Queue()
-#     total_tasks = 0
-
-#     for idx, row in df.head(MAX_ROWS).iterrows():
-#         article = str(row[INPUT_COL_ARTICLE]).strip()
-#         if article:
-#             task = (idx, str(row[INPUT_COL_BRAND]).strip(), article)
-#             queue.put_nowait(task)
-#             total_tasks += 1
-
-#     logger.info(f"📋 Задач в очереди: {total_tasks}")
-
-#     # 🆕 Контрольные точки прогресса
-#     progress_checkpoints = {
-#         math.ceil(total_tasks * 0.25),
-#         math.ceil(total_tasks * 0.50),
-#         math.ceil(total_tasks * 0.75),
-#         total_tasks,
-#     }
-#     sent_progress = set()
-#     counter = {"processed": 0}
-#     counter_lock = asyncio.Lock()
-
-#     async with async_playwright() as p:
-#         # 🆕 BROWSER #1: ContextPool (БЕЗ proxy)
-#         normal_browser = await p.chromium.launch(
-#             headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-#         )
-
-#         # 2️⃣ PROXY browser
-#         proxy_browser = await p.chromium.launch(
-#             headless=True,
-#             args=["--no-sandbox", "--disable-dev-shm-usage"],
-#             proxy={"server": "http://per-context"},
-#         )
-
-#         # ContextPool
-#         pool = ContextPool(
-#             normal_browser,
-#             pool_size=MAX_WORKERS,
-#             auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
-#         )
-#         await pool.initialize()
-
-#         with tqdm(total=total_tasks, desc="Парсинг") as pbar:
-#             workers = [
-#                 asyncio.create_task(
-#                     worker(
-#                         i,
-#                         queue,
-#                         pool,
-#                         normal_browser,
-#                         proxy_browser,
-#                         df,
-#                         pbar,
-#                         total_tasks,
-#                         progress_checkpoints,
-#                         sent_progress,
-#                         counter,
-#                         counter_lock,
-#                     )
-#                 )
-#                 for i in range(MAX_WORKERS)
-#             ]
-
-#             # 🔥 ✅ ОСНОВНОЙ ЦИКЛ: проверка STOP + join()
-#             while True:
-#                 # Проверяем STOP каждые 0.5с
-#                 if Path("input/STOP.flag").exists():
-#                     logger.warning("🛑 GLOBAL STOP!")
-#                     for w in workers:
-#                         w.cancel()
-#                     await asyncio.gather(*workers, return_exceptions=True)
-
-#                     # 🔥 ПРОСТО: merge + finalize_processing (всё сделает сама!)
-#                     try:
-#                         df_final = await merge_temp_files(
-#                             df, mode
-#                         )  # Merge всех worker файлов
-#                         await finalize_processing(df_final, mode)  # ✅ Автоматически:
-#                         # - Инициализирует колонки
-#                         # - consolidate_weights() если WEIGHT
-#                         # - adjust_prices_and_save() если PRICE
-#                         # - Сохранит + Telegram
-#                     except Exception as e:
-#                         logger.error(f"❌ STOP merge/финал failed: {e}")
-#                     break
-
-#                 # Проверяем очередь: если пуста — join()
-#                 if queue.empty():
-#                     logger.info("Очередь пуста, ждём queue.join()...")
-#                     try:
-#                         await asyncio.wait_for(
-#                             queue.join(), timeout=30.0
-#                         )  # Timeout на всякий случай
-#                         logger.info("✅ queue.join() завершён!")
-#                         break
-#                     except asyncio.TimeoutError:
-#                         logger.warning("⚠️ queue.join() timeout — проверяем workers...")
-#                         # Если join() не сработал — форсируем выход
-#                         break
-#                 else:
-#                     await asyncio.sleep(0.5)  # Лёгкая проверка
-
-#             # Graceful shutdown workers (poison pills)
-#             logger.info("🛑 Отправляем poison pills...")
-#             for _ in range(len(workers)):
-#                 await queue.put(None)
-
-#             # Ждём завершения workers
-#             for w in workers:
-#                 w.cancel()
-#             await asyncio.gather(*workers, return_exceptions=True)
-#             logger.info("✅ Все workers завершены!")
-
-#         # 🧹 Cleanup браузеров
-#         await pool.close_all()
-#         await normal_browser.close()
-#         await proxy_browser.close()
-
-#     # 🔥 ✅ ФИНАЛИЗАЦИЯ (всегда выполняется!)
-#     try:
-#         logger.info(f"🔄 Финализация ({mode})...")
-#         df_final = await merge_temp_files(df, mode)  # Автоматически всё merge'ит!
-#         await finalize_processing(df, mode)
-#         logger.info("🎉 Парсинг завершён успешно!")
-#     except Exception as e:
-#         logger.error(f"❌ Финальная обработка failed: {e}")
-#         # Emergency save
-#         emergency_file = get_output_file(mode).replace(".xlsx", "_emergency.xlsx")
-#         await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-#         logger.info(f"💾 Emergency save: {emergency_file}")
-
-
 async def main_async():
     print("🚀 main.py ЗАПУЩЕН!")
     print(
@@ -1490,7 +760,7 @@ async def main_async():
     )
 
     reload_config()
-    TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    # TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
     # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
     from config import (
@@ -1628,44 +898,54 @@ async def main_async():
                 for i in range(MAX_WORKERS)
             ]
 
-            # 🔥 ✅ ОСНОВНОЙ ЦИКЛ: проверка STOP + join()
+            # 🔥 ОСНОВНОЙ ЦИКЛ с промежуточным сохранением КАЖДЫЕ 10 строк!
             while True:
-                # Проверяем STOP каждые 0.5с
+                # 🆕 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ с защитой от дублей!
+                async with counter_lock:
+                    processed_count = counter["processed"]
+
+                    # 🆕 ПРОВЕРКА: сохраняем только если новая отметка!
+                    if (
+                        processed_count % TEMP_RAW == 0
+                        and processed_count > 0
+                        and counter.get("last_saved", -1) != processed_count
+                    ):
+
+                        try:
+                            df_current = preprocess_dataframe(df)
+                            await asyncio.to_thread(
+                                df_current.to_excel, TEMP_FILES_DIR, index=False
+                            )
+                            logger.info(
+                                f"💾 Промежуточное: {processed_count}/{total_tasks} → {TEMP_FILES_DIR}"
+                            )
+
+                            # 🆕 ОТМЕЧАЕМ: эта отметка сохранена!
+                            counter["last_saved"] = processed_count
+
+                        except Exception as e:
+                            logger.error(f"❌ Промежуточное: {e}")
+
+                # Проверки
                 if Path("input/STOP.flag").exists():
                     logger.warning("🛑 GLOBAL STOP!")
                     for w in workers:
                         w.cancel()
                     await asyncio.gather(*workers, return_exceptions=True)
-
-                    # 🔥 ПРОСТО: merge + finalize_processing (всё сделает сама!)
-                    try:
-                        df_final = await merge_temp_files(
-                            df, mode
-                        )  # Merge всех worker файлов
-                        await finalize_processing(df_final, mode)  # ✅ Автоматически:
-                        # - Инициализирует колонки
-                        # - consolidate_weights() если WEIGHT
-                        # - adjust_prices_and_save() если PRICE
-                        # - Сохранит + Telegram
-                    except Exception as e:
-                        logger.error(f"❌ STOP merge/финал failed: {e}")
+                    await finalize_processing(df, mode)  # ← Только 1 раз!
                     break
 
-                # Проверяем очередь: если пуста — join()
                 if queue.empty():
                     logger.info("Очередь пуста, ждём queue.join()...")
                     try:
-                        await asyncio.wait_for(
-                            queue.join(), timeout=30.0
-                        )  # Timeout на всякий случай
+                        await asyncio.wait_for(queue.join(), timeout=30.0)
                         logger.info("✅ queue.join() завершён!")
                         break
                     except asyncio.TimeoutError:
-                        logger.warning("⚠️ queue.join() timeout — проверяем workers...")
-                        # Если join() не сработал — форсируем выход
+                        logger.warning("⚠️ queue.join() timeout")
                         break
                 else:
-                    await asyncio.sleep(0.5)  # Лёгкая проверка
+                    await asyncio.sleep(0.5)
 
             # Graceful shutdown workers (poison pills)
             logger.info("🛑 Отправляем poison pills...")
@@ -1712,18 +992,17 @@ async def main_async():
         except Exception as e:
             logger.warning(f"⚠️ Playwright stop error: {e}")
 
-    # 🔥 ✅ ФИНАЛИЗАЦИЯ (всегда выполняется!)
-    try:
-        logger.info(f"🔄 Финализация ({mode})...")
-        df_final = await merge_temp_files(df, mode)  # Автоматически всё merge'ит!
-        await finalize_processing(df, mode)
-        logger.info("🎉 Парсинг завершён успешно!")
-    except Exception as e:
-        logger.error(f"❌ Финальная обработка failed: {e}")
-        # Emergency save
-        emergency_file = get_output_file(mode).replace(".xlsx", "_emergency.xlsx")
-        await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-        logger.info(f"💾 Emergency save: {emergency_file}")
+    # 🔥 ФИНАЛИЗАЦИЯ ТОЛЬКО при нормальном завершении!
+    if not Path("input/STOP.flag").exists():
+        try:
+            logger.info(f"🔄 Финализация ({mode})...")
+            await finalize_processing(df, mode)
+            logger.info("🎉 Парсинг завершён успешно!")
+        except Exception as e:
+            logger.error(f"❌ Финальная обработка failed: {e}")
+            emergency_file = get_output_file(mode).replace(".xlsx", "_emergency.xlsx")
+            await asyncio.to_thread(df.to_excel, emergency_file, index=False)
+            logger.info(f"💾 Emergency save: {emergency_file}")
 
 
 def main():

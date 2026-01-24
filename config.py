@@ -7,6 +7,11 @@ import logging
 logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
+
+TEMP_RAW = 100
+MAX_WORKERS = 5
+
+
 # === API и авторизация ===
 
 AVTO_LOGIN = os.getenv("AVTO_LOGIN", "your_login_here")
@@ -27,8 +32,8 @@ SEND_TO_TELEGRAM = True
 
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
-TEMP_FILES_DIR = Path("output/temp_files")
-TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)  # Авто-создание при импорте!
+TEMP_FILES_DIR = "input/temp_file.xlsx"
+# TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)  # Авто-создание при импорте!
 COOKIE_FILE = "output/avtoformula_cookies.json"
 STATE_FILE = "output/state.json"
 CACHE_FILE = "output/cache.json"
@@ -38,34 +43,6 @@ CACHE_FILE = "output/cache.json"
 ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
 ENABLE_WEIGHT_PARSING = os.getenv("ENABLE_WEIGHT_PARSING", "False").lower() == "true"
 ENABLE_PRICE_PARSING = os.getenv("ENABLE_PRICE_PARSING", "False").lower() == "true"
-
-
-def get_output_file(mode: str = None) -> str:
-    """Только 3 режима парсинга"""
-    if mode == "ВЕСА" or ENABLE_WEIGHT_PARSING:
-        return "output/веса_деталей.xlsx"
-    elif mode == "ИМЕНА" or ENABLE_NAME_PARSING:
-        return "output/найденные_имена.xlsx"
-    elif mode == "ЦЕНЫ" or ENABLE_PRICE_PARSING:
-        return "output/цены_конкурентов.xlsx"
-    else:
-        raise ValueError("❌ Ни один режим не выбран!")
-
-
-def reload_config():
-    """Принудительно перечитать .env и обновить глобалки"""
-    global ENABLE_NAME_PARSING, ENABLE_WEIGHT_PARSING, ENABLE_PRICE_PARSING  # ❌ Без AVTO
-
-    load_dotenv(override=True)
-    ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
-    ENABLE_WEIGHT_PARSING = (
-        os.getenv("ENABLE_WEIGHT_PARSING", "False").lower() == "true"
-    )
-    ENABLE_PRICE_PARSING = os.getenv("ENABLE_PRICE_PARSING", "False").lower() == "true"
-
-    logger.info(
-        f"🔄 Config: ИМЕНА={ENABLE_NAME_PARSING}, ВЕСА={ENABLE_WEIGHT_PARSING}, ЦЕНЫ={ENABLE_PRICE_PARSING}"
-    )
 
 
 # === Параметры ===
@@ -95,14 +72,10 @@ ARMTEK_V_W = "armtek_volumetric_weight"
 corrected_price = "corrected_price"
 
 
-TEMP_RAW = 10
-
 # === Названия столбцов во входном файле ===
 INPUT_COL_ARTICLE = "1"  # ← или как у тебя в файле
 INPUT_COL_BRAND = "3"  # ← или "Производитель", "Brand" и т.п.
 input_price = "5"  # индекс колонки             # ← если нужно читать цену по имени
-
-MAX_WORKERS = 5
 
 
 # === Селекторы ===
@@ -179,3 +152,31 @@ BAD_DETAIL_NAMES = {
     "запчасть",
     "part",
 }  # Расширяй по необходимости
+
+
+def reload_config():
+    """Принудительно перечитать .env и обновить глобалки"""
+    global ENABLE_NAME_PARSING, ENABLE_WEIGHT_PARSING, ENABLE_PRICE_PARSING  # ❌ Без AVTO
+
+    load_dotenv(override=True)
+    ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
+    ENABLE_WEIGHT_PARSING = (
+        os.getenv("ENABLE_WEIGHT_PARSING", "False").lower() == "true"
+    )
+    ENABLE_PRICE_PARSING = os.getenv("ENABLE_PRICE_PARSING", "False").lower() == "true"
+
+    logger.info(
+        f"🔄 Config: ИМЕНА={ENABLE_NAME_PARSING}, ВЕСА={ENABLE_WEIGHT_PARSING}, ЦЕНЫ={ENABLE_PRICE_PARSING}"
+    )
+
+
+def get_output_file(mode: str = None) -> str:
+    """Только 3 режима парсинга"""
+    if mode == "ВЕСА" or ENABLE_WEIGHT_PARSING:
+        return "output/веса_деталей.xlsx"
+    elif mode == "ИМЕНА" or ENABLE_NAME_PARSING:
+        return "output/найденные_имена.xlsx"
+    elif mode == "ЦЕНЫ" or ENABLE_PRICE_PARSING:
+        return "output/цены_конкурентов.xlsx"
+    else:
+        raise ValueError("❌ Ни один режим не выбран!")

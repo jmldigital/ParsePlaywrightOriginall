@@ -282,7 +282,7 @@ async def scrape_stparts_name_async(
         # ✅ FIX 1: Добавлен таймаут
         try:
             await page.goto(url, timeout=45000)
-            logger.info(f"Загружена страница: {url}")
+            # logger.info(f"Загружена страница: {url}")
         except PlaywrightTimeout:
             logger.warning(f"⏰ Таймаут загрузки страницы для {part}")
             return None
@@ -335,12 +335,12 @@ async def scrape_stparts_name_async(
         case_table_count = await page.locator(
             SELECTORS["stparts"]["case_table"]
         ).count()
-        logger.info(f"Количество таблиц globalCase: {case_table_count}")
+        # logger.info(f"Количество таблиц globalCase: {case_table_count}")
         if case_table_count > 0:
             case_table = page.locator(SELECTORS["stparts"]["case_table"])
             desc_cells = case_table.locator(SELECTORS["stparts"]["case_description"])
             desc_count = await desc_cells.count()
-            logger.info(f"Количество ячеек caseDescription: {desc_count}")
+            # logger.info(f"Количество ячеек caseDescription: {desc_count}")
             if desc_count > 0:
                 description = await desc_cells.nth(0).text_content()
                 logger.info(f"Содержимое первой ячейки в globalCase: {description}")
@@ -366,14 +366,14 @@ async def scrape_stparts_name_async(
                 SELECTORS["stparts"]["alt_result_description"]
             )
             desc_count = await desc_cells.count()
-            logger.info(f"Количество элементов resultDescription: {desc_count}")
+            # logger.info(f"Количество элементов resultDescription: {desc_count}")
             if desc_count > 0:
                 description = await desc_cells.nth(0).text_content()
-                logger.info(f"Содержимое первой ячейки в globalResult: {description}")
+                # logger.info(f"Содержимое первой ячейки в globalResult: {description}")
                 if description:
                     description = description.strip()
                     logger.info(
-                        f"✅ Найдено название детали в globalResult: {description}"
+                        f"✅ Найдено название {part} в globalResult: {description}"
                     )
                     return description
                 else:

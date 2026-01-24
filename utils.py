@@ -286,6 +286,7 @@ from playwright.async_api import Page
 from twocaptcha import TwoCaptcha
 
 
+# корокая функция без лишнего
 async def solve_captcha_universal(
     page: Page,
     logger,
@@ -1085,26 +1086,6 @@ def get_2captcha_proxy() -> dict[str, str]:
 #             logger.error(f"[{site_key}] Couldn't save processed captcha: {se}")
 
 #         return False
-
-
-# def get_site_logger(site_name: str) -> logging.Logger:
-#     """Создает отдельный логгер для конкретного сайта"""
-#     log_dir = Path("logs")
-#     log_dir.mkdir(exist_ok=True)
-
-#     log_file = log_dir / f"{site_name}.log"
-
-#     logger = logging.getLogger(site_name)
-#     if logger.handlers:
-#         return logger  # избегаем дублирования
-
-#     logger.setLevel(logging.INFO)
-#     fh = logging.FileHandler(log_file, encoding="utf-8", mode="w")
-#     fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-#     fh.setFormatter(fmt)
-#     logger.addHandler(fh)
-
-#     return logger
 
 
 def get_site_logger(site_name: str) -> logging.Logger:
