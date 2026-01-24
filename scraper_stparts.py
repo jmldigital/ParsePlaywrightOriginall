@@ -270,12 +270,10 @@ async def scrape_stparts_name_async(
             # logger.info(f"Количество ячеек caseDescription: {desc_count}")
             if desc_count > 0:
                 description = await desc_cells.nth(0).text_content()
-                logger.info(f"Содержимое первой ячейки в globalCase: {description}")
+                logger.info(f"{part} globalCase: {description}")
                 if description:
                     description = description.strip()
-                    logger.info(
-                        f"✅ Найдено название детали в globalCase: {description}"
-                    )
+                    logger.info(f"✅ {part} в ----: {description}")
                     return description
                 else:
                     logger.info("Первая ячейка caseDescription пустая")
@@ -286,7 +284,7 @@ async def scrape_stparts_name_async(
         alt_results_count = await page.locator(
             SELECTORS["stparts"]["alt_results_table"]
         ).count()
-        logger.info(f"Количество таблиц globalResult: {alt_results_count}")
+        # logger.info(f"Количество таблиц globalResult: {alt_results_count}")
         if alt_results_count > 0:
             alt_table = page.locator(SELECTORS["stparts"]["alt_results_table"])
             desc_cells = alt_table.locator(
@@ -299,9 +297,7 @@ async def scrape_stparts_name_async(
                 # logger.info(f"Содержимое первой ячейки в globalResult: {description}")
                 if description:
                     description = description.strip()
-                    logger.info(
-                        f"✅ Найдено название {part} в globalResult: {description}"
-                    )
+                    logger.info(f"✅ {part} в globalResult: {description}")
                     return description
                 else:
                     logger.info("Первый элемент resultDescription пустой")

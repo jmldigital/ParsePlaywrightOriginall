@@ -1281,31 +1281,84 @@ def brand_matches(search_brand, result_brand):
     return False
 
 
+# def consolidate_weights(df):
+#     """
+#     Из 4 колонок весов → 2 финальные
+#     Приоритет: japarts > armtek
+#     """
+#     logger.info("🔄 Консолидация весов: 4 колонки → 2 финальные")
+
+#     # Создаём финальные колонки
+#     df["physical_weight"] = None
+#     df["volumetric_weight"] = None
+
+#     for idx, row in df.iterrows():
+#         # Физический вес: japarts ИЛИ armtek
+#         if pd.notna(row[JPARTS_P_W]):
+#             df.at[idx, "physical_weight"] = row[JPARTS_P_W]
+#         elif pd.notna(row[ARMTEK_P_W]):
+#             df.at[idx, "physical_weight"] = row[ARMTEK_P_W]
+
+#         # Объёмный вес: japarts ИЛИ armtek
+#         if pd.notna(row[JPARTS_V_W]):
+#             df.at[idx, "volumetric_weight"] = row[JPARTS_V_W]
+#         elif pd.notna(row[ARMTEK_V_W]):
+#             df.at[idx, "volumetric_weight"] = row[ARMTEK_V_W]
+
+#     # Удаляем промежуточные колонки
+#     cols_to_drop = [
+#         JPARTS_P_W,
+#         JPARTS_V_W,
+#         ARMTEK_P_W,
+#         ARMTEK_V_W,
+#         stparts_price,
+#         stparts_delivery,
+#         avtoformula_price,
+#         avtoformula_delivery,
+#     ]
+#     df.drop(columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
+
+#     logger.info("✅ Консолидация весов завершена")
+#     return df
+
+
+def preprocess_weight_column(series):
+    """Безопасная обработка весов"""
+    if series.dtype == "object":
+        # "5" → 5.0, "нет" → NaN
+        series = pd.to_numeric(
+            series.astype(str).str.replace(",", "."), errors="coerce"
+        )
+    return series.astype("float64")
+
+
 def consolidate_weights(df):
-    """
-    Из 4 колонок весов → 2 финальные
-    Приоритет: japarts > armtek
-    """
-    logger.info("🔄 Консолидация весов: 4 колонки → 2 финальные")
+    logger.info("🔄 Консолидация с preprocess весов...")
 
-    # Создаём финальные колонки
-    df["physical_weight"] = None
-    df["volumetric_weight"] = None
+    # 📊 ДО с типами
+    logger.info(f"JP_P_W dtype: {df[JPARTS_P_W].dtype}")
+    logger.info(f"ARM_P_W dtype: {df[ARMTEK_P_W].dtype}")
 
-    for idx, row in df.iterrows():
-        # Физический вес: japarts ИЛИ armtek
-        if pd.notna(row[JPARTS_P_W]):
-            df.at[idx, "physical_weight"] = row[JPARTS_P_W]
-        elif pd.notna(row[ARMTEK_P_W]):
-            df.at[idx, "physical_weight"] = row[ARMTEK_P_W]
+    # 🔥 PREPROCESS весовых колонок!
+    df[JPARTS_P_W] = preprocess_weight_column(df[JPARTS_P_W])
+    df[ARMTEK_P_W] = preprocess_weight_column(df[ARMTEK_P_W])
+    df[JPARTS_V_W] = preprocess_weight_column(df[JPARTS_V_W])
 
-        # Объёмный вес: japarts ИЛИ armtek
-        if pd.notna(row[JPARTS_V_W]):
-            df.at[idx, "volumetric_weight"] = row[JPARTS_V_W]
-        elif pd.notna(row[ARMTEK_V_W]):
-            df.at[idx, "volumetric_weight"] = row[ARMTEK_V_W]
+    # 📊 После preprocess
+    jp_phys = df[JPARTS_P_W].notna().sum()
+    arm_phys = df[ARMTEK_P_W].notna().sum()
+    logger.info(f"📊 После preprocess: JP={jp_phys}, ARM={arm_phys}")
 
-    # Удаляем промежуточные колонки
+    # 🔥 Векторная консолидация
+    df["physical_weight"] = df[JPARTS_P_W].fillna(df[ARMTEK_P_W])
+    df["volumetric_weight"] = df[JPARTS_V_W]  # Только JP!
+
+    # Финальная статистика
+    phys_final = df["physical_weight"].notna().sum()
+    vol_final = df["volumetric_weight"].notna().sum()
+    logger.info(f"📊 ФИНАЛ: phys={phys_final}, vol={vol_final}")
+
+    # Drop только весовые
     cols_to_drop = [
         JPARTS_P_W,
         JPARTS_V_W,
@@ -1316,9 +1369,14 @@ def consolidate_weights(df):
         avtoformula_price,
         avtoformula_delivery,
     ]
-    df.drop(columns=[col for col in cols_to_drop if col in df.columns], inplace=True)
 
-    logger.info("✅ Консолидация весов завершена")
+    df.drop(
+        columns=[col for col in cols_to_drop if col in df.columns],
+        inplace=True,
+        errors="ignore",
+    )
+
+    logger.info("✅ Консолидация завершена!")
     return df
 
 

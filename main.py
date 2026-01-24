@@ -59,6 +59,7 @@ from config import (
     TEMP_FILES_DIR,
     reload_config,
     SELECTORS,
+    DELAY_EXIST,
 )
 
 from utils import (
@@ -67,6 +68,7 @@ from utils import (
     consolidate_weights,
     clear_debug_folders_sync,
     get_2captcha_proxy,
+    get_site_logger,
 )
 from state_manager import load_state, save_state
 from price_adjuster import adjust_prices_and_save
@@ -94,7 +96,7 @@ LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 # === Разделение логов ===
-from utils import get_site_logger
+
 
 logger_avto = get_site_logger("avtoformula")
 logger_st = get_site_logger("stparts")
@@ -109,6 +111,7 @@ sites = ["avtoformula", "stparts", "japarts", "armtek"]
 INPUT_DIR = Path("input")
 
 stop_files = ["STOP", "STOP.flag", "AIL_STOP"]
+
 for name in stop_files:
     path = INPUT_DIR / name
     if path.exists():
@@ -172,10 +175,29 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
     """Финальная обработка + сохранение (для normal/extreme stop)"""
     logger.info(f"🔄 Финализация ({mode})...")
 
+    # 🔥 ФИКС — импортируем константы!
+    from config import (
+        ENABLE_WEIGHT_PARSING,
+        ENABLE_PRICE_PARSING,
+        ENABLE_NAME_PARSING,
+        stparts_price,
+        stparts_delivery,
+        avtoformula_price,
+        avtoformula_delivery,
+        JPARTS_P_W,
+        JPARTS_V_W,
+        ARMTEK_P_W,
+        ARMTEK_V_W,
+    )
+
     # 🆕 ЛОКАЛЬНЫЕ КОПИИ!
     local_weight = ENABLE_WEIGHT_PARSING
     local_price = ENABLE_PRICE_PARSING
     local_name = ENABLE_NAME_PARSING
+
+    logger.info(
+        f"🔧 Режимы: weight={local_weight}, price={local_price}, name={local_name}"
+    )
 
     # 🆕 Проверяем DataFrame
     if df is None or df.empty:
@@ -212,6 +234,23 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
         if local_name and "finde_name" not in df.columns:
             df["finde_name"] = None
 
+        # 🔥 Drop ЛИШНИЕ колонки для ИМЕНА
+        if local_name:
+            cols_to_drop_name = [
+                JPARTS_P_W,
+                JPARTS_V_W,
+                ARMTEK_P_W,
+                ARMTEK_V_W,  # Веса
+                stparts_price,
+                stparts_delivery,  # Цены stparts
+                avtoformula_price,
+                avtoformula_delivery,  # Цены avto
+            ]
+            existing_name_cols = [col for col in cols_to_drop_name if col in df.columns]
+            if existing_name_cols:
+                logger.info(f"🧹 ИМЕНА: drop {len(existing_name_cols)} колонок")
+                df.drop(columns=existing_name_cols, inplace=True)
+
         if local_weight:  # Режим весов
             df = await asyncio.to_thread(consolidate_weights, df)
             logger.info("✅ Веса консолидированы")
@@ -225,6 +264,7 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
         logger.info(f"💾 Сохраняем в: {output_file}")
 
         if local_price:
+            logger.info(f"💾 Сохраняем внутри финалайза в: {output_file}")
             await asyncio.to_thread(adjust_prices_and_save, df, output_file)
         else:
             await asyncio.to_thread(df.to_excel, output_file, index=False)
@@ -244,6 +284,120 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             await send_telegram_file(emergency_file, f"⚠️ {mode} (emergency)")
         except Exception as e2:
             logger.error(f"❌ Даже emergency save failed: {e2}")
+
+
+# async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = None):
+#     """Финальная обработка + сохранение с ПОЛНОЙ отладкой"""
+#     logger.info(f"🔄 Финализация ({mode})...")
+#     logger.info(f"📊 df.shape ВХОД: {df.shape}")
+
+#     # СКРИН 1 — ВХОД
+#     from pathlib import Path
+
+#     output_dir = Path("output")
+#     output_dir.mkdir(exist_ok=True)
+#     debug1 = output_dir / f"finalize_1_input_{mode}.xlsx"
+#     await asyncio.to_thread(df.to_excel, debug1)
+#     logger.info(f"💾 Шаг1: {debug1}")
+
+#     # 🆕 ЛОКАЛЬНЫЕ КОПИИ!
+#     local_weight = ENABLE_WEIGHT_PARSING
+#     local_price = ENABLE_PRICE_PARSING
+#     local_name = ENABLE_NAME_PARSING
+
+#     logger.info(
+#         f"🔧 Режимы: weight={local_weight}, price={local_price}, name={local_name}"
+#     )
+
+#     if df is None or df.empty:
+#         logger.error("❌ DataFrame пустой!")
+#         return
+
+#     try:
+#         from config import (
+#             stparts_price,
+#             stparts_delivery,
+#             avtoformula_price,
+#             avtoformula_delivery,
+#             JPARTS_P_W,
+#             JPARTS_V_W,
+#             ARMTEK_P_W,
+#             ARMTEK_V_W,
+#         )
+
+#         # Статистика ДО
+#         logger.info(f"📊 ДО init колонок:")
+#         logger.info(f"  JP_Phys: {df[JPARTS_P_W].notna().sum()}")
+#         logger.info(f"  ARM_Phys: {df[ARMTEK_P_W].notna().sum()}")
+
+#         # Инициализация колонок
+#         for col in [
+#             stparts_price,
+#             stparts_delivery,
+#             avtoformula_price,
+#             avtoformula_delivery,
+#         ]:
+#             if col not in df.columns:
+#                 df[col] = None
+
+#         if local_weight:
+#             for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
+#                 if col not in df.columns:
+#                     df[col] = None
+
+#         if local_name and "finde_name" not in df.columns:
+#             df["finde_name"] = None
+
+#         # # СКРИН 2 — ПОСЛЕ init колонок
+#         # debug2 = output_dir / f"finalize_2_init_cols_{mode}.xlsx"
+#         # await asyncio.to_thread(df.to_excel, debug2)
+#         # logger.info(f"💾 Шаг2: {debug2}")
+
+#         if local_weight:
+#             logger.info("🔄 consolidate_weights...")
+#             df = await asyncio.to_thread(consolidate_weights, df)
+#             logger.info("✅ Веса консолидированы")
+
+#             # # СКРИН 3 — ПОСЛЕ consolidate
+#             # debug3 = output_dir / f"finalize_3_consolidate_{mode}.xlsx"
+#             # await asyncio.to_thread(df.to_excel, debug3)
+#             # logger.info(f"💾 Шаг3: {debug3}")
+
+#         # output_file
+#         if not output_file:
+#             output_file = get_output_file(mode)
+#             if not output_file:
+#                 raise ValueError(f"Нет output_file для {mode}")
+
+#         logger.info(f"💾 Финал: {output_file}")
+
+#         # # СКРИН 4 — ПЕРЕД сохранением
+#         # debug4 = output_dir / f"finalize_4_pre_save_{mode}.xlsx"
+#         # await asyncio.to_thread(df.to_excel, debug4)
+#         # logger.info(f"💾 Шаг4: {debug4}")
+
+#         if local_price:
+#             logger.info("🔄 adjust_prices_and_save...")
+#             await asyncio.to_thread(
+#                 adjust_prices_and_save, df.copy(), output_file
+#             )  # copy!
+#         else:
+#             logger.info("🔄 to_excel...")
+#             await asyncio.to_thread(df.to_excel, output_file, index=False)
+
+#         # # СКРИН 5 — ПОСЛЕ сохранения (проверка)
+#         # logger.info(f"✅ Сохранено: {output_file}")
+#         # await send_telegram_file(output_file, f"✅ {mode} завершены!")
+
+#     except Exception as e:
+#         logger.error(f"❌ Ошибка финализации: {e}", exc_info=True)
+#         emergency_file = str(output_file).replace(".xlsx", "_emergency.xlsx")
+#         try:
+#             await asyncio.to_thread(df.to_excel, emergency_file, index=False)
+#             logger.info(f"💾 Emergency: {emergency_file}")
+#             await send_telegram_file(emergency_file, f"⚠️ {mode} emergency")
+#         except Exception as e2:
+#             logger.error(f"❌ Emergency failed: {e2}")
 
 
 # === Пул контекстов ===
@@ -792,7 +946,8 @@ async def worker(
         try:
             # Получаем задачу (блокируется до получения)
             idx_brand_part = await queue.get()
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            if DELAY_EXIST:
+                await asyncio.sleep(random.uniform(1.5, 3.0))
 
             # Если None — poison pill (graceful exit)
             if idx_brand_part is None:
@@ -1117,7 +1272,6 @@ async def main_async():
 
             # 🔥 ОСНОВНОЙ ЦИКЛ с промежуточным сохранением КАЖДЫЕ 10 строк!
             while True:
-                # 🆕 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ с защитой от дублей!
                 async with counter_lock:
                     processed_count = counter["processed"]
 
@@ -1165,9 +1319,13 @@ async def main_async():
                     await asyncio.sleep(1.0)
 
             # Graceful shutdown workers (poison pills)
-            logger.info("🛑 Отправляем poison pills...")
-            for _ in range(len(workers)):
-                await queue.put(None)
+            # logger.info("🛑 Отправляем poison pills...")
+            # for _ in range(len(workers)):
+            #     await queue.put(None)
+
+            # ✅ ДОБАВИТЬ:
+            logger.info("⏳ Буфер записи df...")
+            await asyncio.sleep(8)
 
             # Ждём завершения workers
             for w in workers:
@@ -1229,7 +1387,12 @@ async def main_async():
             logger.info(f"Веса ARM: {df[ARMTEK_P_W].notna().sum()}")
 
             # Сохрани debug
-            await asyncio.to_thread(df.to_excel, "debug_final.xlsx")
+            # main_async перед finalize:
+            output_dir = Path("output")
+            output_dir.mkdir(exist_ok=True)
+            debug_file = output_dir / "debug_pre_final.xlsx"
+            logger.info(f"🔍 Debug в output: {debug_file}")
+            await asyncio.to_thread(df.to_excel, debug_file)
 
             await finalize_processing(df, mode)
             logger.info("🎉 Парсинг завершён успешно!")

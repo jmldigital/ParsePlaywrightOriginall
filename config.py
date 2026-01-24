@@ -8,8 +8,9 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 20
+TEMP_RAW = 100
 MAX_WORKERS = 3
+DELAY_EXIST = True  # ✅ Задержка перед тасками
 
 
 # === API и авторизация ===

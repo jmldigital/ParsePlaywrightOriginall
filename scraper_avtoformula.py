@@ -391,7 +391,7 @@ async def scrape_avtoformula_name_async(
     """
     try:
         await page.goto("https://www.avtoformula.ru", wait_until="networkidle")
-        logger.info(f"🌐 Страница загружена: avtoformula.ru")
+        # logger.info(f"🌐 Страница загружена: avtoformula.ru")
 
         # Ввод артикула
         article_field = page.locator(f"#{SELECTORS['avtoformula']['article_field']}")

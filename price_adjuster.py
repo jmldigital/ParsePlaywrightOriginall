@@ -3,6 +3,8 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl import load_workbook
 import pandas as pd
+
+
 from config import (
     corrected_price,
     stparts_price,
@@ -13,9 +15,6 @@ from config import (
     INPUT_COL_ARTICLE,
     INPUT_COL_BRAND,
 )
-
-from utils import logger, parse_price
-import re
 
 
 def parse_delivery_days(delivery_str):
@@ -28,11 +27,22 @@ def parse_delivery_days(delivery_str):
     return None
 
 
+import logging
+from utils import parse_price
+import re
+
+#  🔥 Берём logger из main!
+logger = logging.getLogger("main")  # Главный logger!
+
+
 def adjust_prices_and_save(df, output_file):
     """
     Добавляет скорректированную цену и сохраняет DataFrame с цветовым форматированием.
     Подробно логирует процесс обработки строк и вычислений.
     """
+
+    logger.info(f"🔄 adjust_prices: shape={df.shape}")
+    logger.info(f"📊 columns ДО: {list(df.columns)}")
 
     corrected_prices = []
 
@@ -107,6 +117,7 @@ def adjust_prices_and_save(df, output_file):
     df[corrected_price] = corrected_prices
 
     # logger.info(f"датафрейм перед всеми манипуляуиями {df[corrected_price]})")
+    logger.info(f"✅ corrected_price ДОБАВЛЕНО: {df[corrected_price].notna().sum()}")
 
     # Сохраняем с форматированием
     try:
