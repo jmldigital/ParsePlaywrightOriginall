@@ -168,21 +168,7 @@ async def scrape_avtoformula_pw(
         # ✅ КРИТИЧНО: Сначала проверяем капчу ОДИН РАЗ
         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
             logger.warning("⚠️ Обнаружена капча на avtoformula.ru")
-            if not await solve_captcha_universal(
-                page=page,
-                logger=logger,
-                site_key="avtoformula",
-                selectors={
-                    "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                    "captcha_input": SELECTORS["avtoformula"]["captcha_input"],
-                    "submit": SELECTORS["avtoformula"]["captcha_submit"],
-                },
-                max_attempts=3,
-                scale_factor=3,
-                wait_after_submit_ms=8000,
-            ):
-                logger.error("Не удалось решить капчу")
-                return None, None
+            return "NeedCaptcha"
 
         # Ожидание результатов (БЕЗ повторной проверки капчи!)
         start = time.time()
@@ -293,25 +279,11 @@ async def fallback_avtoformula_search(
         await page.wait_for_timeout(3000)
 
         # ✅ ТОЛЬКО если капча НЕ была решена ранее
-        if not captcha_solved:
-            if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
-                logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
-                if not await solve_captcha_universal(
-                    page=page,
-                    logger=logger,
-                    site_key="avtoformula",
-                    selectors={
-                        "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                        "captcha_input": SELECTORS["avtoformula"]["captcha_input"],
-                        "submit": 'input[name="submit"][value="Отправить"]',
-                    },
-                    max_attempts=3,
-                    scale_factor=3,
-                    wait_after_submit_ms=8000,
-                ):
-                    logger.error("Не удалось решить капчу (fallback)")
-                    return None, None
-                await page.wait_for_timeout(3000)
+
+        if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+            logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+            return "NeedCaptcha"
+            # await page.wait_for_timeout(3000)
 
         # Проверка отсутствия товара
         html = await page.content()
@@ -431,21 +403,7 @@ async def scrape_avtoformula_name_async(
         # ✅ КРИТИЧНО: Сначала проверяем капчу ОДИН РАЗ
         if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
             logger.warning("⚠️ Обнаружена капча на avtoformula.ru")
-            if not await solve_captcha_universal(
-                page=page,
-                logger=logger,
-                site_key="avtoformula",
-                selectors={
-                    "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                    "captcha_input": SELECTORS["avtoformula"]["captcha_input"],
-                    "submit": 'input[name="submit"][value="Отправить"]',
-                },
-                max_attempts=3,
-                scale_factor=3,
-                wait_after_submit_ms=8000,
-            ):
-                logger.error("Не удалось решить капчу")
-                return None
+            return "NeedCaptcha"
 
         # Ожидание появления результатов (БЕЗ повторной проверки капчи!)
         start = time.time()
@@ -508,25 +466,9 @@ async def fallback_avtoformula_name_search(
         await page.wait_for_timeout(3000)
 
         # ✅ ТОЛЬКО если капча НЕ была решена ранее
-        if not captcha_solved:
-            if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
-                logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
-                if not await solve_captcha_universal(
-                    page=page,
-                    logger=logger,
-                    site_key="avtoformula",
-                    selectors={
-                        "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                        "captcha_input": SELECTORS["avtoformula"]["captcha_input"],
-                        "submit": 'input[name="submit"][value="Отправить"]',
-                    },
-                    max_attempts=3,
-                    scale_factor=3,
-                    wait_after_submit_ms=8000,
-                ):
-                    logger.error("Не удалось решить капчу (fallback)")
-                    return None
-                await page.wait_for_timeout(3000)
+        if await page.locator(SELECTORS["avtoformula"]["captcha_img"]).is_visible():
+            logger.warning("⚠️ Обнаружена капча на avtoformula.ru (fallback)")
+            return "NeedCaptcha"
 
         # Проверка отсутствия товара
         html = await page.content()

@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 100
-MAX_WORKERS = 5
+TEMP_RAW = 20
+MAX_WORKERS = 3
 
 
 # === API и авторизация ===

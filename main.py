@@ -18,7 +18,9 @@ import multiprocessing
 from pathlib import Path
 from tqdm.asyncio import tqdm
 from dotenv import load_dotenv
+from captcha_manager import CaptchaManager
 
+captcha_manager = CaptchaManager()
 
 # 🔥 ГЛОБАЛЬНЫЙ UTF-8 для ВСЕГО
 sys.stdout.reconfigure(encoding="utf-8")
@@ -56,6 +58,7 @@ from config import (
     TEMP_RAW,
     TEMP_FILES_DIR,
     reload_config,
+    SELECTORS,
 )
 
 from utils import (
@@ -227,7 +230,7 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             await asyncio.to_thread(df.to_excel, output_file, index=False)
 
         logger.info(f"✅ Сохранено: {output_file}")
-        # await send_telegram_file(output_file, f"✅ {mode} завершены!")
+        await send_telegram_file(output_file, f"✅ {mode} завершены!")
 
     except Exception as e:
         logger.error(
@@ -368,7 +371,12 @@ class ContextPool:
 #         logger.info(f"✅ {self.pool_size} простых контекстов готово")
 
 
-async def process_single_item(page1, idx: int, brand: str, part: str):
+async def process_single_item(
+    context,
+    idx: int,
+    brand: str,
+    part: str,
+):
     """
     Только логика парсинга БЕЗ создания контекстов!
     Поддерживает WEIGHT/NAME/PRICE режимы.
@@ -436,115 +444,318 @@ async def process_single_item(page1, idx: int, brand: str, part: str):
     # ======================= WEIGHT =======================
 
     if WEIGHT:
-        jp_physical, jp_volumetric = None, None
-        armtek_physical, armtek_volumetric = None, None
+        max_retries = 2
 
-        try:
-            # Japarts
-            # logger.info(f"🔍 [{idx}] Japarts: {part}")
-            jp_physical, jp_volumetric = await scrape_weight_japarts(
-                page1, part, logger_jp
-            )
+        for attempt in range(max_retries + 1):
+            # page1 = None
 
-            # Armtek — ТОЛЬКО при Japarts fail
-            if not jp_physical or not jp_volumetric:
-                # logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+            try:
+                # 🆕 Новая страница каждый retry
+                page1 = await context.new_page()
 
-                armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                    page1, part, logger_armtek
+                jp_physical, jp_volumetric = None, None
+                armtek_physical, armtek_volumetric = None, None
+
+                # 1️⃣ Japarts (первый приоритет)
+                jp_physical, jp_volumetric = await scrape_weight_japarts(
+                    page1, part, logger_jp
                 )
 
-                # 🚨 RateLimit детектор!
-                if armtek_physical == "NeedProxy":
-                    logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
-                    return "NeedProxy"  # ← ПРОКИДЫВАЕМ НАВЕРХ!
+                # 🆕 Проверка капчи Japarts
+                if jp_physical == "NeedCaptcha" or jp_volumetric == "NeedCaptcha":
+                    logger.info(
+                        f"🔒 [{idx}] Капча на japarts (попытка {attempt+1}/{max_retries+1})"
+                    )
+                    success = await captcha_manager.solve_captcha(
+                        page=page1,
+                        logger=logger_jp,
+                        site_key="japarts",
+                        selectors={
+                            "captcha_img": SELECTORS.get("japarts", {}).get(
+                                "captcha_img"
+                            ),
+                            "captcha_input": SELECTORS.get("japarts", {}).get(
+                                "captcha_input"
+                            ),
+                            "captcha_submit": SELECTORS.get("japarts", {}).get(
+                                "captcha_submit"
+                            ),
+                        },
+                    )
 
-                # Сохраняем Armtek результат
-                result.update(
-                    {
-                        JPARTS_P_W: jp_physical,
-                        JPARTS_V_W: jp_volumetric,
-                        ARMTEK_P_W: armtek_physical,
-                        ARMTEK_V_W: armtek_volumetric,
-                    }
+                    await safe_close_page(page1)
+                    page1 = None
+
+                    if success:
+                        continue  # Retry
+                    else:
+                        return "CaptchaFailed"
+
+                # 2️⃣ Armtek ТОЛЬКО при Japarts fail
+                if not jp_physical or not jp_volumetric:
+                    logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
+
+                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
+                        page1, part, logger_armtek
+                    )
+
+                    # 🆕 Проверка капчи Armtek
+                    if (
+                        armtek_physical == "NeedCaptcha"
+                        or armtek_volumetric == "NeedCaptcha"
+                    ):
+                        logger.info(
+                            f"🔒 [{idx}] Капча на armtek (попытка {attempt+1}/{max_retries+1})"
+                        )
+                        success = await captcha_manager.solve_captcha(
+                            page=page1,
+                            logger=logger_armtek,
+                            site_key="armtek",
+                            selectors={
+                                "captcha_img": SELECTORS.get("armtek", {}).get(
+                                    "captcha_img"
+                                ),
+                                "captcha_input": SELECTORS.get("armtek", {}).get(
+                                    "captcha_input"
+                                ),
+                                "captcha_submit": SELECTORS.get("armtek", {}).get(
+                                    "captcha_submit"
+                                ),
+                            },
+                        )
+
+                        await safe_close_page(page1)
+                        page1 = None
+
+                        if success:
+                            continue  # Retry
+                        else:
+                            return "CaptchaFailed"
+
+                    # 🚨 RateLimit (остается как есть)
+                    if armtek_physical == "NeedProxy":
+                        logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
+                        await safe_close_page(page1)
+                        return "NeedProxy"
+
+                    # ✅ Armtek результат
+                    result.update(
+                        {
+                            JPARTS_P_W: jp_physical,
+                            JPARTS_V_W: jp_volumetric,
+                            ARMTEK_P_W: armtek_physical,
+                            ARMTEK_V_W: armtek_volumetric,
+                        }
+                    )
+
+                else:
+                    # ✅ Только Japarts
+                    result.update(
+                        {
+                            JPARTS_P_W: jp_physical,
+                            JPARTS_V_W: jp_volumetric,
+                            ARMTEK_P_W: None,
+                            ARMTEK_V_W: None,
+                        }
+                    )
+
+                await safe_close_page(page1)
+                break  # ✅ Успех!
+
+            except Exception as e:
+                logger.error(
+                    f"❌ [{idx}] Weight parse error (попытка {attempt+1}): {e}"
                 )
+                await safe_close_page(page1)
+                if attempt < max_retries:
+                    continue
 
-            else:
-                # Только Japarts
-                result.update(
-                    {
-                        JPARTS_P_W: jp_physical,
-                        JPARTS_V_W: jp_volumetric,
-                        ARMTEK_P_W: None,
-                        ARMTEK_V_W: None,
-                    }
-                )
-
-        except Exception as e:
-            logger.error(f"❌ [{idx}] Weight parse error: {e}")
+            # Если все попытки исчерпаны
             result.update(
                 {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
             )
-        logger.info(f"📊 [{idx}] {part} result: {result}")
-        return result  # 🔥 🔥 ДОБАВИТЬ ЭТУ СТРОКУ! 🔥 🔥
 
     # ======================= NAME =======================
     if NAME:
-        try:
-            detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+        max_retries = 2
 
-            if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
-                if detail_name:
-                    logger.info(f"⚠️ [{idx}] stparts '{detail_name}' → avtoformula")
-                detail_name = await scrape_avtoformula_name_async(
-                    page1, part, logger_avto
-                )
+        for attempt in range(max_retries + 1):
+            # page1 = None
+
+            try:
+                page1 = await context.new_page()
+
+                # 1) stparts
+                detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+
+                if detail_name == "NeedCaptcha":
+                    logger.info(
+                        f"🔒 [{idx}] Капча на stparts (попытка {attempt+1}/{max_retries+1})"
+                    )
+                    success = await captcha_manager.solve_captcha(
+                        page=page1,
+                        logger=logger_st,
+                        site_key="stparts",
+                        selectors={
+                            "captcha_img": SELECTORS["stparts"]["captcha_img"],
+                            "captcha_input": SELECTORS["stparts"]["captcha_input"],
+                            "captcha_submit": SELECTORS["stparts"]["captcha_submit"],
+                        },
+                    )
+
+                    await safe_close_page(page1)
+                    page1 = None
+
+                    if success:
+                        continue  # retry
+                    else:
+                        return "CaptchaFailed"
+
+                # Если имя плохое → avtoformula
+                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
+                    if detail_name:
+                        logger.info(f"⚠️ [{idx}] stparts '{detail_name}' → avtoformula")
+
+                    detail_name = await scrape_avtoformula_name_async(
+                        page1, part, logger_avto
+                    )
+
+                    if detail_name == "NeedCaptcha":
+                        logger.info(
+                            f"🔒 [{idx}] Капча на avtoformula (попытка {attempt+1}/{max_retries+1})"
+                        )
+                        success = await captcha_manager.solve_captcha(
+                            page=page1,
+                            logger=logger_avto,
+                            site_key="avtoformula",
+                            selectors={
+                                "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
+                                "captcha_input": SELECTORS["avtoformula"][
+                                    "captcha_input"
+                                ],
+                                "captcha_submit": SELECTORS["avtoformula"][
+                                    "captcha_submit"
+                                ],
+                            },
+                        )
+
+                        await safe_close_page(page1)
+                        page1 = None
+
+                        if success:
+                            continue
+                        else:
+                            return "CaptchaFailed"
 
                 if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
                     detail_name = "Detail"
                     logger.info(f"❌ [{idx}] Название не найдено: {part}")
 
-            result["finde_name"] = detail_name
+                await safe_close_page(page1)
 
-        except Exception as e:
-            logger.error(f"❌ [{idx}] Name parse error: {e}")
-            result["finde_name"] = "Detail"
+                result["finde_name"] = detail_name
+                break
+
+            except Exception as e:
+                logger.error(f"❌ [{idx}] Name parse error (попытка {attempt+1}): {e}")
+                await safe_close_page(page1)
+                if attempt < max_retries:
+                    continue
+                result["finde_name"] = "Detail"
 
     # ======================= PRICE =======================
-    if PRICE:  # PRICE — 🔥 ИМЕННО КАК В СТАРОМ!
-        try:
-            page2 = await page1.context.new_page()  # 🆕 ИЗ ТОГО ЖЕ CONTEXT!
+    if PRICE:
+        max_retries = 2
 
-            result_price_st, result_price_avto = await asyncio.gather(
-                scrape_stparts_async(page1, brand, part, logger_st),
-                scrape_avtoformula_pw(page2, brand, part, logger_avto),
-                return_exceptions=True,
-            )
+        for attempt in range(max_retries + 1):
+            page1 = None
+            page2 = None
 
-            await safe_close_page(page2)  # Закрываем ВТОРУЮ
+            try:
+                # 🆕 свежие страницы каждый retry из контекста
+                page1 = await context.new_page()  # Stparts
+                page2 = await context.new_page()  # Avtoformula
 
-            # Проверка разлогина (адаптируйте под worker)
-            if (
-                isinstance(result_price_avto, Exception)
-                and "зарегистрируйтесь" in str(result_price_avto).lower()
-            ):
-                return "ReauthNeeded"  # Worker: pool.refresh_cookies() + retry
+                result_st, result_avto = await asyncio.gather(
+                    scrape_stparts_async(page1, brand, part, logger_st),
+                    scrape_avtoformula_pw(page2, brand, part, logger_avto),
+                    return_exceptions=True,
+                )
 
-            # Возврат как в старом
-            price_st, delivery_st = result_price_st if result_price_st else (None, None)
-            price_avto, delivery_avto = (
-                result_price_avto if result_price_avto else (None, None)
-            )
-            return idx, {
-                stparts_price: price_st,
-                stparts_delivery: delivery_st,
-                avtoformula_price: price_avto,
-                avtoformula_delivery: delivery_avto,
-            }
+                # Капча
+                if result_st == "NeedCaptcha" or result_avto == "NeedCaptcha":
+                    site_to_solve = (
+                        "stparts" if result_st == "NeedCaptcha" else "avtoformula"
+                    )
+                    logger_to_use = (
+                        logger_st if site_to_solve == "stparts" else logger_avto
+                    )
+                    page_to_solve = page1 if site_to_solve == "stparts" else page2
 
-        except Exception as e:
-            logger.error(f"Ошибка [{idx}]: {e}")
-            return None  # ← Нормальный результат
+                    logger.info(
+                        f"🔒 [{idx}] Капча на {site_to_solve} (попытка {attempt+1}/{max_retries+1})"
+                    )
+
+                    success = await captcha_manager.solve_captcha(
+                        page=page_to_solve,
+                        logger=logger_to_use,
+                        site_key=site_to_solve,
+                        selectors={
+                            "captcha_img": SELECTORS[site_to_solve]["captcha_img"],
+                            "captcha_input": SELECTORS[site_to_solve]["captcha_input"],
+                            "captcha_submit": SELECTORS[site_to_solve][
+                                "captcha_submit"
+                            ],
+                        },
+                    )
+
+                    await safe_close_page(page1)
+                    await safe_close_page(page2)
+                    page1 = page2 = None
+
+                    if success:
+                        continue  # retry с новыми страницами из того же контекста
+                    else:
+                        return "CaptchaFailed"
+
+                # Разлогин
+                if (
+                    isinstance(result_avto, Exception)
+                    and "зарегистрируйтесь" in str(result_avto).lower()
+                ):
+                    await safe_close_page(page1)
+                    await safe_close_page(page2)
+                    return "ReauthNeeded"
+
+                # Нормализация результатов
+                price_st, delivery_st = (
+                    result_st
+                    if result_st and result_st != "NeedCaptcha"
+                    else (None, None)
+                )
+                price_avto, delivery_avto = (
+                    result_avto
+                    if result_avto and result_avto != "NeedCaptcha"
+                    else (None, None)
+                )
+
+                await safe_close_page(page1)
+                await safe_close_page(page2)
+
+                return idx, {
+                    stparts_price: price_st,
+                    stparts_delivery: delivery_st,
+                    avtoformula_price: price_avto,
+                    avtoformula_delivery: delivery_avto,
+                }
+
+            except Exception as e:
+                logger.error(f"[{idx}] PRICE ошибка попытка {attempt+1}: {e}")
+                await safe_close_page(page1)
+                await safe_close_page(page2)
+                if attempt < max_retries:
+                    continue
+                return None
 
     return result  # Общий return в конце
 
@@ -574,13 +785,14 @@ async def worker(
 
     while True:  # ← Изменено: while True вместо queue.empty()
         idx_brand_part = None
-        page1 = None
-        page_retry = None
+        # page1 = None
+        # page_retry = None
         pool_ctx_obj = None
 
         try:
             # Получаем задачу (блокируется до получения)
             idx_brand_part = await queue.get()
+            await asyncio.sleep(random.uniform(1.5, 3.0))
 
             # Если None — poison pill (graceful exit)
             if idx_brand_part is None:
@@ -602,15 +814,15 @@ async def worker(
             if not using_proxy:
                 pool_ctx_obj = await pool.get_context()
                 context = pool_ctx_obj
-                page1 = await context.new_page()
+
             else:
                 context = proxy_context
-                page1 = await context.new_page()
+
                 logger.debug(f"👷 Worker-{worker_id}: Proxy context (Reuse)")
 
             # Основной парсинг
             result = await asyncio.wait_for(
-                process_single_item(page1, idx, brand, part),
+                process_single_item(context, idx, brand, part),
                 timeout=TASK_TIMEOUT,
             )
 
@@ -626,8 +838,8 @@ async def worker(
                 )
 
                 # Cleanup текущего
-                await safe_close_page(page1)
-                page1 = None
+                # await safe_close_page(page1)
+                # page1 = None
                 if pool_ctx_obj:
                     pool.release_context(pool_ctx_obj)
                     pool_ctx_obj = None
@@ -665,13 +877,18 @@ async def worker(
                         logger.info(f"👷 Worker-{worker_id}: ✅ Proxy подключен!")
 
                         # Retry с прокси
-                        page_retry = await proxy_context.new_page()
+                        # page_retry = await proxy_context.new_page()
                         result = await asyncio.wait_for(
-                            process_single_item(page_retry, idx, brand, part),
+                            process_single_item(
+                                proxy_context,
+                                idx,
+                                brand,
+                                part,
+                            ),
                             timeout=PROXY_TIMOUT,
                         )
-                        await safe_close_page(page_retry)
-                        page_retry = None
+                        # await safe_close_page(page_retry)
+                        # page_retry = None
 
                     except asyncio.TimeoutError:
                         logger.error(f"👷 Worker-{worker_id}: ❌ Proxy timeout!")
@@ -730,10 +947,10 @@ async def worker(
             logger.error(f"👷 Worker-{worker_id}: Unexpected error: {e}")
         finally:
             # Cleanup текущей итерации
-            if page1:
-                await safe_close_page(page1)
-            if page_retry:
-                await safe_close_page(page_retry)
+            # if page1:
+            #     await safe_close_page(page1)
+            # if page_retry:
+            #     await safe_close_page(page_retry)
             if pool_ctx_obj:
                 pool.release_context(pool_ctx_obj)
 
@@ -945,7 +1162,7 @@ async def main_async():
                         logger.warning("⚠️ queue.join() timeout")
                         break
                 else:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
 
             # Graceful shutdown workers (poison pills)
             logger.info("🛑 Отправляем poison pills...")
@@ -996,6 +1213,24 @@ async def main_async():
     if not Path("input/STOP.flag").exists():
         try:
             logger.info(f"🔄 Финализация ({mode})...")
+            # 🔥 ЖЁСТКИЙ БУФЕР!
+            logger.info("⏳ Ждём записи df...")
+            await asyncio.sleep(5)  # Workers допишут df.at[]!
+
+            async with counter_lock:
+                logger.info(f"✅ Processed: {counter['processed']}/{total_tasks}")
+
+            print("🔍 Последние 3 строки df:")
+            print(df.tail(3)[[INPUT_COL_ARTICLE, JPARTS_P_W, ARMTEK_P_W]])
+
+            # Перед finalize:
+            logger.info(f"df.shape={df.shape}")
+            logger.info(f"Веса JP: {df[JPARTS_P_W].notna().sum()}")
+            logger.info(f"Веса ARM: {df[ARMTEK_P_W].notna().sum()}")
+
+            # Сохрани debug
+            await asyncio.to_thread(df.to_excel, "debug_final.xlsx")
+
             await finalize_processing(df, mode)
             logger.info("🎉 Парсинг завершён успешно!")
         except Exception as e:

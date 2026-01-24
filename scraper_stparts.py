@@ -21,34 +21,6 @@ BASE_URL = "https://stparts.ru"
 WAIT_TIMEOUT = 8000  # миллисекунд (8 секунд)
 
 
-# async def solve_image_captcha_async(page: Page) -> bool:
-#     """Решение капчи через 2Captcha"""
-#     try:
-#         solver = TwoCaptcha(API_KEY_2CAPTCHA)
-#         captcha_img = page.locator(SELECTORS["stparts"]["captcha_img"])
-#         if not await captcha_img.is_visible():
-#             return False
-
-#         # Получаем base64 из Playwright
-#         captcha_bytes = await captcha_img.screenshot()
-#         captcha_base64 = base64.b64encode(captcha_bytes).decode("utf-8")
-
-#         logger.info("Отправляем капчу на распознавание в 2Captcha")
-#         result = await asyncio.to_thread(solver.normal, captcha_base64)
-#         captcha_text = result["code"]
-#         logger.info(f"Капча распознана: {captcha_text}")
-
-#         input_el = page.locator(SELECTORS["stparts"]["captcha_input"])
-#         await input_el.fill(captcha_text)
-#         await page.locator(f"#{SELECTORS['stparts']['captcha_submit']}").click()
-
-#         await page.wait_for_timeout(5000)
-#         return True
-#     except Exception as e:
-#         logger.error(f"Ошибка решения капчи: {e}")
-#         return False
-
-
 async def wait_for_results_or_no_results_async(page: Page) -> str:
     """Ожидает появления результатов или блока 'нет результатов'"""
     try:
@@ -84,22 +56,7 @@ async def scrape_stparts_async(
 
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
             logger.warning("Обнаружена капча на stparts.ru")
-            if not await solve_captcha_universal(
-                page=page,
-                logger=logger,
-                site_key="stparts",
-                selectors={
-                    "captcha_img": SELECTORS["stparts"]["captcha_img"],
-                    "captcha_input": SELECTORS["stparts"]["captcha_input"],
-                    "submit": SELECTORS["stparts"]["captcha_submit"],
-                },
-                max_attempts=3,
-                scale_factor=3,
-                check_changed=True,
-                wait_after_submit_ms=5000,
-            ):
-                logger.error("Не удалось решить капчу")
-                return None, None
+            return "NeedCaptcha"  # 🆕 ФЛАГ!
 
         status = await wait_for_results_or_no_results_async(page)
         if status != "has_results":
@@ -188,23 +145,8 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
         logger.info(f"Fallback: загружена страница без бренда: {fallback_url}")
 
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
-            logger.warning("Обнаружена капча на stparts.ru (fallback)")
-            if not await solve_captcha_universal(
-                page=page,
-                logger=logger,
-                site_key="stparts",
-                selectors={
-                    "captcha_img": SELECTORS["stparts"]["captcha_img"],
-                    "captcha_input": SELECTORS["stparts"]["captcha_input"],
-                    "submit": SELECTORS["stparts"]["captcha_submit"],
-                },
-                max_attempts=3,
-                scale_factor=3,
-                check_changed=True,
-                wait_after_submit_ms=5000,
-            ):
-                logger.error("Не удалось решить капчу (fallback)")
-                return None, None
+            logger.warning("Обнаружена капча при фоллбеке stparts.ru (fallback)")
+            return "NeedCaptcha"  # 🆕 ФЛАГ!
 
         status = await wait_for_results_or_no_results_async(page)
         if status != "has_results":
@@ -290,22 +232,7 @@ async def scrape_stparts_name_async(
         # Проверка капчи
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
             logger.warning("Обнаружена капча на stparts.ru")
-            if not await solve_captcha_universal(
-                page=page,
-                logger=logger,
-                site_key="stparts",
-                selectors={
-                    "captcha_img": SELECTORS["stparts"]["captcha_img"],
-                    "captcha_input": SELECTORS["stparts"]["captcha_input"],
-                    "submit": SELECTORS["stparts"]["captcha_submit"],
-                },
-                max_attempts=3,
-                scale_factor=3,
-                check_changed=True,
-                wait_after_submit_ms=5000,
-            ):
-                logger.error("Не удалось решить капчу")
-                return None
+            return "NeedCaptcha"  # 🆕 ФЛАГ!
 
         # ✅ FIX 2: Проверка "товар не найден"
         no_results_locator = page.locator(

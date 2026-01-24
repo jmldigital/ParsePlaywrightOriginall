@@ -355,7 +355,7 @@ async def solve_captcha_universal(
             logger.info(f"[{site_key}] Введено: '{captcha_text}'")
 
             # 7. Отправляем форму
-            submit_button = page.locator(selectors["submit"])
+            submit_button = page.locator(selectors["captcha_submit"])
             if await submit_button.is_visible():
                 await submit_button.click()
                 logger.info(f"[{site_key}] Submit нажат")
