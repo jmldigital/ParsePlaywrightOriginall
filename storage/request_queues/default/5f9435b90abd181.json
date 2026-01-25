@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=53801-0e180",
+  "url": "https://www.japarts.ru/?id=price&search=53801-0E180",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 29,
+    "brand": "TOYOTA",
+    "part": "53801-0E180",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:11:05.177115+00:00"
+}

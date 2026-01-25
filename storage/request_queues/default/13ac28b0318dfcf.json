@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://armtek.ru/search?text=53804-0g010",
+  "url": "https://armtek.ru/search?text=53804-0G010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 91,
+    "brand": "TOYOTA",
+    "part": "53804-0G010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:13:15.507808+00:00"
+}

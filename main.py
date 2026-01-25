@@ -1,211 +1,175 @@
-# main.py
 """
-Асинхронный парсер с Playwright.
-- Общие куки для avtoformula
-- Автоматический re-login при разлогине
-- Разделённые логи по сайтам
+Парсер на Crawlee - полностью оптимизированная версия
+- Авторизация через Crawlee session persistence
+- URL генерация вынесена из скрейперов
+- Скрейперы делают только парсинг DOM
 """
-import random
-from telegram import Bot
+
 import asyncio
-import sys  # 🆕 №1 — ПЕРВЫЙ!
-import io  # 🆕 №2
-import os  # 🆕 №3
-import pandas as pd
-import signal
-import math
-import multiprocessing
+import sys
+import io
+import os
 from pathlib import Path
-from tqdm.asyncio import tqdm
+import pandas as pd
 from dotenv import load_dotenv
-from captcha_manager import CaptchaManager
 
-captcha_manager = CaptchaManager()
+import asyncio
+import sys
+import pandas as pd
+from pathlib import Path
+from dotenv import load_dotenv
+from crawlee import Request, ConcurrencySettings
 
-# 🔥 ГЛОБАЛЬНЫЙ UTF-8 для ВСЕГО
+# ✅ ПРАВИЛЬНО:
+from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
+from crawlee import Request
+
+# UTF-8 setup
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
-
 if os.name == "nt":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
-
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
-print("🟢 Глобальный UTF-8: 🚀 Тест прошел!")
-
-
-from scraper_japarts import scrape_weight_japarts
-from scraper_armtek import scrape_weight_armtek
-
 load_dotenv()
-from config import BAD_DETAIL_NAMES
 
-from playwright.async_api import async_playwright, Browser, BrowserContext
 from config import (
+    INPUT_FILE,
+    MAX_ROWS,
+    MAX_WORKERS,
+    INPUT_COL_BRAND,
+    INPUT_COL_ARTICLE,
     ENABLE_NAME_PARSING,
     ENABLE_WEIGHT_PARSING,
     ENABLE_PRICE_PARSING,
-    COOKIE_FILE,
     AVTO_LOGIN,
     AVTO_PASSWORD,
-    BOT_TOKEN,
-    ADMIN_CHAT_ID,
-    SEND_TO_TELEGRAM,
-    TASK_TIMEOUT,
-    PROXY_TIMOUT,
-    get_output_file,
-    TEMP_RAW,
-    TEMP_FILES_DIR,
-    reload_config,
+    BAD_DETAIL_NAMES,
     SELECTORS,
-    DELAY_EXIST,
+    get_output_file,
+    reload_config,
 )
+from utils import logger, preprocess_dataframe, consolidate_weights
+from captcha_manager import CaptchaManager
 
-from utils import (
-    logger,
-    preprocess_dataframe,
-    consolidate_weights,
-    clear_debug_folders_sync,
-    get_2captcha_proxy,
-    get_site_logger,
-)
-from state_manager import load_state, save_state
+# Импорт ТОЛЬКО парсеров (без навигации)
+from scraper_japarts_pure import parse_weight_japarts
+from scraper_armtek_pure import parse_weight_armtek
+from scraper_stparts_pure import parse_stparts_name, parse_stparts_price
+from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
 from price_adjuster import adjust_prices_and_save
-import requests
-
-# Импортируем асинхронные скрапперы
-from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
-from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
-from auth import ensure_logged_in
 
 
-async def safe_close_page(page):
-    """Улучшенное закрытие"""
-    if page:
+# ===================== URL ГЕНЕРАТОРЫ =====================
+class SiteUrls:
+    """Централизованное хранилище URL для всех сайтов"""
+
+    @staticmethod
+    def japarts_search(part: str) -> str:
+        return f"https://www.japarts.ru/?id=price&search={part}"
+
+    @staticmethod
+    def armtek_search(part: str) -> str:
+        return f"https://armtek.ru/search?text={part}"
+
+    @staticmethod
+    def stparts_search(part: str) -> str:
+        return f"https://stparts.ru/search/?text={part}"
+
+    @staticmethod
+    def avtoformula_search(brand: str, part: str) -> str:
+        # Avtoformula использует форму на главной, поэтому URL = главная страница
+        # Поиск будет через заполнение формы в парсере
+        return "https://www.avtoformula.ru"
+
+
+# ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
+class SimpleAuth:
+    """Упрощенная авторизация через Crawlee session"""
+
+    @staticmethod
+    async def login_avtoformula(page) -> bool:
+        """Минимальная логика логина - Crawlee сам сохранит сессию"""
         try:
-            if not page.is_closed():
-                await page.close()
+            await page.goto("https://www.avtoformula.ru")
+
+            # Проверка: уже залогинены?
+            if await page.locator("span:has-text('Вы авторизованы как')").count() > 0:
+                logger.info("✅ Уже авторизованы")
+                return True
+
+            # Логин
+            await page.fill(f"#{SELECTORS['avtoformula']['login_field']}", AVTO_LOGIN)
+            await page.fill(
+                f"#{SELECTORS['avtoformula']['password_field']}", AVTO_PASSWORD
+            )
+            await page.click(SELECTORS["avtoformula"]["login_button"])
+
+            # Ждём завершения
+            await page.wait_for_selector(
+                f"#{SELECTORS['avtoformula']['login_field']}",
+                state="hidden",
+                timeout=10000,
+            )
+
+            # Режим A0 (без аналогов)
+            await page.select_option(
+                f"#{SELECTORS['avtoformula']['smode_select']}", "A0"
+            )
+
+            logger.info("✅ Авторизация успешна")
+            return True
+
         except Exception as e:
-            logger.debug(f"Page close ignored: {e}")
+            logger.error(f"❌ Ошибка авторизации: {e}")
+            return False
 
 
-# ENABLE_NAME_PARSING = os.getenv("ENABLE_NAME_PARSING", "False").lower() == "true"
-COOKIE_PATH = Path(COOKIE_FILE)
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+# ===================== ГЛАВНЫЙ КЛАСС =====================
+class ParserCrawler:
+    """Оптимизированный парсер на Crawlee"""
 
-# === Разделение логов ===
+    def __init__(self):
+        self.df = None
+        self.mode = None
+        self.captcha_manager = CaptchaManager()
+        self.results_lock = asyncio.Lock()
+        self.processed_count = 0
+        self.total_tasks = 0
 
+        # 🆕 Статистика по сайтам
+        self.stats = {
+            "japarts": {"total": 0, "success": 0, "empty": 0},
+            "armtek": {"total": 0, "success": 0, "empty": 0},
+        }
 
-logger_avto = get_site_logger("avtoformula")
-logger_st = get_site_logger("stparts")
-logger_jp = get_site_logger("japarts")
-logger_armtek = get_site_logger("armtek")
+    async def setup(self):
+        """Инициализация"""
+        reload_config()
 
-stop_parsing = multiprocessing.Event()
-stop_parsing.clear()
+        # Режим
+        active = sum([ENABLE_WEIGHT_PARSING, ENABLE_NAME_PARSING, ENABLE_PRICE_PARSING])
+        if active != 1:
+            raise ValueError("❌ Только 1 режим!")
 
-sites = ["avtoformula", "stparts", "japarts", "armtek"]
-
-INPUT_DIR = Path("input")
-
-stop_files = ["STOP", "STOP.flag", "AIL_STOP"]
-
-for name in stop_files:
-    path = INPUT_DIR / name
-    if path.exists():
-        path.unlink()
-        logger.info("🧹 Удален %s", path)
-
-logger.info("🚀 Старт без STOP флагов в input/")
-
-
-def setup_event_loop_policy():
-    if sys.platform.startswith("win"):
-        if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
-            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-            print("Установлена WindowsProactorEventLoopPolicy для Windows")
-    else:
-        print("Не Windows — политика событийного цикла не меняется")
-
-
-def send_telegram_process(msg):
-    """Отправка прогресса в Telegram"""
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(
-            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"🕐 Прогресс:\n{msg}"}
+        self.mode = (
+            "ВЕСА"
+            if ENABLE_WEIGHT_PARSING
+            else "ИМЕНА" if ENABLE_NAME_PARSING else "ЦЕНЫ"
         )
-    except Exception as e:
-        logger.error("Ошибка отправки прогресса в Telegram: %s", e)
 
+        logger.info(f"✅ Режим: {self.mode}")
 
-# === Telegram ===
-def send_telegram_error(msg):
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(
-            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Parser Error:\n{msg}"}
-        )
-    except Exception as e:
-        logger.error("Ошибка Telegram: %s", e)
+        # Загрузка данных
+        self.df = pd.read_excel(INPUT_FILE)
+        self.df = preprocess_dataframe(self.df)
+        self._init_columns()
 
+        logger.info(f"📊 Загружено {len(self.df)} строк")
 
-async def send_telegram_file(file_path, caption=None):
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        bot = Bot(token=BOT_TOKEN)
-        async with bot:
-            with open(file_path, "rb") as f:  # ← теперь файл закрывается
-                await bot.send_document(
-                    chat_id=ADMIN_CHAT_ID, document=f, caption=caption
-                )
-        logger.info("Файл отправлен в Telegram")
-    except Exception as e:
-        logger.error("Ошибка отправки в Telegram: %s", e)
-
-
-async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = None):
-    """Финальная обработка + сохранение (для normal/extreme stop)"""
-    logger.info(f"🔄 Финализация ({mode})...")
-
-    # 🔥 ФИКС — импортируем константы!
-    from config import (
-        ENABLE_WEIGHT_PARSING,
-        ENABLE_PRICE_PARSING,
-        ENABLE_NAME_PARSING,
-        stparts_price,
-        stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
-    )
-
-    # 🆕 ЛОКАЛЬНЫЕ КОПИИ!
-    local_weight = ENABLE_WEIGHT_PARSING
-    local_price = ENABLE_PRICE_PARSING
-    local_name = ENABLE_NAME_PARSING
-
-    logger.info(
-        f"🔧 Режимы: weight={local_weight}, price={local_price}, name={local_name}"
-    )
-
-    # 🆕 Проверяем DataFrame
-    if df is None or df.empty:
-        logger.error("❌ DataFrame пустой или None!")
-        return
-
-    try:
-        # 🆕 Инициализируем недостающие колонки (как в main)
+    def _init_columns(self):
+        """Инициализация колонок"""
         from config import (
             stparts_price,
             stparts_delivery,
@@ -217,1213 +181,503 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             ARMTEK_V_W,
         )
 
-        for col in [
+        cols = [
             stparts_price,
             stparts_delivery,
             avtoformula_price,
             avtoformula_delivery,
-        ]:
-            if col not in df.columns:
-                df[col] = None
+        ]
+        for col in cols:
+            if col not in self.df.columns:
+                self.df[col] = None
 
-        if local_weight:
+        if ENABLE_NAME_PARSING and "finde_name" not in self.df.columns:
+            self.df["finde_name"] = None
+
+        if ENABLE_WEIGHT_PARSING:
             for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-                if col not in df.columns:
-                    df[col] = None
+                if col not in self.df.columns:
+                    self.df[col] = None
 
-        if local_name and "finde_name" not in df.columns:
-            df["finde_name"] = None
+    async def request_handler(self, context: PlaywrightCrawlingContext):
+        """
+        Обработчик Crawlee - вызывается для каждого Request
+        Получает УЖЕ открытую страницу с нужным URL
+        """
+        page = context.page
+        request = context.request
 
-        # 🔥 Drop ЛИШНИЕ колонки для ИМЕНА
-        if local_name:
-            cols_to_drop_name = [
-                JPARTS_P_W,
-                JPARTS_V_W,
-                ARMTEK_P_W,
-                ARMTEK_V_W,  # Веса
-                stparts_price,
-                stparts_delivery,  # Цены stparts
-                avtoformula_price,
-                avtoformula_delivery,  # Цены avto
-            ]
-            existing_name_cols = [col for col in cols_to_drop_name if col in df.columns]
-            if existing_name_cols:
-                logger.info(f"🧹 ИМЕНА: drop {len(existing_name_cols)} колонок")
-                df.drop(columns=existing_name_cols, inplace=True)
+        idx = request.user_data["idx"]
+        brand = request.user_data["brand"]
+        part = request.user_data["part"]
+        site = request.user_data["site"]
+        task_type = request.user_data["task_type"]  # "weight"/"name"/"price"
 
-        if local_weight:  # Режим весов
-            df = await asyncio.to_thread(consolidate_weights, df)
-            logger.info("✅ Веса консолидированы")
-
-        # 🆕 Гарантированно получаем output_file
-        if not output_file:
-            output_file = get_output_file(mode)
-            if not output_file:
-                raise ValueError(f"Не удалось определить output_file для режима {mode}")
-
-        logger.info(f"💾 Сохраняем в: {output_file}")
-
-        if local_price:
-            logger.info(f"💾 Сохраняем внутри финалайза в: {output_file}")
-            await asyncio.to_thread(adjust_prices_and_save, df, output_file)
-        else:
-            await asyncio.to_thread(df.to_excel, output_file, index=False)
-
-        logger.info(f"✅ Сохранено: {output_file}")
-        await send_telegram_file(output_file, f"✅ {mode} завершены!")
-
-    except Exception as e:
-        logger.error(
-            f"❌ Ошибка при сохранении Excel с форматированием: {e}", exc_info=True
-        )
-        # 🆕 Emergency save без форматирования
-        emergency_file = output_file.replace(".csv", "_emergency..csv")
-        try:
-            await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-            logger.info(f"💾 Emergency save: {emergency_file}")
-            await send_telegram_file(emergency_file, f"⚠️ {mode} (emergency)")
-        except Exception as e2:
-            logger.error(f"❌ Даже emergency save failed: {e2}")
-
-
-# === Пул контекстов ===
-class ContextPool:
-
-    def __init__(
-        self, browser: Browser, pool_size: int = 5, auth_avtoformula: bool = True
-    ):
-        self.browser = browser
-        self.pool_size = pool_size
-        self.contexts = []
-        self.semaphore = asyncio.Semaphore(pool_size)
-        self.initialized = False
-        self.cookies = None  # общие куки
-        self.auth_avtoformula = auth_avtoformula  # 🆕 ПАРАМЕТР!
-
-    async def initialize(self):
-        if self.auth_avtoformula:
-            """Создание пула контекстов с общей авторизацией. Страницы создаются при обработке задач."""
-            logger.info("🔧 Авторизация на Avtoformula для получения кук...")
-
-            # Временный контекст для логина
-            temp_context = await self.browser.new_context()
-            temp_page = await temp_context.new_page()
-
-            try:
-                if not await ensure_logged_in(temp_page, AVTO_LOGIN, AVTO_PASSWORD):
-                    logger.error("❌ Не удалось авторизоваться на Avtoformula")
-                    raise RuntimeError("Авторизация не удалась")
-
-                # Сохраняем состояние авторизации (куки + localStorage и т.д.)
-                await temp_context.storage_state(path=COOKIE_PATH)
-                logger.info(
-                    "✅ Авторизация успешна, состояние сохранено в storage_state.json"
-                )
-
-            finally:
-                await temp_context.close()
-
-            # Создаём пул контекстов, загружая состояние
-            logger.info("Создаём %d контекстов...", self.pool_size)
-            self.contexts = []  # очищаем на всякий случай
-
-            for i in range(self.pool_size):
-                ctx = await self.browser.new_context(
-                    storage_state=COOKIE_PATH,  # ← авторизованное состояние
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                )
-                self.contexts.append(ctx)
-                logger.info(
-                    f"✅ Контекст {i + 1}/{self.pool_size} создан и авторизован"
-                )
-        else:
-            # ✅ ПРОСТАЯ инициализация
-            logger.info(f"Создаём {self.pool_size} контекстов БЕЗ авторизации...")
-            for i in range(self.pool_size):
-                ctx = await self.browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0...",
-                )
-                self.contexts.append(ctx)
-
-        self.initialized = True
-
-    async def refresh_cookies(self):
-        """Переавторизация и обновление куков для всех контекстов"""
-        logger.warning("🔄 Обнаружен разлогин — повторная авторизация...")
-        temp_context = await self.browser.new_context()
-        temp_page = await temp_context.new_page()
-
-        try:
-            if await ensure_logged_in(temp_page, AVTO_LOGIN, AVTO_PASSWORD):
-                # Получаем куки
-                cookies = await temp_context.cookies()
-                await temp_context.storage_state(path=COOKIE_PATH)
-                logger.info("✅ Авторизация успешна, куки обновлены и сохранены")
-
-                # Обновляем куки во всех активных контекстах
-                for ctx in self.contexts:
-                    await ctx.add_cookies(cookies)
-                logger.info(f"✅ Куки обновлены для {len(self.contexts)} контекстов")
+        # 🔥 АВТОРИЗАЦИЯ (если Avtoformula)
+        if site == "avtoformula" and not hasattr(self, "_avtoformula_logged_in"):
+            logger.info("🔐 Авторизация Avtoformula...")
+            success = await SimpleAuth.login_avtoformula(page)
+            if success:
+                self._avtoformula_logged_in = True
             else:
-                logger.error("❌ Повторная авторизация не удалась")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при обновлении кук: {e}")
-        finally:
-            await temp_context.close()
+                raise Exception("Авторизация не удалась")
 
-    async def get_context(self):
-        """Получить один контекст из пула (без страницы)"""
-        await self.semaphore.acquire()
-        if not self.contexts:
-            raise RuntimeError("Нет свободных контекстов")
-        return self.contexts.pop()  # ← возвращаем только контекст
+        # logger.info(f"🔍 [{idx}] {site}: {part}")
 
-    def release_context(self, ctx):
-        """Вернуть контекст в пул"""
-        self.contexts.append(ctx)
-        self.semaphore.release()
-
-    async def close_all(self):
-        for ctx in self.contexts:
-            await ctx.close()
-        self.contexts.clear()
-        logger.info("🛑 Все контексты закрыты")
-
-
-# class SimpleContextPool(ContextPool):
-#     """Пул БЕЗ авторизации — для весов/имен"""
-
-#     async def initialize(self):
-#         """ПРОСТАЯ инициализация БЕЗ авторизации"""
-#         logger.info(f"Создаём {self.pool_size} простых контекстов...")
-
-#         for i in range(self.pool_size):
-#             ctx = await self.browser.new_context(
-#                 viewport={"width": 1920, "height": 1080},
-#                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-#             )
-#             self.contexts.append(ctx)
-#             logger.debug(f"✅ Контекст {i + 1}/{self.pool_size} создан")
-
-#         self.initialized = True
-#         logger.info(f"✅ {self.pool_size} простых контекстов готово")
-
-
-async def process_single_item(
-    context,
-    idx: int,
-    brand: str,
-    part: str,
-):
-    """
-    Только логика парсинга БЕЗ создания контекстов!
-    Поддерживает WEIGHT/NAME/PRICE режимы.
-    Возвращает результат или "NeedProxy" при RateLimit.
-    """
-    from config import (
-        ENABLE_WEIGHT_PARSING as WEIGHT,
-        ENABLE_NAME_PARSING as NAME,
-        ENABLE_PRICE_PARSING as PRICE,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
-        stparts_price,
-        stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
-    )
-
-    # Инициализация результатов
-    result = {}
-    # Дя теста----------------------
-    # if WEIGHT:
-    #     # 🧪 Симуляция прокси-циклов
-    #     if not hasattr(process_single_item, "proxy_cycle"):
-    #         process_single_item.proxy_cycle = {"count": 0, "phase": 0}
-
-    #     cycle = process_single_item.proxy_cycle
-    #     cycle["count"] += 1
-
-    #     logger.info(
-    #         f"🚀 [{idx}] ТЕСТ цикл {cycle['count']}/phase{cycle['phase']}: {part}"
-    #     )
-
-    #     # ✅ ТОЛЬКО new_page() БЕЗ параметров:
-    #     page1 = await context.new_page()  # ✅
-
-    #     # Human-like!
-    #     await page1.add_init_script(
-    #         """
-    #         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    #         Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
-    #     """
-    #     )
-    #     await page1.goto("about:blank")
-    #     await page1.wait_for_timeout(2000)  # "Просмотр главной"
-
-    #     try:
-    #         # ARMTEK
-    #         armtek_physical, armtek_volumetric = await asyncio.wait_for(
-    #             scrape_weight_armtek(page1, part, logger_armtek),
-    #             timeout=120.0,  # 2 минуты на Cloudflare!
-    #         )
-    #         logger.info(
-    #             f"🔍 [{idx}] ARMTEK: phys={armtek_physical}, vol={armtek_volumetric}"
-    #         )
-
-    #     except Exception as e:
-    #         logger.error(f"❌ [{idx}] ARMTEK: {e}")
-    #         armtek_physical = armtek_volumetric = None
-
-    #     # 🔥 КАПЧА!
-    #     if armtek_physical == "NeedCaptcha":
-    #         logger.info(f"🔒 [{idx}] Капча ARMTEK")
-    #         success = await captcha_manager.solve_captcha(
-    #             page=page1,
-    #             logger=logger_armtek,
-    #             site_key="armtek",
-    #             selectors=SELECTORS.get("armtek", {}),
-    #         )
-    #         await safe_close_page(page1)
-
-    #         if success:
-    #             logger.info(f"🔓 [{idx}] Капча OK")
-    #             # Можно retry, но для теста продолжаем
-    #         else:
-    #             logger.warning(f"❌ [{idx}] Капча fail")
-    #             result.update({ARMTEK_P_W: None, ARMTEK_V_W: None})
-    #     else:
-    #         await safe_close_page(page1)
-
-    #     # 🔥 ПРОКСИ-ЦИКЛЫ (по 10)
-    #     if cycle["count"] <= 10:  # 1: без прокси
-    #         logger.info(f"📡 [{idx}] ФАЗА 1: без прокси")
-
-    #     elif cycle["count"] <= 20:  # 2: прокси 1
-    #         logger.warning(f"🚦 [{idx}] ФАЗА 2: NeedProxy 1")
-    #         cycle["phase"] = 1
-    #         await safe_close_page(page1)
-    #         return "NeedProxy"  # Worker → proxy!
-
-    #     elif cycle["count"] <= 30:  # 3: прокси 2
-    #         logger.warning(f"🚦 [{idx}] ФАЗА 3: NeedProxy 2")
-    #         cycle["phase"] = 2
-    #         await safe_close_page(page1)
-    #         return "NeedProxy"
-
-    #     else:  # 4+: прокси 2
-    #         logger.info(f"📡 [{idx}] ФАЗА 4: прокси 2")
-
-    #     # ✅ Запись в result (как оригинал)
-    #     result.update(
-    #         {
-    #             JPARTS_P_W: None,
-    #             JPARTS_V_W: None,
-    #             ARMTEK_P_W: armtek_physical,
-    #             ARMTEK_V_W: armtek_volumetric,
-    #         }
-    #     )
-
-    #     logger.info(f"📊 [{idx}] Записано: ARMTEK_P_W={armtek_physical}")
-    #     # НЕ return — result глобальный!
-
-    # ======================= WEIGHT =======================
-
-    if WEIGHT:
-        max_retries = 2
-
-        for attempt in range(max_retries + 1):
-            # page1 = None
-
-            try:
-                # 🆕 Новая страница каждый retry
-                page1 = await context.new_page()
-
-                jp_physical, jp_volumetric = None, None
-                armtek_physical, armtek_volumetric = None, None
-
-                # 1️⃣ Japarts (первый приоритет)
-                jp_physical, jp_volumetric = await scrape_weight_japarts(
-                    page1, part, logger_jp
-                )
-                if jp_physical == "EmptyPage":
-                    logger.warning(f"🔄 [{idx}] Japarts EmptyPage → reload!")
-                    await page1.reload(timeout=45000)
-                    await asyncio.sleep(5)
-
-                    # Retry 1 раз
-                    jp_physical, jp_volumetric = await scrape_weight_japarts(
-                        page1, part, logger_jp
-                    )
-
-                # 🆕 Проверка капчи Japarts
-                if jp_physical == "NeedCaptcha" or jp_volumetric == "NeedCaptcha":
-                    logger.info(
-                        f"🔒 [{idx}] Капча на japarts (попытка {attempt+1}/{max_retries+1})"
-                    )
-                    success = await captcha_manager.solve_captcha(
-                        page=page1,
-                        logger=logger_jp,
-                        site_key="japarts",
-                        selectors={
-                            "captcha_img": SELECTORS.get("japarts", {}).get(
-                                "captcha_img"
-                            ),
-                            "captcha_input": SELECTORS.get("japarts", {}).get(
-                                "captcha_input"
-                            ),
-                            "captcha_submit": SELECTORS.get("japarts", {}).get(
-                                "captcha_submit"
-                            ),
-                        },
-                    )
-
-                    await safe_close_page(page1)
-                    page1 = None
-
-                    if success:
-                        continue  # Retry
-                    else:
-                        return "CaptchaFailed"
-
-                # 2️⃣ Armtek ТОЛЬКО при Japarts fail
-                if not jp_physical or not jp_volumetric:
-                    logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
-
-                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                        page1, part, logger_armtek
-                    )
-
-                    # 🆕 Проверка капчи Armtek
-                    if (
-                        armtek_physical == "NeedCaptcha"
-                        or armtek_volumetric == "NeedCaptcha"
-                    ):
-                        logger.info(
-                            f"🔒 [{idx}] Капча на armtek (попытка {attempt+1}/{max_retries+1})"
-                        )
-                        success = await captcha_manager.solve_captcha(
-                            page=page1,
-                            logger=logger_armtek,
-                            site_key="armtek",
-                            selectors={
-                                "captcha_img": SELECTORS.get("armtek", {}).get(
-                                    "captcha_img"
-                                ),
-                                "captcha_input": SELECTORS.get("armtek", {}).get(
-                                    "captcha_input"
-                                ),
-                                "captcha_submit": SELECTORS.get("armtek", {}).get(
-                                    "captcha_submit"
-                                ),
-                            },
-                        )
-
-                        await safe_close_page(page1)
-                        page1 = None
-
-                        if success:
-                            continue  # Retry
-                        else:
-                            return "CaptchaFailed"
-
-                    # 🚨 Ловим ClaudFlare
-                    if armtek_physical == "ClaudFlare":
-                        logger.info(f"🎯 [{idx}] ClaudFlare detected")
-                        await safe_close_page(page1)
-                        return "ClaudFlare"
-
-                    # 🚨 RateLimit (остается как есть)
-                    if armtek_physical == "NeedProxy":
-                        logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
-                        await safe_close_page(page1)
-                        return "NeedProxy"
-
-                    # ✅ Armtek результат
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: armtek_physical,
-                            ARMTEK_V_W: armtek_volumetric,
-                        }
-                    )
-
-                else:
-                    # ✅ Только Japarts
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: None,
-                            ARMTEK_V_W: None,
-                        }
-                    )
-
-                await safe_close_page(page1)
-                break  # ✅ Успех!
-
-            except Exception as e:
-                logger.error(
-                    f"❌ [{idx}] Weight parse error (попытка {attempt+1}): {e}"
-                )
-                await safe_close_page(page1)
-                if attempt < max_retries:
-                    continue
-
-            # Если все попытки исчерпаны
-            result.update(
-                {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
+        try:
+            # Выбор парсера в зависимости от сайта и задачи
+            result = await self._route_to_parser(
+                page, idx, brand, part, site, task_type
             )
 
-    # ======================= NAME =======================
-    if NAME:
-        max_retries = 2
+            if result:
+                await self._save_result(idx, result)
 
-        for attempt in range(max_retries + 1):
-            # page1 = None
+            # Прогресс
+            async with self.results_lock:
+                self.processed_count += 1
+                if self.processed_count % 50 == 0:
+                    logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
 
-            try:
-                page1 = await context.new_page()
+        except Exception as e:
+            logger.error(f"❌ [{idx}] {site}: {e}")
+            # Crawlee автоматически повторит
 
-                # 1) stparts
-                detail_name = await scrape_stparts_name_async(page1, part, logger_st)
+    async def _route_to_parser(self, page, idx, brand, part, site, task_type):
+        """Роутинг к нужному парсеру"""
 
-                if detail_name == "NeedCaptcha":
-                    logger.info(
-                        f"🔒 [{idx}] Капча на stparts (попытка {attempt+1}/{max_retries+1})"
-                    )
-                    success = await captcha_manager.solve_captcha(
-                        page=page1,
-                        logger=logger_st,
-                        site_key="stparts",
-                        selectors={
-                            "captcha_img": SELECTORS["stparts"]["captcha_img"],
-                            "captcha_input": SELECTORS["stparts"]["captcha_input"],
-                            "captcha_submit": SELECTORS["stparts"]["captcha_submit"],
-                        },
-                    )
+        # ======== ВЕСА ========
+        if task_type == "weight":
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-                    await safe_close_page(page1)
-                    page1 = None
-
-                    if success:
-                        continue  # retry
-                    else:
-                        return "CaptchaFailed"
-
-                # Если имя плохое → avtoformula
-                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
-                    if detail_name:
-                        logger.info(f"⚠️ [{idx}] stparts '{detail_name}' → avtoformula")
-
-                    detail_name = await scrape_avtoformula_name_async(
-                        page1, part, logger_avto
-                    )
-
-                    if detail_name == "NeedCaptcha":
-                        logger.info(
-                            f"🔒 [{idx}] Капча на avtoformula (попытка {attempt+1}/{max_retries+1})"
-                        )
-                        success = await captcha_manager.solve_captcha(
-                            page=page1,
-                            logger=logger_avto,
-                            site_key="avtoformula",
-                            selectors={
-                                "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                                "captcha_input": SELECTORS["avtoformula"][
-                                    "captcha_input"
-                                ],
-                                "captcha_submit": SELECTORS["avtoformula"][
-                                    "captcha_submit"
-                                ],
-                            },
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts"):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
                         )
 
-                        await safe_close_page(page1)
-                        page1 = None
+                from config import JPARTS_P_W, JPARTS_V_W
 
-                        if success:
-                            continue
-                        else:
-                            return "CaptchaFailed"
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
-                    detail_name = "Detail"
-                    logger.info(f"❌ [{idx}] Название не найдено: {part}")
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-                await safe_close_page(page1)
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
-                result["finde_name"] = detail_name
-                break
+            elif site == "armtek":
+                physical, volumetric = await parse_weight_armtek(page, part, logger)
 
-            except Exception as e:
-                logger.error(f"❌ [{idx}] Name parse error (попытка {attempt+1}): {e}")
-                await safe_close_page(page1)
-                if attempt < max_retries:
-                    continue
-                result["finde_name"] = "Detail"
+                # 🔥 RateLimit обработка
+                if physical == "NeedProxy":
+                    logger.warning(f"🚦 [{idx}] RateLimit на Armtek → прокси retry")
+                    return await self._retry_with_proxy(
+                        idx, brand, part, site, task_type
+                    )
 
-    # ======================= PRICE =======================
-    if PRICE:
-        max_retries = 2
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "armtek"):
+                        physical, volumetric = await parse_weight_armtek(
+                            page, part, logger
+                        )
 
-        for attempt in range(max_retries + 1):
-            page1 = None
-            page2 = None
+                from config import ARMTEK_P_W, ARMTEK_V_W
 
-            try:
-                # 🆕 свежие страницы каждый retry из контекста
-                page1 = await context.new_page()  # Stparts
-                page2 = await context.new_page()  # Avtoformula
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["armtek"]["success"] += 1
+                    logger.info(f"[ARMTEK] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["armtek"]["empty"] += 1
+                    logger.info(f"[ARMTEK] ⚠️ {part} | Не найдено")
 
-                result_st, result_avto = await asyncio.gather(
-                    scrape_stparts_async(page1, brand, part, logger_st),
-                    scrape_avtoformula_pw(page2, brand, part, logger_avto),
-                    return_exceptions=True,
+                return {ARMTEK_P_W: physical, ARMTEK_V_W: volumetric}
+
+        # ======== ИМЕНА ========
+        elif task_type == "name":
+            if site == "stparts":
+                name = await parse_stparts_name(page, part, logger)
+
+                if name == "NeedCaptcha":
+                    if await self._solve_captcha(page, "stparts"):
+                        name = await parse_stparts_name(page, part, logger)
+
+                return (
+                    {"finde_name": name}
+                    if name and name not in BAD_DETAIL_NAMES
+                    else None
                 )
 
-                # Капча
-                if result_st == "NeedCaptcha" or result_avto == "NeedCaptcha":
-                    site_to_solve = (
-                        "stparts" if result_st == "NeedCaptcha" else "avtoformula"
+            elif site == "avtoformula":
+                name = await parse_avtoformula_name(page, part, logger)
+
+                if name == "NeedCaptcha":
+                    if await self._solve_captcha(page, "avtoformula"):
+                        name = await parse_avtoformula_name(page, part, logger)
+
+                return {
+                    "finde_name": (
+                        name if name and name not in BAD_DETAIL_NAMES else "Detail"
                     )
-                    logger_to_use = (
-                        logger_st if site_to_solve == "stparts" else logger_avto
-                    )
-                    page_to_solve = page1 if site_to_solve == "stparts" else page2
-
-                    logger.info(
-                        f"🔒 [{idx}] Капча на {site_to_solve} (попытка {attempt+1}/{max_retries+1})"
-                    )
-
-                    success = await captcha_manager.solve_captcha(
-                        page=page_to_solve,
-                        logger=logger_to_use,
-                        site_key=site_to_solve,
-                        selectors={
-                            "captcha_img": SELECTORS[site_to_solve]["captcha_img"],
-                            "captcha_input": SELECTORS[site_to_solve]["captcha_input"],
-                            "captcha_submit": SELECTORS[site_to_solve][
-                                "captcha_submit"
-                            ],
-                        },
-                    )
-
-                    await safe_close_page(page1)
-                    await safe_close_page(page2)
-                    page1 = page2 = None
-
-                    if success:
-                        continue  # retry с новыми страницами из того же контекста
-                    else:
-                        return "CaptchaFailed"
-
-                # Разлогин
-                if (
-                    isinstance(result_avto, Exception)
-                    and "зарегистрируйтесь" in str(result_avto).lower()
-                ):
-                    await safe_close_page(page1)
-                    await safe_close_page(page2)
-                    return "ReauthNeeded"
-
-                # Нормализация результатов
-                price_st, delivery_st = (
-                    result_st
-                    if result_st and result_st != "NeedCaptcha"
-                    else (None, None)
-                )
-                price_avto, delivery_avto = (
-                    result_avto
-                    if result_avto and result_avto != "NeedCaptcha"
-                    else (None, None)
-                )
-
-                await safe_close_page(page1)
-                await safe_close_page(page2)
-
-                return idx, {
-                    stparts_price: price_st,
-                    stparts_delivery: delivery_st,
-                    avtoformula_price: price_avto,
-                    avtoformula_delivery: delivery_avto,
                 }
 
-            except Exception as e:
-                logger.error(f"[{idx}] PRICE ошибка попытка {attempt+1}: {e}")
-                await safe_close_page(page1)
-                await safe_close_page(page2)
-                if attempt < max_retries:
-                    continue
-                return None
+        # ======== ЦЕНЫ ========
+        elif task_type == "price":
+            from config import (
+                stparts_price,
+                stparts_delivery,
+                avtoformula_price,
+                avtoformula_delivery,
+            )
 
-    return result  # Общий return в конце
+            if site == "stparts":
+                price, delivery = await parse_stparts_price(page, brand, part, logger)
+                return {stparts_price: price, stparts_delivery: delivery}
 
+            elif site == "avtoformula":
+                price, delivery = await parse_avtoformula_price(
+                    page, brand, part, logger
+                )
+                return {avtoformula_price: price, avtoformula_delivery: delivery}
 
-async def worker(
-    worker_id: int,
-    queue: asyncio.Queue,
-    pool: ContextPool,
-    normal_browser: Browser,
-    proxy_browser: Browser,
-    df: pd.DataFrame,
-    pbar,
-    total_tasks: int,
-    progress_checkpoints: set,
-    sent_progress: set,
-    counter: dict,
-    counter_lock: asyncio.Lock,
-):
-    """
-    Worker с 2 БРАУЗЕРАМИ:
-    1. Пытается взять контекст из пула (normal_browser).
-    2. При RateLimit переключается на proxy_browser и СОХРАНЯЕТ этот контекст.
-    """
-    proxy_context = None
-    retry_counts = {}
+        return None
 
-    # my_temp_file = get_temp_file(worker_id)
+    async def _solve_captcha(self, page, site_key):
+        """Решение капчи"""
+        logger.info(f"🔒 Капча {site_key}")
 
-    while True:  # ← Изменено: while True вместо queue.empty()
-        idx_brand_part = None
-        # page1 = None
-        # page_retry = None
-        pool_ctx_obj = None
+        success = await self.captcha_manager.solve_captcha(
+            page=page,
+            logger=logger,
+            site_key=site_key,
+            selectors=SELECTORS.get(site_key, {}),
+        )
+
+        logger.info(f"{'✅' if success else '❌'} Капча {site_key}")
+        return success
+
+    # async def _retry_with_proxy(self, idx, brand, part, site, task_type):
+    #     """
+    #     🆕 Retry через прокси при RateLimit
+    #     Создаёт НОВЫЙ контекст с прокси для ОДНОГО запроса
+    #     """
+    #     from utils import get_2captcha_proxy
+
+    #     try:
+    #         # Получаем прокси от 2Captcha
+    #         proxy_config = get_2captcha_proxy()
+    #         logger.info(f"🔄 [{idx}] Retry с прокси: {proxy_config['server'][:30]}...")
+
+    #         # 🔥 Crawlee позволяет создавать временные контексты!
+    #         # Используем browser из crawler
+    #         temp_browser = self.crawler.browser_pool._browser  # Внутренний доступ
+
+    #         # Создаём временный контекст с прокси
+    #         proxy_context = await temp_browser.new_context(
+    #             proxy=proxy_config,
+    #             viewport={"width": 1920, "height": 1080},
+    #             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    #         )
+
+    #         # Новая страница
+    #         proxy_page = await proxy_context.new_page()
+
+    #         try:
+    #             # Переход на URL
+    #             url = SiteUrls.armtek_search(part)  # Только Armtek имеет RateLimit
+    #             await proxy_page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+    #             # Парсинг через прокси
+    #             from scraper_armtek_pure import parse_weight_armtek
+
+    #             physical, volumetric = await parse_weight_armtek(
+    #                 proxy_page, part, logger
+    #             )
+
+    #             logger.info(f"✅ [{idx}] Proxy retry успешен: {physical}/{volumetric}")
+
+    #             from config import ARMTEK_P_W, ARMTEK_V_W
+
+    #             return {ARMTEK_P_W: physical, ARMTEK_V_W: volumetric}
+
+    #         finally:
+    #             # Cleanup
+    #             await proxy_page.close()
+    #             await proxy_context.close()
+
+    #     except Exception as e:
+    #         logger.error(f"❌ [{idx}] Proxy retry failed: {e}")
+    #         from config import ARMTEK_P_W, ARMTEK_V_W
+
+    #         return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+
+    async def _retry_with_proxy(self, idx, brand, part, site, task_type):
+        """Retry через прокси при RateLimit"""
+        from utils import get_2captcha_proxy
+        from playwright.async_api import async_playwright  # 🆕 Добавить импорт
 
         try:
-            # Получаем задачу (блокируется до получения)
-            idx_brand_part = await queue.get()
-            if DELAY_EXIST:
-                await asyncio.sleep(random.uniform(1.5, 3.0))
+            proxy_config = get_2captcha_proxy()
+            logger.info(f"🔄 [{idx}] Retry с прокси: {proxy_config['server'][:30]}...")
 
-            # Если None — poison pill (graceful exit)
-            if idx_brand_part is None:
-                logger.info(f"👷 Worker-{worker_id}: Получен poison pill → exit")
-                break
-
-            idx, brand, part = idx_brand_part
-
-            # Блок STOP.flag
-            if Path("input/STOP.flag").exists():
-                logger.info(f"👷 Worker-{worker_id}: STOP.flag → graceful stop")
-                break
-
-            # Инициализация
-            using_proxy = proxy_context is not None
-            result = None
-
-            # 🚦 ШАГ 1: ВЫБОР РЕЖИМА
-            if not using_proxy:
-                pool_ctx_obj = await pool.get_context()
-                context = pool_ctx_obj
-
-            else:
-                context = proxy_context
-
-                logger.debug(f"👷 Worker-{worker_id}: Proxy context (Reuse)")
-            # В цикле:
-            try:
-                # Основной парсинг
-                result = await asyncio.wait_for(
-                    process_single_item(context, idx, brand, part),
-                    timeout=TASK_TIMEOUT,
+            # 🆕 Создаём независимый Playwright контекст
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(
+                    proxy=proxy_config,
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 )
+                page = await context.new_page()
 
-            # Если тамаут повторяем до успеха
-            except asyncio.TimeoutError:
-                async with counter_lock:
-                    retries = retry_counts.get(idx, 0) + 1
-                    retry_counts[idx] = retries
+                try:
+                    url = SiteUrls.armtek_search(part)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-                    if retries >= 3:  # ✅ Макс 3 попытки!
-                        logger.error(
-                            f"👷 Worker-{worker_id}: ❌ {idx} {retries}/3 FAIL!"
-                        )
-                        del retry_counts[idx]
-                        pbar.update(1)  # Только после FAIL
-                    else:
-                        delay = 2**retries * 5  # 10s, 20s, 40s
-                        logger.warning(
-                            f"👷 ⏰ Timeout {idx} ({retries}/3) → {delay}s retry!"
-                        )
-                        await asyncio.sleep(delay)
-                        await queue.put((idx, brand, part))  # 🔄 Retry!
-                        continue
+                    from scraper_armtek_pure import parse_weight_armtek
 
-            # Нормальный успех
+                    physical, volumetric = await parse_weight_armtek(page, part, logger)
 
-            if result == "ReauthNeeded":
-                await pool.refresh_cookies()
-                await queue.put((idx, brand, part))  # Retry
+                    logger.info(f"✅ [{idx}] Proxy retry: {physical}/{volumetric}")
+
+                    from config import ARMTEK_P_W, ARMTEK_V_W
+
+                    return {ARMTEK_P_W: physical, ARMTEK_V_W: volumetric}
+
+                finally:
+                    await page.close()
+                    await context.close()
+                    await browser.close()
+
+        except Exception as e:
+            logger.error(f"❌ [{idx}] Proxy retry failed: {e}")
+            from config import ARMTEK_P_W, ARMTEK_V_W
+
+            return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+
+    async def _save_result(self, idx, result):
+        """Потокобезопасное сохранение"""
+        async with self.results_lock:
+            for col, val in result.items():
+                if pd.notna(val):
+                    self.df.at[idx, col] = val
+
+            # 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ каждые 100 строк
+            if (self.processed_count + 1) % 30 == 0:
+                temp_file = f"output/temp_progress.xlsx"
+                await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
+                logger.info(f"💾 Промежуточное: {temp_file}")
+
+    def _build_requests(self):
+        """
+        Построение Request-ов для Crawlee
+        КЛЮЧЕВОЕ ОТЛИЧИЕ: URL теперь реальные!
+        """
+        requests = []
+        logger.info(
+            f"🔧 _build_requests: MAX_ROWS={MAX_ROWS}, df.shape={self.df.shape}"
+        )
+
+        for idx, row in self.df.head(MAX_ROWS).iterrows():
+            article = str(row[INPUT_COL_ARTICLE]).strip()
+
+            # 🆕 ЛОГ КАЖДОЙ ИТЕРАЦИИ
+            # logger.debug(f"  Loop: idx={idx}, article={article}")
+
+            if not article:
+                # logger.warning(f"  ⚠️ Пропуск idx={idx}: пустой артикул")
                 continue
 
-            # 🚦 ШАГ 2: RateLimit обработка
-            if result == "NeedProxy":
-                logger.warning(
-                    f"👷 Worker-{worker_id}: 🚦 RateLimit на {part}. Переключение..."
+            brand = str(row[INPUT_COL_BRAND]).strip()
+
+            # ======== ВЕСА ========
+            if ENABLE_WEIGHT_PARSING:
+                # Japarts (приоритет)
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.japarts_search(article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "japarts",
+                            "task_type": "weight",
+                        },
+                    )
                 )
+                # 🆕 ЛОГ ДОБАВЛЕНИЯ
+                # logger.info(
+                #     f"  ✅ Request #{len(requests)}: idx={idx}, site=japarts, part={article}"
+                # )
 
-                # Cleanup текущего
-                # await safe_close_page(page1)
-                # page1 = None
-                if pool_ctx_obj:
-                    pool.release_context(pool_ctx_obj)
-                    pool_ctx_obj = None
-
-                # Ротация прокси если был
-                if proxy_context:
-                    logger.info(f"👷 Worker-{worker_id}: ♻️ Меняем IP...")
-                    await proxy_context.close()
-                    proxy_context = None
-
-                # Новый прокси
-                proxy_cfg = get_2captcha_proxy()
-                if not proxy_cfg or "server" not in proxy_cfg:
-                    logger.error("❌ Нет прокси конфига")
-                    result = None
-                else:
-                    try:
-                        proxy_context = await asyncio.wait_for(
-                            proxy_browser.new_context(
-                                proxy=proxy_cfg,
-                                viewport={"width": 1920, "height": 1080},
-                                device_scale_factor=1.0,
-                                is_mobile=False,
-                                has_touch=False,
-                                locale="ru-RU",
-                                timezone_id="Europe/Moscow",
-                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                ignore_https_errors=True,
-                                extra_http_headers={
-                                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                                },
-                            ),
-                            timeout=60.0,
-                        )
-                        logger.info(f"👷 Worker-{worker_id}: ✅ Proxy подключен!")
-
-                        # Retry с прокси
-                        # page_retry = await proxy_context.new_page()
-                        result = await asyncio.wait_for(
-                            process_single_item(
-                                proxy_context,
-                                idx,
-                                brand,
-                                part,
-                            ),
-                            timeout=PROXY_TIMOUT,
-                        )
-                        # await safe_close_page(page_retry)
-                        # page_retry = None
-
-                    except asyncio.TimeoutError:
-                        logger.error(f"👷 Worker-{worker_id}: ❌ Proxy timeout!")
-                        if proxy_context:
-                            await proxy_context.close()
-                            proxy_context = None
-                        result = None
-                    except Exception as e:
-                        logger.error(f"👷 Worker-{worker_id}: ❌ Proxy error: {e}")
-                        if proxy_context:
-                            await proxy_context.close()
-                            proxy_context = None
-                        result = None
-
-            elif result == "CloudFlare":  # 🔥 НОВОЕ! ClaudFlare
-                logger.warning(
-                    f"👷 Worker-{worker_id}: ☁️ CloudFlare на {part}. 30 сек cooldown → БЕЗ прокси!"
-                )
-
-                # Cleanup прокси
-                if pool_ctx_obj:
-                    pool.release_context(pool_ctx_obj)
-                    pool_ctx_obj = None
-                if proxy_context:
-                    await proxy_context.close()
-                    proxy_context = None
-
-                # ⏳ 30 СЕКУНД PAUZA
-                await asyncio.sleep(30)
-
-                # 🔄 НОРМАЛЬНЫЙ КОНТЕКСТ (БЕЗ ПРОКСИ)
-                normal_context = (
-                    await normal_browser.new_context(  # Твой normal_browser
-                        viewport={"width": 1920, "height": 1080},
-                        locale="ru-RU",
-                        timezone_id="Europe/Moscow",
-                        user_agent="Mozilla/5.0...",
+                # Armtek (fallback - будет обработано если Japarts вернет None)
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.armtek_search(article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "armtek",
+                            "task_type": "weight",
+                        },
                     )
                 )
 
-                # Retry БЕЗ прокси
-                result = await asyncio.wait_for(
-                    process_single_item(normal_context, idx, brand, part),
-                    timeout=TASK_TIMEOUT,  # 2 мин на нормальный
-                )
-
-                await normal_context.close()
-                normal_context = None
-
-            pbar.update(1)
-
-            # 🆕 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ + DEBUG
-            if result and not isinstance(result, (str, Exception)):
-                async with counter_lock:
-                    if isinstance(result, dict):
-                        for col, val in result.items():
-                            if pd.notna(val):
-                                df.at[idx, col] = val
-                    elif isinstance(result, tuple) and len(result) == 2:
-                        real_idx, data = result
-                        for col, val in data.items():
-                            if pd.notna(val):
-                                df.at[real_idx, col] = val
-
-            # прогресс в телеграм
-            async with counter_lock:
-                counter["processed"] += 1
-                processed_count = counter["processed"]
-
-                logger.debug(
-                    f"📊 Progress: {processed_count}/{total_tasks}, df.shape={df.shape}"
-                )
-
-                # Telegram прогресс (без изменений)
-                if (
-                    processed_count in progress_checkpoints
-                    and processed_count not in sent_progress
-                ):
-                    percent = int(processed_count / total_tasks * 100)
-                    send_telegram_process(
-                        f"Прогресс: {percent}% ({processed_count}/{total_tasks})"
+            # ======== ИМЕНА ========
+            elif ENABLE_NAME_PARSING:
+                # Stparts (приоритет)
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.stparts_search(article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "stparts",
+                            "task_type": "name",
+                        },
                     )
-                    sent_progress.add(processed_count)
-
-        except asyncio.CancelledError:
-            logger.info(f"👷 Worker-{worker_id}: Cancelled")
-            break
-        except asyncio.TimeoutError:
-            logger.error(f"👷 Worker-{worker_id}: Task timeout!")
-        except Exception as e:
-            logger.error(f"👷 Worker-{worker_id}: Unexpected error: {e}")
-        finally:
-            # Cleanup текущей итерации
-            # if page1:
-            #     await safe_close_page(page1)
-            # if page_retry:
-            #     await safe_close_page(page_retry)
-            if pool_ctx_obj:
-                pool.release_context(pool_ctx_obj)
-
-            # ✅ ГАРАНТИРОВАННЫЙ task_done()
-            if idx_brand_part is not None:
-                queue.task_done()
-                logger.debug(
-                    f"👷 Worker-{worker_id}: task_done() для {idx if idx_brand_part else 'None'}"
                 )
 
-    # Final cleanup при выходе из while
-    try:
-        if proxy_context:
-            await proxy_context.close()
-            logger.info(f"👷 Worker-{worker_id}: Proxy closed")
-    except Exception as e:
-        logger.error(f"👷 Worker-{worker_id} final cleanup error: {e}")
+                # Avtoformula (fallback)
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.avtoformula_search(brand, article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "avtoformula",
+                            "task_type": "name",
+                        },
+                    )
+                )
 
+            # ======== ЦЕНЫ ========
+            elif ENABLE_PRICE_PARSING:
+                # Параллельно оба сайта
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.stparts_search(article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "stparts",
+                            "task_type": "price",
+                        },
+                    )
+                )
+                requests.append(
+                    Request.from_url(
+                        url=SiteUrls.avtoformula_search(brand, article),
+                        user_data={
+                            "idx": idx,
+                            "brand": brand,
+                            "part": article,
+                            "site": "avtoformula",
+                            "task_type": "price",
+                        },
+                    )
+                )
 
-async def main_async():
-    print("🚀 main.py ЗАПУЩЕН!")
-    print(
-        f"🔍 .env ДО reload: NAME={os.getenv('ENABLE_NAME_PARSING')}, WEIGHT={os.getenv('ENABLE_WEIGHT_PARSING')}"
-    )
+        return requests
 
-    reload_config()
-    # TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    async def run(self):
+        """Главный метод запуска"""
+        await self.setup()
 
-    # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
-    from config import (
-        INPUT_FILE,
-        MAX_ROWS,
-        MAX_WORKERS,
-        INPUT_COL_BRAND,
-        INPUT_COL_ARTICLE,
-        get_output_file,
-        stparts_price,
-        stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
-        ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
-        ENABLE_NAME_PARSING as LOCAL_NAME,
-        ENABLE_PRICE_PARSING as LOCAL_PRICE,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
-        BAD_DETAIL_NAMES,
-    )
+        # 🆕 ОЧИСТКА КЕША CRAWLEE
+        import shutil
 
-    # Проверка: только 1 режим активен
-    active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
-    if active_modes != 1:
-        error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
-        logger.error(error_msg)
-        return
+        storage_dir = Path("storage")
+        if storage_dir.exists():
+            shutil.rmtree(storage_dir)
+            logger.info("🗑️ Очищен кеш Crawlee")
 
-    # Режим
-    if LOCAL_WEIGHT:
-        mode = "ВЕСА"
-    elif LOCAL_NAME:
-        mode = "ИМЕНА"
-    else:
-        mode = "ЦЕНЫ"
-
-    logger.info(f"✅ Режим: {mode}")
-    logger.info("=" * 60)
-
-    # 📊 Загрузка и подготовка DataFrame
-    df = pd.read_excel(INPUT_FILE)
-    df = preprocess_dataframe(df)
-
-    # 🆕 Инициализация колонок
-    for col in [
-        stparts_price,
-        stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
-    ]:
-        if col not in df.columns:
-            df[col] = None
-
-    if LOCAL_NAME and "finde_name" not in df.columns:
-        df["finde_name"] = None
-
-    if LOCAL_WEIGHT:
-        for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-            if col not in df.columns:
-                df[col] = None
-
-    # 🆕 Создание очереди задач
-    queue = asyncio.Queue()
-    total_tasks = 0
-
-    for idx, row in df.head(MAX_ROWS).iterrows():
-        article = str(row[INPUT_COL_ARTICLE]).strip()
-        if article:
-            task = (idx, str(row[INPUT_COL_BRAND]).strip(), article)
-            queue.put_nowait(task)
-            total_tasks += 1
-
-    logger.info(f"📋 Задач в очереди: {total_tasks}")
-
-    # 🆕 Контрольные точки прогресса
-    progress_checkpoints = {
-        math.ceil(total_tasks * 0.25),
-        math.ceil(total_tasks * 0.50),
-        math.ceil(total_tasks * 0.75),
-        total_tasks,
-    }
-    sent_progress = set()
-    counter = {"processed": 0}
-    counter_lock = asyncio.Lock()
-
-    # 🔥 🆕 ИСПРАВЛЕННЫЙ БЛОК: try-finally вместо async with
-    playwright = None
-    normal_browser = None
-    proxy_browser = None
-    pool = None
-
-    try:
-        playwright = await async_playwright().start()
-
-        # 🆕 BROWSER #1: ContextPool (БЕЗ proxy)
-        normal_browser = await playwright.chromium.launch(
-            headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-
-        # 2️⃣ PROXY browser
-        proxy_browser = await playwright.chromium.launch(
+        # Настройка Crawler
+        self.crawler = PlaywrightCrawler(
+            request_handler=self.request_handler,
+            max_requests_per_crawl=None,  # Без лимита
+            max_request_retries=3,
+            # browser_new_context_options={
+            #     "ignore_https_errors": True,  # 🔥 Игнорировать SSL!
+            # },
+            # 🔥 ЗАМЕНИ max_concurrency на:
+            # 🔥 ПРОСТОЙ ВАРИАНТ (если MAX_WORKERS=5):
+            concurrency_settings=ConcurrencySettings(
+                max_concurrency=5,
+                desired_concurrency=5,
+            ),
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-            proxy={"server": "http://per-context"},
+            browser_type="chromium",
+            # # 🔥 ВАЖНО: pre-navigation hook для авторизации
+            # pre_navigation_hooks=(
+            #     [self._pre_navigation_hook]
+            #     if (ENABLE_NAME_PARSING or ENABLE_PRICE_PARSING)
+            #     else None
+            # ),
         )
 
-        # ContextPool
-        pool = ContextPool(
-            normal_browser,
-            pool_size=MAX_WORKERS,
-            auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
-        )
-        await pool.initialize()
+        # Построение очереди
+        requests = self._build_requests()
+        self.total_tasks = len(requests)
+        logger.info(f"📋 Задач: {self.total_tasks}")
 
-        with tqdm(total=total_tasks, desc="Парсинг") as pbar:
-            workers = [
-                asyncio.create_task(
-                    worker(
-                        i,
-                        queue,
-                        pool,
-                        normal_browser,
-                        proxy_browser,
-                        df,
-                        pbar,
-                        total_tasks,
-                        progress_checkpoints,
-                        sent_progress,
-                        counter,
-                        counter_lock,
-                    )
-                )
-                for i in range(MAX_WORKERS)
-            ]
+        # Запуск
+        await self.crawler.run(requests)
 
-            # 🔥 ОСНОВНОЙ ЦИКЛ с промежуточным сохранением КАЖДЫЕ 10 строк!
-            while True:
-                async with counter_lock:
-                    processed_count = counter["processed"]
+        # Финализация
+        await self._finalize()
 
-                    # 🆕 ПРОВЕРКА: сохраняем только если новая отметка!
-                    if (
-                        processed_count % TEMP_RAW == 0
-                        and processed_count > 0
-                        and counter.get("last_saved", -1) != processed_count
-                    ):
-
-                        try:
-                            df_current = preprocess_dataframe(df)
-                            await asyncio.to_thread(
-                                df_current.to_excel, TEMP_FILES_DIR, index=False
-                            )
-                            logger.info(
-                                f"💾 Промежуточное: {processed_count}/{total_tasks} → {TEMP_FILES_DIR}"
-                            )
-
-                            # 🆕 ОТМЕЧАЕМ: эта отметка сохранена!
-                            counter["last_saved"] = processed_count
-
-                        except Exception as e:
-                            logger.error(f"❌ Промежуточное: {e}")
-
-                # Проверки
-                if Path("input/STOP.flag").exists():
-                    logger.warning("🛑 GLOBAL STOP!")
-                    for w in workers:
-                        w.cancel()
-                    await asyncio.gather(*workers, return_exceptions=True)
-                    await finalize_processing(df, mode)  # ← Только 1 раз!
-                    break
-
-                if queue.empty():
-                    logger.info("Очередь пуста, ждём queue.join()...")
-                    try:
-                        await asyncio.wait_for(queue.join(), timeout=30.0)
-                        logger.info("✅ queue.join() завершён!")
-                        break
-                    except asyncio.TimeoutError:
-                        logger.warning("⚠️ queue.join() timeout")
-                        break
+    async def _pre_navigation_hook(self, context: PlaywrightCrawlingContext):
+        """
+        Выполняется ДО навигации на каждый URL
+        Здесь делаем авторизацию ОДИН раз для Avtoformula
+        """
+        if context.request.user_data.get("site") == "avtoformula":
+            # Crawlee сам управляет сессией, поэтому логин нужен только 1 раз
+            if not hasattr(self, "_avtoformula_logged_in"):
+                logger.info("🔐 Авторизация Avtoformula...")
+                success = await SimpleAuth.login_avtoformula(context.page)
+                if success:
+                    self._avtoformula_logged_in = True
                 else:
-                    await asyncio.sleep(1.0)
+                    raise Exception("Авторизация не удалась")
 
-            # Graceful shutdown workers (poison pills)
-            # logger.info("🛑 Отправляем poison pills...")
-            # for _ in range(len(workers)):
-            #     await queue.put(None)
+    async def _finalize(self):
+        """Финальная обработка"""
+        logger.info(f"🔄 Финализация ({self.mode})...")
 
-            # ✅ ДОБАВИТЬ:
-            logger.info("⏳ Буфер записи df...")
-            await asyncio.sleep(8)
+        if ENABLE_WEIGHT_PARSING:
+            self.df = await asyncio.to_thread(consolidate_weights, self.df)
+            logger.info("✅ Веса консолидированы")
 
-            # Ждём завершения workers
-            for w in workers:
-                w.cancel()
-            await asyncio.gather(*workers, return_exceptions=True)
-            logger.info("✅ Все workers завершены!")
+        output_file = get_output_file(self.mode)
 
-    except Exception as e:
-        logger.error(f"❌ Критическая ошибка в main: {e}")
-        raise
-    finally:
-        # 🧹 Graceful cleanup ВСЕГДА
-        logger.info("🧹 Cleanup браузеров...")
-        try:
-            if pool:
-                await pool.close_all()
-                logger.info("✅ Pool закрыт")
-        except Exception as e:
-            logger.warning(f"⚠️ Pool close error: {e}")
+        if ENABLE_PRICE_PARSING:
+            await asyncio.to_thread(adjust_prices_and_save, self.df, output_file)
+        else:
+            await asyncio.to_thread(self.df.to_excel, output_file, index=False)
 
-        try:
-            if normal_browser:
-                await normal_browser.close()
-                logger.info("✅ Normal browser закрыт")
-        except Exception as e:
-            logger.warning(f"⚠️ Normal browser close error: {e}")
-
-        try:
-            if proxy_browser:
-                await proxy_browser.close()
-                logger.info("✅ Proxy browser закрыт")
-        except Exception as e:
-            logger.warning(f"⚠️ Proxy browser close error: {e}")
-
-        try:
-            if playwright:
-                await playwright.stop()
-                logger.info("✅ Playwright остановлен")
-        except Exception as e:
-            logger.warning(f"⚠️ Playwright stop error: {e}")
-
-    # 🔥 ФИНАЛИЗАЦИЯ ТОЛЬКО при нормальном завершении!
-    if not Path("input/STOP.flag").exists():
-        try:
-            logger.info(f"🔄 Финализация ({mode})...")
-            # 🔥 ЖЁСТКИЙ БУФЕР!
-            logger.info("⏳ Ждём записи df...")
-            await asyncio.sleep(5)  # Workers допишут df.at[]!
-
-            async with counter_lock:
-                logger.info(f"✅ Processed: {counter['processed']}/{total_tasks}")
-
-            print("🔍 Последние 3 строки df:")
-            print(df.tail(3)[[INPUT_COL_ARTICLE, JPARTS_P_W, ARMTEK_P_W]])
-
-            # Перед finalize:
-            logger.info(f"df.shape={df.shape}")
-            logger.info(f"Веса JP: {df[JPARTS_P_W].notna().sum()}")
-            logger.info(f"Веса ARM: {df[ARMTEK_P_W].notna().sum()}")
-
-            # Сохрани debug
-            # main_async перед finalize:
-            output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
-            debug_file = output_dir / "debug_pre_final.xlsx"
-            logger.info(f"🔍 Debug в output: {debug_file}")
-            await asyncio.to_thread(df.to_excel, debug_file)
-
-            await finalize_processing(df, mode)
-            logger.info("🎉 Парсинг завершён успешно!")
-        except Exception as e:
-            logger.error(f"❌ Финальная обработка failed: {e}")
-            emergency_file = get_output_file(mode).replace(".xlsx", "_emergency.xlsx")
-            await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-            logger.info(f"💾 Emergency save: {emergency_file}")
+        logger.info(f"✅ Сохранено: {output_file}")
+        logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
 
 
-def main():
-    setup_event_loop_policy()
-    clear_debug_folders_sync(sites, logger)
-
-    def stop_handler(signum, frame):
-        stop_parsing.set()
-
-    signal.signal(signal.SIGTERM, stop_handler)
-
-    asyncio.run(main_async())
+async def main():
+    parser = ParserCrawler()
+    await parser.run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

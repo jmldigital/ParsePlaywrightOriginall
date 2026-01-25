@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=53795-60040",
+  "url": "https://www.japarts.ru/?id=price&search=53795-60040",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 13,
+    "brand": "TOYOTA",
+    "part": "53795-60040",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:10:36.024535+00:00"
+}

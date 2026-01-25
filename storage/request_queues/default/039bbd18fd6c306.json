@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=53804-0g020",
+  "url": "https://www.japarts.ru/?id=price&search=53804-0G020",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 92,
+    "brand": "TOYOTA",
+    "part": "53804-0G020",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:13:18.074827+00:00"
+}

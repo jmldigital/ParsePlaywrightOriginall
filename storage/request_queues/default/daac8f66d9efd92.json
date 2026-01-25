@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=53796-0n010",
+  "url": "https://www.japarts.ru/?id=price&search=53796-0N010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 14,
+    "brand": "TOYOTA",
+    "part": "53796-0N010",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:10:37.361537+00:00"
+}

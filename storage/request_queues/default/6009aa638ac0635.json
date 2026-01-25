@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://armtek.ru/search?text=53786-0r020",
+  "url": "https://armtek.ru/search?text=53786-0R020",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 4,
+    "brand": "TOYOTA",
+    "part": "53786-0R020",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:10:19.131492+00:00"
+}

@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=53786-08030",
+  "url": "https://www.japarts.ru/?id=price&search=53786-08030",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 1,
+    "brand": "TOYOTA",
+    "part": "53786-08030",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:10:15.256494+00:00"
+}

@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://armtek.ru/search?text=53802-60b50",
+  "url": "https://armtek.ru/search?text=53802-60B50",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 75,
+    "brand": "TOYOTA",
+    "part": "53802-60B50",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:12:45.664699+00:00"
+}

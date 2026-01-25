@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://armtek.ru/search?text=53801-v2010",
+  "url": "https://armtek.ru/search?text=53801-V2010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 51,
+    "brand": "TOYOTA",
+    "part": "53801-V2010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 17:11:53.762206+00:00"
+}
