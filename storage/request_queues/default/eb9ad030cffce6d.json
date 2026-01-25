@@ -6,7 +6,7 @@
   "headers": {},
   "user_data": {
     "__crawlee": {
-      "state": 5
+      "state": 4
     },
     "idx": 4,
     "brand": "TOYOTA",
@@ -14,8 +14,8 @@
     "site": "armtek",
     "task_type": "weight"
   },
-  "retry_count": 1,
+  "retry_count": 0,
   "no_retry": false,
   "loaded_url": null,
-  "handled_at": null
+  "handled_at": "2026-01-25 21:38:21.839492+00:00"
 }

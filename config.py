@@ -7,6 +7,10 @@ import logging
 logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
+# Уровень логирования (DEBUG, INFO, WARNING, ERROR)
+# LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
+
+LOG_LEVEL = "INFO"
 
 TEMP_RAW = 200
 MAX_WORKERS = 5

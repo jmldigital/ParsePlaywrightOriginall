@@ -5,9 +5,7 @@
   "payload": null,
   "headers": {},
   "user_data": {
-    "__crawlee": {
-      "state": 4
-    },
+    "__crawlee": {},
     "idx": 43,
     "brand": "TOYOTA",
     "part": "28885-F2080",
@@ -17,5 +15,5 @@
   "retry_count": 0,
   "no_retry": false,
   "loaded_url": null,
-  "handled_at": "2026-01-25 21:17:57.424275+00:00"
+  "handled_at": null
 }
