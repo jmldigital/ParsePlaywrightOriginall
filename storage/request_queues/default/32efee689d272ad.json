@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=32910-60150",
+  "url": "https://armtek.ru/search?text=32910-60150",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 288,
+    "brand": "TOYOTA",
+    "part": "32910-60150",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=33504-0g030-c1",
+  "url": "https://www.japarts.ru/?id=price&search=33504-0G030-C1",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 615,
+    "brand": "TOYOTA",
+    "part": "33504-0G030-C1",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

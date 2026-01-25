@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=42345-0d420",
+  "url": "https://armtek.ru/search?text=42345-0D420",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 1385,
+    "brand": "TOYOTA",
+    "part": "42345-0D420",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

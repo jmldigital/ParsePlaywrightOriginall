@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=35513-47010",
+  "url": "https://armtek.ru/search?text=35513-47010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 964,
+    "brand": "TOYOTA",
+    "part": "35513-47010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

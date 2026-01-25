@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=35677-30180",
+  "url": "https://armtek.ru/search?text=35677-30180",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 1034,
+    "brand": "TOYOTA",
+    "part": "35677-30180",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

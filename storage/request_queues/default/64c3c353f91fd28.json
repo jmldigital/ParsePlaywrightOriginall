@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=28859-f0170",
+  "url": "https://armtek.ru/search?text=28859-F0170",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 31,
+    "brand": "TOYOTA",
+    "part": "28859-F0170",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

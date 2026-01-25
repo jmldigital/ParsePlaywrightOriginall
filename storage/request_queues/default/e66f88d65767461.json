@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=31420-60033",
+  "url": "https://www.japarts.ru/?id=price&search=31420-60033",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 197,
+    "brand": "TOYOTA",
+    "part": "31420-60033",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

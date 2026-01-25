@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=28850-k0010",
+  "url": "https://armtek.ru/search?text=28850-K0010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 22,
+    "brand": "TOYOTA",
+    "part": "28850-K0010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=41110-60a21",
+  "url": "https://armtek.ru/search?text=41110-60A21",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 1236,
+    "brand": "TOYOTA",
+    "part": "41110-60A21",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=33394-36020",
+  "url": "https://www.japarts.ru/?id=price&search=33394-36020",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 537,
+    "brand": "TOYOTA",
+    "part": "33394-36020",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

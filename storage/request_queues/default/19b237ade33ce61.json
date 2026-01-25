@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=35168-52060",
+  "url": "https://armtek.ru/search?text=35168-52060",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 926,
+    "brand": "TOYOTA",
+    "part": "35168-52060",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

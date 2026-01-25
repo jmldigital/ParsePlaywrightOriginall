@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://www.japarts.ru/?id=price&search=33493-0e010",
+  "url": "https://www.japarts.ru/?id=price&search=33493-0E010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 583,
+    "brand": "TOYOTA",
+    "part": "33493-0E010",
+    "site": "japarts",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33504-20120-c0",
+  "url": "https://armtek.ru/search?text=33504-20120-C0",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 639,
+    "brand": "TOYOTA",
+    "part": "33504-20120-C0",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

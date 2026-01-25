@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33251-12100",
+  "url": "https://armtek.ru/search?text=33251-12100",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 446,
+    "brand": "TOYOTA",
+    "part": "33251-12100",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

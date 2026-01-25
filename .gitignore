@@ -66,3 +66,12 @@ desktop.ini
 # === Docker ===
 #.dockerenv
 #docker-compose.override.yml
+
+
+
+storage/
+debug_armtek/
+# Debug folders
+debug/
+**/debug/
+*debug*/

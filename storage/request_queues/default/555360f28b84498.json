@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33368-52050",
+  "url": "https://armtek.ru/search?text=33368-52050",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 517,
+    "brand": "TOYOTA",
+    "part": "33368-52050",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

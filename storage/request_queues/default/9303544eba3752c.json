@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33820-0e210",
+  "url": "https://armtek.ru/search?text=33820-0E210",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 794,
+    "brand": "TOYOTA",
+    "part": "33820-0E210",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,21 @@
+{
+  "unique_key": "https://armtek.ru/search?text=28800-yzzuv",
+  "url": "https://armtek.ru/search?text=28800-YZZUV",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 7,
+    "brand": "TOYOTA",
+    "part": "28800-YZZUV",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-01-25 18:51:59.056310+00:00"
+}

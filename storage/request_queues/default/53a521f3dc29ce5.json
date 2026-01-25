@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=288a2-f0020",
+  "url": "https://armtek.ru/search?text=288A2-F0020",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 53,
+    "brand": "TOYOTA",
+    "part": "288A2-F0020",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

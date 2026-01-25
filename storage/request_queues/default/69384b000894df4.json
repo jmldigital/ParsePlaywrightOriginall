@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=28885-0t010",
+  "url": "https://armtek.ru/search?text=28885-0T010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 37,
+    "brand": "TOYOTA",
+    "part": "28885-0T010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

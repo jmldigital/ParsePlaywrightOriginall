@@ -8,13 +8,15 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 30
-MAX_WORKERS = 2
+TEMP_RAW = 200
+MAX_WORKERS = 5
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 TASK_TIMEOUT = 180
 PROXY_TIMOUT = 240  # ✅ Задержка на прокси
 PAGE_GOTO_TIMEOUT = 30000
 CLOUD_FLARE_DETEKTOR = 30000
+MAX_ROWS = 23000
+SAVE_INTERVAL = 100
 
 
 # === API и авторизация ===
@@ -51,8 +53,8 @@ ENABLE_PRICE_PARSING = os.getenv("ENABLE_PRICE_PARSING", "False").lower() == "tr
 
 
 # === Параметры ===
-MAX_ROWS = 23000
-SAVE_INTERVAL = 30
+
+
 PAGE_LOAD_TIMEOUT = 60
 DEFAULT_WAIT = 15
 CAPTCHA_WAIT = 5

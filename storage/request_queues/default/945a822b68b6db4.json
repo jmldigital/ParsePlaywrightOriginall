@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=28859-25070",
+  "url": "https://armtek.ru/search?text=28859-25070",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 27,
+    "brand": "TOYOTA",
+    "part": "28859-25070",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

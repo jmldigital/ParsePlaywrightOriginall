@@ -31,7 +31,7 @@ async def parse_weight_japarts(
         # 3. Проверка: нет результатов?
         content = await page.content()
         if "Записей по вашему запросу не найдено" in content:
-            logger.info(f"Jparts - ❌ Не найдено: {part}")
+            # logger.info(f"Jparts - ❌ Не найдено: {part}")
             return None, None
 
         # 4. Парсинг веса (твой старый код)
@@ -39,7 +39,7 @@ async def parse_weight_japarts(
         weight_text = await weight_loc.text_content(timeout=5000)
 
         if not weight_text or "Нет веса" in weight_text:
-            logger.warning(f"⚠️ Вес не найден: {part}")
+            # logger.warning(f"⚠️ Вес не найден: {part}")
             return None, None
 
         # 5. Регулярки
@@ -51,7 +51,7 @@ async def parse_weight_japarts(
         physical = p_match.group(1).replace(",", ".") if p_match else None
         volumetric = v_match.group(1).replace(",", ".") if v_match else None
 
-        logger.info(f"✅ Вес: {physical}/{volumetric} ({part})")
+        # logger.info(f"✅ Вес: {physical}/{volumetric} ({part})")
         return physical, volumetric
 
     except Exception as e:

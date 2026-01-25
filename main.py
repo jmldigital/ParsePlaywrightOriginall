@@ -49,6 +49,7 @@ from config import (
     SELECTORS,
     get_output_file,
     reload_config,
+    TEMP_RAW,
 )
 from utils import logger, preprocess_dataframe, consolidate_weights
 from captcha_manager import CaptchaManager
@@ -236,7 +237,7 @@ class ParserCrawler:
             # Прогресс
             async with self.results_lock:
                 self.processed_count += 1
-                if self.processed_count % 50 == 0:
+                if self.processed_count % TEMP_RAW / 2 == 0:
                     logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
 
         except Exception as e:
@@ -289,6 +290,35 @@ class ParserCrawler:
                         physical, volumetric = await parse_weight_armtek(
                             page, part, logger
                         )
+
+                # 🔥 1. CLOUDFLARE - сбросить прокси, retry без прокси
+                if physical == "CloudFlare":
+                    logger.warning(f"☁️ [{idx}] CloudFlare на Armtek → retry без прокси")
+
+                    # Перезагрузка страницы (Crawlee уже без прокси)
+                    try:
+                        await page.reload(wait_until="domcontentloaded", timeout=30000)
+                        await page.wait_for_timeout(3000)  # Ждём CloudFlare check
+
+                        # Повторный парсинг
+                        physical, volumetric = await parse_weight_armtek(
+                            page, part, logger
+                        )
+
+                        # Если снова CloudFlare - пропускаем
+                        if physical == "CloudFlare":
+                            logger.error(f"☁️ [{idx}] CloudFlare персистентен → пропуск")
+                            self.stats["armtek"]["empty"] += 1
+                            from config import ARMTEK_P_W, ARMTEK_V_W
+
+                            return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+
+                    except Exception as e:
+                        logger.error(f"❌ [{idx}] Ошибка retry CloudFlare: {e}")
+                        self.stats["armtek"]["empty"] += 1
+                        from config import ARMTEK_P_W, ARMTEK_V_W
+
+                        return {ARMTEK_P_W: None, ARMTEK_V_W: None}
 
                 from config import ARMTEK_P_W, ARMTEK_V_W
 
@@ -431,9 +461,10 @@ class ParserCrawler:
 
             # 🆕 Создаём независимый Playwright контекст
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(
+                    headless=True, proxy=proxy_config  # ✅ Переместить сюда!
+                )
                 context = await browser.new_context(
-                    proxy=proxy_config,
                     viewport={"width": 1920, "height": 1080},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 )
@@ -472,10 +503,10 @@ class ParserCrawler:
                     self.df.at[idx, col] = val
 
             # 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ каждые 100 строк
-            if (self.processed_count + 1) % 30 == 0:
+            if (self.processed_count + 1) % TEMP_RAW == 0:
                 temp_file = f"output/temp_progress.xlsx"
                 await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
-                logger.info(f"💾 Промежуточное: {temp_file}")
+                logger.info(f"💾 Промежуточное сохранение {self.processed_count} строк")
 
     def _build_requests(self):
         """
@@ -610,23 +641,13 @@ class ParserCrawler:
             request_handler=self.request_handler,
             max_requests_per_crawl=None,  # Без лимита
             max_request_retries=3,
-            # browser_new_context_options={
-            #     "ignore_https_errors": True,  # 🔥 Игнорировать SSL!
-            # },
-            # 🔥 ЗАМЕНИ max_concurrency на:
             # 🔥 ПРОСТОЙ ВАРИАНТ (если MAX_WORKERS=5):
             concurrency_settings=ConcurrencySettings(
-                max_concurrency=5,
-                desired_concurrency=5,
+                max_concurrency=MAX_WORKERS,
+                desired_concurrency=MAX_WORKERS,
             ),
             headless=True,
             browser_type="chromium",
-            # # 🔥 ВАЖНО: pre-navigation hook для авторизации
-            # pre_navigation_hooks=(
-            #     [self._pre_navigation_hook]
-            #     if (ENABLE_NAME_PARSING or ENABLE_PRICE_PARSING)
-            #     else None
-            # ),
         )
 
         # Построение очереди

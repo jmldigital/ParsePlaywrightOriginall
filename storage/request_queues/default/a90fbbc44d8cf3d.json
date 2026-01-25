@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=37120-36710",
+  "url": "https://armtek.ru/search?text=37120-36710",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 1215,
+    "brand": "TOYOTA",
+    "part": "37120-36710",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

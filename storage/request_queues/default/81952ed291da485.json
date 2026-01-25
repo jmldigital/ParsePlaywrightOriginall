@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33504-12630-c1",
+  "url": "https://armtek.ru/search?text=33504-12630-C1",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 636,
+    "brand": "TOYOTA",
+    "part": "33504-12630-C1",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

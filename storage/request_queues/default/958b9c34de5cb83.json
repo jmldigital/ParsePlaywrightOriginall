@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33493-0e050",
+  "url": "https://armtek.ru/search?text=33493-0E050",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 585,
+    "brand": "TOYOTA",
+    "part": "33493-0E050",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33393-20040",
+  "url": "https://armtek.ru/search?text=33393-20040",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 533,
+    "brand": "TOYOTA",
+    "part": "33393-20040",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

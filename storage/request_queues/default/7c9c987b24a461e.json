@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=31270-47070",
+  "url": "https://armtek.ru/search?text=31270-47070",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 184,
+    "brand": "TOYOTA",
+    "part": "31270-47070",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

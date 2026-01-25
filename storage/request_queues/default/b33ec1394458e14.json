@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=35601-71030",
+  "url": "https://armtek.ru/search?text=35601-71030",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 977,
+    "brand": "TOYOTA",
+    "part": "35601-71030",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

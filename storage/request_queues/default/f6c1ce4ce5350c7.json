@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=41196-0n010",
+  "url": "https://armtek.ru/search?text=41196-0N010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 1242,
+    "brand": "TOYOTA",
+    "part": "41196-0N010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

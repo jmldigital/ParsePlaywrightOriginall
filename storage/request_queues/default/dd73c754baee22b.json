@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=34633-0d010",
+  "url": "https://armtek.ru/search?text=34633-0D010",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 850,
+    "brand": "TOYOTA",
+    "part": "34633-0D010",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

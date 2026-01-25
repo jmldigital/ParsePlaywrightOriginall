@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33530-0d160",
+  "url": "https://armtek.ru/search?text=33530-0D160",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 664,
+    "brand": "TOYOTA",
+    "part": "33530-0D160",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

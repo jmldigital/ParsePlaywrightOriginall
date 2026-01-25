@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=32000-0d021",
+  "url": "https://armtek.ru/search?text=32000-0D021",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 237,
+    "brand": "TOYOTA",
+    "part": "32000-0D021",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}

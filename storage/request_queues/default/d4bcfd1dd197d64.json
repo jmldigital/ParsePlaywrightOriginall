@@ -1,0 +1,19 @@
+{
+  "unique_key": "https://armtek.ru/search?text=33391-0d020",
+  "url": "https://armtek.ru/search?text=33391-0D020",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {},
+    "idx": 525,
+    "brand": "TOYOTA",
+    "part": "33391-0D020",
+    "site": "armtek",
+    "task_type": "weight"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": null
+}
