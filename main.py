@@ -24,6 +24,8 @@ from crawlee import Request, ConcurrencySettings
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 from crawlee import Request
 
+from crawlee.proxy_configuration import ProxyConfiguration
+
 # UTF-8 setup
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
@@ -51,7 +53,12 @@ from config import (
     reload_config,
     TEMP_RAW,
 )
-from utils import logger, preprocess_dataframe, consolidate_weights
+from utils import (
+    logger,
+    preprocess_dataframe,
+    consolidate_weights,
+    get_2captcha_proxy_pool,
+)
 from captcha_manager import CaptchaManager
 
 # Импорт ТОЛЬКО парсеров (без навигации)
@@ -214,6 +221,28 @@ class ParserCrawler:
         site = request.user_data["site"]
         task_type = request.user_data["task_type"]  # "weight"/"name"/"price"
 
+        # 🆕 ПРОВЕРКА IP (только для первых 3 запросов)
+        if not hasattr(self, "_ip_check_count"):
+            self._ip_check_count = 0
+
+        if self._ip_check_count < 3:
+            try:
+                actual_ip = await page.evaluate(
+                    "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
+                )
+                logger.info(f"🌍 [{idx}] IP запроса: {actual_ip}")
+                self._ip_check_count += 1
+            except Exception as e:
+                logger.warning(f"⚠️ [{idx}] Не удалось проверить IP: {e}")
+
+            site = request.user_data["site"]
+
+        if site == "armtek":
+            proxy_info = context.proxy_info
+            logger.info(
+                f"🧪 ARMTEK proxy: {proxy_info.url if proxy_info else 'NO PROXY'}"
+            )
+
         # 🔥 АВТОРИЗАЦИЯ (если Avtoformula)
         if site == "avtoformula" and not hasattr(self, "_avtoformula_logged_in"):
             logger.info("🔐 Авторизация Avtoformula...")
@@ -276,14 +305,15 @@ class ParserCrawler:
                 return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             elif site == "armtek":
+
                 physical, volumetric = await parse_weight_armtek(page, part, logger)
 
                 # 🔥 RateLimit обработка
-                if physical == "NeedProxy":
-                    logger.warning(f"🚦 [{idx}] RateLimit на Armtek → прокси retry")
-                    return await self._retry_with_proxy(
-                        idx, brand, part, site, task_type
-                    )
+                # if physical == "NeedProxy":
+                #     logger.warning(f"🚦 [{idx}] RateLimit на Armtek → прокси retry")
+                #     return await self._retry_with_proxy(
+                #         idx, brand, part, site, task_type
+                #     )
 
                 if physical == "NeedCaptcha":
                     if await self._solve_captcha(page, "armtek"):
@@ -450,50 +480,84 @@ class ParserCrawler:
 
     #         return {ARMTEK_P_W: None, ARMTEK_V_W: None}
 
-    async def _retry_with_proxy(self, idx, brand, part, site, task_type):
-        """Retry через прокси при RateLimit"""
-        from utils import get_2captcha_proxy
-        from playwright.async_api import async_playwright  # 🆕 Добавить импорт
+    # async def _retry_with_proxy(self, idx, brand, part, site, task_type):
+    #     """Retry через прокси при RateLimit"""
+    #     from utils import get_2captcha_proxy
+    #     from playwright.async_api import async_playwright
 
-        try:
-            proxy_config = get_2captcha_proxy()
-            logger.info(f"🔄 [{idx}] Retry с прокси: {proxy_config['server'][:30]}...")
+    #     try:
+    #         proxy_config = get_2captcha_proxy()
+    #         logger.info(f"🔄 [{idx}] Retry с прокси: {proxy_config['server'][:30]}...")
 
-            # 🆕 Создаём независимый Playwright контекст
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=True, proxy=proxy_config  # ✅ Переместить сюда!
-                )
-                context = await browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                )
-                page = await context.new_page()
+    #         async with async_playwright() as p:
+    #             # 🆕 Логирование запуска браузера
+    #             logger.info(f"🌐 [{idx}] Запуск браузера с прокси...")
 
-                try:
-                    url = SiteUrls.armtek_search(part)
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    #             browser = await p.chromium.launch(headless=True, proxy=proxy_config)
 
-                    from scraper_armtek_pure import parse_weight_armtek
+    #             logger.info(f"✅ [{idx}] Браузер запущен, создание контекста...")
 
-                    physical, volumetric = await parse_weight_armtek(page, part, logger)
+    #             context = await browser.new_context(
+    #                 viewport={"width": 1920, "height": 1080},
+    #                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    #             )
+    #             page = await context.new_page()
 
-                    logger.info(f"✅ [{idx}] Proxy retry: {physical}/{volumetric}")
+    #             logger.info(f"🔗 [{idx}] Контекст создан, переход на URL...")
 
-                    from config import ARMTEK_P_W, ARMTEK_V_W
+    #             try:
+    #                 url = SiteUrls.armtek_search(part)
+    #                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-                    return {ARMTEK_P_W: physical, ARMTEK_V_W: volumetric}
+    #                 # 🆕 Проверка IP через прокси
+    #                 try:
+    #                     # Попытка получить текущий IP (опционально)
+    #                     actual_ip = await page.evaluate(
+    #                         "() => fetch('https://api.ipify.org?format=json').then(r => r.json()).then(d => d.ip)"
+    #                     )
+    #                     logger.info(f"🌍 [{idx}] Прокси IP: {actual_ip}")
+    #                 except:
+    #                     logger.info(f"📄 [{idx}] Страница загружена (IP не проверен)")
 
-                finally:
-                    await page.close()
-                    await context.close()
-                    await browser.close()
+    #                 from scraper_armtek_pure import parse_weight_armtek
 
-        except Exception as e:
-            logger.error(f"❌ [{idx}] Proxy retry failed: {e}")
-            from config import ARMTEK_P_W, ARMTEK_V_W
+    #                 logger.info(f"🔍 [{idx}] Начало парсинга через прокси...")
+    #                 physical, volumetric = await parse_weight_armtek(page, part, logger)
 
-            return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+    #                 # 🆕 Детальный результат
+    #                 if physical == "NeedProxy":
+    #                     logger.error(f"🚦 [{idx}] RateLimit СНОВА (даже через прокси!)")
+    #                 elif physical == "CloudFlare":
+    #                     logger.error(f"☁️ [{idx}] CloudFlare через прокси")
+    #                 elif physical or volumetric:
+    #                     logger.info(
+    #                         f"✅ [{idx}] Proxy retry успех: P={physical}, V={volumetric}"
+    #                     )
+    #                 else:
+    #                     logger.info(f"⚠️ [{idx}] Proxy retry: не найдено")
+
+    #                 from config import ARMTEK_P_W, ARMTEK_V_W
+
+    #                 return {ARMTEK_P_W: physical, ARMTEK_V_W: volumetric}
+
+    #             finally:
+    #                 logger.info(f"🧹 [{idx}] Закрытие прокси-сессии...")
+    #                 await page.close()
+    #                 await context.close()
+    #                 await browser.close()
+    #                 logger.info(f"✅ [{idx}] Прокси-сессия закрыта")
+
+    #     except Exception as e:
+    #         logger.error(f"❌ [{idx}] Proxy retry failed: {type(e).__name__}: {e}")
+
+    #         # 🆕 Детальный стек ошибки
+    #         import traceback
+
+    #         logger.error(f"📚 [{idx}] Traceback:\n{traceback.format_exc()}")
+
+    #         from config import ARMTEK_P_W, ARMTEK_V_W
+
+    #         return {ARMTEK_P_W: None, ARMTEK_V_W: None}
 
     async def _save_result(self, idx, result):
         """Потокобезопасное сохранение"""
@@ -513,7 +577,8 @@ class ParserCrawler:
         Построение Request-ов для Crawlee
         КЛЮЧЕВОЕ ОТЛИЧИЕ: URL теперь реальные!
         """
-        requests = []
+        normal_requests = []
+        armtek_proxy_requests = []
         logger.info(
             f"🔧 _build_requests: MAX_ROWS={MAX_ROWS}, df.shape={self.df.shape}"
         )
@@ -532,8 +597,8 @@ class ParserCrawler:
 
             # ======== ВЕСА ========
             if ENABLE_WEIGHT_PARSING:
-                # Japarts (приоритет)
-                requests.append(
+                # Japarts → обычный crawler
+                normal_requests.append(
                     Request.from_url(
                         url=SiteUrls.japarts_search(article),
                         user_data={
@@ -545,13 +610,14 @@ class ParserCrawler:
                         },
                     )
                 )
+
                 # 🆕 ЛОГ ДОБАВЛЕНИЯ
                 # logger.info(
                 #     f"  ✅ Request #{len(requests)}: idx={idx}, site=japarts, part={article}"
                 # )
 
                 # Armtek (fallback - будет обработано если Japarts вернет None)
-                requests.append(
+                armtek_proxy_requests.append(
                     Request.from_url(
                         url=SiteUrls.armtek_search(article),
                         user_data={
@@ -567,7 +633,7 @@ class ParserCrawler:
             # ======== ИМЕНА ========
             elif ENABLE_NAME_PARSING:
                 # Stparts (приоритет)
-                requests.append(
+                normal_requests.append(
                     Request.from_url(
                         url=SiteUrls.stparts_search(article),
                         user_data={
@@ -581,7 +647,7 @@ class ParserCrawler:
                 )
 
                 # Avtoformula (fallback)
-                requests.append(
+                normal_requests.append(
                     Request.from_url(
                         url=SiteUrls.avtoformula_search(brand, article),
                         user_data={
@@ -597,7 +663,7 @@ class ParserCrawler:
             # ======== ЦЕНЫ ========
             elif ENABLE_PRICE_PARSING:
                 # Параллельно оба сайта
-                requests.append(
+                normal_requests.append(
                     Request.from_url(
                         url=SiteUrls.stparts_search(article),
                         user_data={
@@ -609,7 +675,7 @@ class ParserCrawler:
                         },
                     )
                 )
-                requests.append(
+                normal_requests.append(
                     Request.from_url(
                         url=SiteUrls.avtoformula_search(brand, article),
                         user_data={
@@ -622,13 +688,50 @@ class ParserCrawler:
                     )
                 )
 
-        return requests
+        return normal_requests, armtek_proxy_requests
+
+    # async def run(self):
+    #     """Главный метод запуска"""
+    #     await self.setup()
+
+    #     # 🆕 ОЧИСТКА КЕША CRAWLEE
+    #     import shutil
+
+    #     storage_dir = Path("storage")
+    #     if storage_dir.exists():
+    #         shutil.rmtree(storage_dir)
+    #         logger.info("🗑️ Очищен кеш Crawlee")
+
+    #     # Настройка Crawler
+    #     self.crawler = PlaywrightCrawler(
+    #         request_handler=self.request_handler,
+    #         max_requests_per_crawl=None,  # Без лимита
+    #         max_request_retries=3,
+    #         # 🔥 ПРОСТОЙ ВАРИАНТ (если MAX_WORKERS=5):
+    #         concurrency_settings=ConcurrencySettings(
+    #             max_concurrency=MAX_WORKERS,
+    #             desired_concurrency=MAX_WORKERS,
+    #         ),
+    #         headless=True,
+    #         browser_type="chromium",
+    #     )
+
+    #     # Построение очереди
+    #     requests = self._build_requests()
+    #     self.total_tasks = len(requests)
+    #     logger.info(f"📋 Задач: {self.total_tasks}")
+
+    #     # Запуск
+    #     await self.crawler.run(requests)
+
+    #     # Финализация
+    #     await self._finalize()
 
     async def run(self):
         """Главный метод запуска"""
         await self.setup()
 
-        # 🆕 ОЧИСТКА КЕША CRAWLEE
+        # ОЧИСТКА КЕША
         import shutil
 
         storage_dir = Path("storage")
@@ -636,27 +739,56 @@ class ParserCrawler:
             shutil.rmtree(storage_dir)
             logger.info("🗑️ Очищен кеш Crawlee")
 
-        # Настройка Crawler
-        self.crawler = PlaywrightCrawler(
+        proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=5)
+
+        proxy_crawler = None
+        if proxy_list:
+            proxy_crawler = PlaywrightCrawler(
+                request_handler=self.request_handler,
+                proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
+                use_session_pool=False,
+                # persist_storage=False,
+                max_request_retries=3,
+                concurrency_settings=ConcurrencySettings(
+                    max_concurrency=MAX_WORKERS // 2,
+                    desired_concurrency=MAX_WORKERS // 2,
+                ),
+                headless=True,
+            )
+            logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
+        else:
+            logger.warning("⚠️ Прокси не получены → Armtek пойдёт БЕЗ прокси")
+
+        normal_crawler = PlaywrightCrawler(
             request_handler=self.request_handler,
-            max_requests_per_crawl=None,  # Без лимита
             max_request_retries=3,
-            # 🔥 ПРОСТОЙ ВАРИАНТ (если MAX_WORKERS=5):
+            use_session_pool=True,
+            # persist_storage=True,
             concurrency_settings=ConcurrencySettings(
                 max_concurrency=MAX_WORKERS,
                 desired_concurrency=MAX_WORKERS,
             ),
             headless=True,
-            browser_type="chromium",
         )
 
-        # Построение очереди
-        requests = self._build_requests()
-        self.total_tasks = len(requests)
-        logger.info(f"📋 Задач: {self.total_tasks}")
+        normal_requests, armtek_requests = self._build_requests()
 
-        # Запуск
-        await self.crawler.run(requests)
+        logger.info(f"📋 Normal tasks: {len(normal_requests)}")
+        logger.info(f"📋 Armtek proxy tasks: {len(armtek_requests)}")
+
+        # 1️⃣ СНАЧАЛА Armtek (прокси)
+        if ENABLE_WEIGHT_PARSING and armtek_requests:
+            if proxy_crawler:
+                logger.info("🚀 Сначала Armtek (proxy)")
+                await proxy_crawler.run(armtek_requests)
+            else:
+                logger.info("🚀 Сначала Armtek (без proxy)")
+                await normal_crawler.run(armtek_requests)
+
+        # 2️⃣ ПОТОМ Japarts
+        if normal_requests:
+            logger.info("🚀 Затем Japarts (normal)")
+            await normal_crawler.run(normal_requests)
 
         # Финализация
         await self._finalize()

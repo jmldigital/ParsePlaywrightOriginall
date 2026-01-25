@@ -5,7 +5,9 @@
   "payload": null,
   "headers": {},
   "user_data": {
-    "__crawlee": {},
+    "__crawlee": {
+      "state": 4
+    },
     "idx": 22,
     "brand": "TOYOTA",
     "part": "28850-K0010",
@@ -15,5 +17,5 @@
   "retry_count": 0,
   "no_retry": false,
   "loaded_url": null,
-  "handled_at": null
+  "handled_at": "2026-01-25 21:17:00.414241+00:00"
 }

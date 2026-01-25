@@ -5,7 +5,9 @@
   "payload": null,
   "headers": {},
   "user_data": {
-    "__crawlee": {},
+    "__crawlee": {
+      "state": 4
+    },
     "idx": 9,
     "brand": "TOYOTA",
     "part": "28800-YZZUX",
@@ -15,5 +17,5 @@
   "retry_count": 0,
   "no_retry": false,
   "loaded_url": null,
-  "handled_at": null
+  "handled_at": "2026-01-25 21:16:21.029948+00:00"
 }

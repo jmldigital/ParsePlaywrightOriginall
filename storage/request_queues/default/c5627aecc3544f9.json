@@ -5,14 +5,16 @@
   "payload": null,
   "headers": {},
   "user_data": {
-    "__crawlee": {},
+    "__crawlee": {
+      "state": 5
+    },
     "idx": 38,
     "brand": "TOYOTA",
     "part": "28885-11010",
     "site": "armtek",
     "task_type": "weight"
   },
-  "retry_count": 0,
+  "retry_count": 1,
   "no_retry": false,
   "loaded_url": null,
   "handled_at": null
