@@ -8,9 +8,13 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 100
-MAX_WORKERS = 3
-DELAY_EXIST = True  # ✅ Задержка перед тасками
+TEMP_RAW = 30
+MAX_WORKERS = 2
+DELAY_EXIST = False  # ✅ Задержка перед тасками
+TASK_TIMEOUT = 180
+PROXY_TIMOUT = 240  # ✅ Задержка на прокси
+PAGE_GOTO_TIMEOUT = 30000
+CLOUD_FLARE_DETEKTOR = 30000
 
 
 # === API и авторизация ===
@@ -54,8 +58,7 @@ DEFAULT_WAIT = 15
 CAPTCHA_WAIT = 5
 MAX_RETRIES = 3
 RETRY_DELAY = 2
-TASK_TIMEOUT = 180
-PROXY_TIMOUT = 120
+
 
 # === Колонки для поиска цен ===
 stparts_price = "stparts_price"

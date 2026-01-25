@@ -7,7 +7,7 @@ import asyncio
 import os
 from datetime import datetime
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
-from config import SELECTORS
+from config import SELECTORS, PAGE_GOTO_TIMEOUT
 from utils import get_site_logger, save_debug_info
 import logging
 
@@ -94,7 +94,7 @@ async def scrape_weight_japarts(
         await page.goto(
             "https://www.japarts.ru/?id=price",
             wait_until="domcontentloaded",
-            timeout=20000,
+            timeout=PAGE_GOTO_TIMEOUT,
         )
 
         search_input = page.locator(SELECTORS["japarts"]["search_input"]).first
@@ -141,4 +141,11 @@ async def scrape_weight_japarts(
     except Exception as e:
         logger.error("❌ %s: %s", part, str(e))
         await save_debug_info(page, part, type(e).__name__, logger, "japarts")
+        # 🔥 ПУСТАЯ СТРАНИЦА?
+        content = await page.content()
+        if len(content.strip()) < 100 or content.count("<") < 10:  # Пусто!
+            logger.warning(f"📭 {part}: EmptyPage → retry!")
+            await save_debug_info(page, part, "EmptyPage", logger, "japarts")
+            return "EmptyPage", "EmptyPage"
+
         return None, None
