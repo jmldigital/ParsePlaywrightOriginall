@@ -84,7 +84,7 @@ class SiteUrls:
 
     @staticmethod
     def stparts_search(part: str) -> str:
-        return f"https://stparts.ru/search/?text={part}"
+        return f"https://stparts.ru/search?pcode={part}"
 
     @staticmethod
     def avtoformula_search(brand: str, part: str) -> str:
@@ -93,20 +93,76 @@ class SiteUrls:
         return "https://www.avtoformula.ru"
 
 
-# ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
+# # ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
+# class SimpleAuth:
+#     """Упрощенная авторизация через Crawlee session"""
+
+#     @staticmethod
+#     async def login_avtoformula(page) -> bool:
+#         """Минимальная логика логина - Crawlee сам сохранит сессию"""
+#         try:
+#             await page.goto("https://www.avtoformula.ru")
+
+#             # Проверка: уже залогинены?
+#             if await page.locator("span:has-text('Вы авторизованы как')").count() > 0:
+#                 logger.info("✅ Уже авторизованы")
+#                 return True
+
+#             # Логин
+#             await page.fill(f"#{SELECTORS['avtoformula']['login_field']}", AVTO_LOGIN)
+#             await page.fill(
+#                 f"#{SELECTORS['avtoformula']['password_field']}", AVTO_PASSWORD
+#             )
+#             await page.click(SELECTORS["avtoformula"]["login_button"])
+
+#             # Ждём завершения
+#             await page.wait_for_selector(
+#                 f"#{SELECTORS['avtoformula']['login_field']}",
+#                 state="hidden",
+#                 timeout=10000,
+#             )
+
+#             # Режим A0 (без аналогов)
+#             await page.select_option(
+#                 f"#{SELECTORS['avtoformula']['smode_select']}", "A0"
+#             )
+
+#             logger.info("✅ Авторизация успешна")
+#             return True
+
+#         except Exception as e:
+#             logger.error(f"❌ Ошибка авторизации: {e}")
+#             return False
+
+
+# # ===================== АВТОРИЗАЦИЯ С SESSION TRACKING =====================
 class SimpleAuth:
-    """Упрощенная авторизация через Crawlee session"""
+    """Авторизация с отслеживанием сессий"""
 
     @staticmethod
-    async def login_avtoformula(page) -> bool:
-        """Минимальная логика логина - Crawlee сам сохранит сессию"""
+    async def is_logged_in(page) -> bool:
+        """Проверка авторизации"""
         try:
-            await page.goto("https://www.avtoformula.ru")
+            return (
+                await page.locator("span:has-text('Вы авторизованы как')").count() > 0
+            )
+        except:
+            return False
 
-            # Проверка: уже залогинены?
-            if await page.locator("span:has-text('Вы авторизованы как')").count() > 0:
-                logger.info("✅ Уже авторизованы")
+    @staticmethod
+    async def login_avtoformula(page, session_id: str) -> bool:
+        """Авторизация на Avtoformula"""
+        try:
+            # Если уже залогинены - пропускаем
+            if await SimpleAuth.is_logged_in(page):
+                logger.debug(f"✅ Session {session_id}: уже авторизована")
                 return True
+
+            logger.info(f"🔐 Session {session_id}: авторизация Avtoformula...")
+
+            # Переход на главную если нужно
+            if page.url != "https://www.avtoformula.ru/":
+                await page.goto("https://www.avtoformula.ru")
 
             # Логин
             await page.fill(f"#{SELECTORS['avtoformula']['login_field']}", AVTO_LOGIN)
@@ -127,11 +183,11 @@ class SimpleAuth:
                 f"#{SELECTORS['avtoformula']['smode_select']}", "A0"
             )
 
-            logger.info("✅ Авторизация успешна")
+            logger.info(f"✅ Session {session_id}: авторизация успешна")
             return True
 
         except Exception as e:
-            logger.error(f"❌ Ошибка авторизации: {e}")
+            logger.error(f"❌ Session {session_id}: ошибка авторизации: {e}")
             return False
 
 
@@ -146,6 +202,10 @@ class ParserCrawler:
         self.results_lock = asyncio.Lock()
         self.processed_count = 0
         self.total_tasks = 0
+
+        # 🔥 Трекинг авторизованных сессий
+        self.authorized_sessions = set()
+        self.session_lock = asyncio.Lock()
 
         # 🆕 Статистика по сайтам
         self.stats = {
@@ -215,12 +275,53 @@ class ParserCrawler:
         """
         page = context.page
         request = context.request
+        session = context.session
 
         idx = request.user_data["idx"]
         brand = request.user_data["brand"]
         part = request.user_data["part"]
         site = request.user_data["site"]
         task_type = request.user_data["task_type"]  # "weight"/"name"/"price"
+
+        # 🔥 ПОЛУЧАЕМ ID СЕССИИ
+        session_id = session.id if session else "no-session"
+
+        # 🔥 УПРОЩЁННАЯ АВТОРИЗАЦИЯ
+        if site == "avtoformula":
+            # Проверяем: залогинены ли?
+            is_logged_in = (
+                await page.locator("span:has-text('Вы авторизованы как')").count() > 0
+            )
+
+            # if not is_logged_in:
+            #     logger.info(f"🔐 [{idx}] Авторизация...")
+            #     await SimpleAuth.login_avtoformula(page)
+
+        try:
+            # 🔥 АВТОРИЗАЦИЯ ДЛЯ AVTOFORMULA - только если сессия ещё не авторизована
+            if site == "avtoformula":
+                async with self.session_lock:
+                    # Проверяем, авторизована ли эта сессия
+                    if session_id not in self.authorized_sessions:
+                        logger.debug(
+                            f"🔐 [{idx}] Session {session_id}: первая авторизация"
+                        )
+                        success = await SimpleAuth.login_avtoformula(page, session_id)
+
+                        if success:
+                            # Помечаем сессию как авторизованную
+                            self.authorized_sessions.add(session_id)
+                            logger.debug(
+                                f"✅ [{idx}] Session {session_id}: авторизована и сохранена"
+                            )
+                        else:
+                            raise Exception("Авторизация не удалась")
+                    else:
+                        logger.debug(
+                            f"✅ [{idx}] Session {session_id}: уже авторизована (переиспользование)"
+                        )
+        except Exception as e:
+            logger.error(f"❌ [{idx}] {site}: {e}")
 
         # 🆕 ПРОВЕРКА IP (только для первых 3 запросов)
         if not hasattr(self, "_ip_check_count"):
@@ -243,17 +344,6 @@ class ParserCrawler:
             logger.debug(
                 f"🧪 ARMTEK proxy: {proxy_info.url if proxy_info else 'NO PROXY'}"
             )
-
-        # 🔥 АВТОРИЗАЦИЯ (если Avtoformula)
-        if site == "avtoformula" and not hasattr(self, "_avtoformula_logged_in"):
-            logger.info("🔐 Авторизация Avtoformula...")
-            success = await SimpleAuth.login_avtoformula(page)
-            if success:
-                self._avtoformula_logged_in = True
-            else:
-                raise Exception("Авторизация не удалась")
-
-        # logger.info(f"🔍 [{idx}] {site}: {part}")
 
         try:
             # Выбор парсера в зависимости от сайта и задачи
@@ -514,18 +604,20 @@ class ParserCrawler:
                 )
 
                 # Avtoformula (fallback)
-                normal_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.avtoformula_search(brand, article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "avtoformula",
-                            "task_type": "name",
-                        },
-                    )
-                )
+                # normal_requests.append(
+                #     Request.from_url(
+                #         url=SiteUrls.avtoformula_search(brand, article),
+                #         user_data={
+                #             "idx": idx,
+                #             "brand": brand,
+                #             "part": article,
+                #             "site": "avtoformula",
+                #             "task_type": "name",
+                #         },
+                #         # 🔥 УНИКАЛЬНЫЙ ID для каждого запроса
+                #         unique_key=f"avtoformula_{idx}_{article}",
+                #     )
+                # )
 
             # ======== ЦЕНЫ ========
             elif ENABLE_PRICE_PARSING:
@@ -563,37 +655,65 @@ class ParserCrawler:
 
         # ОЧИСТКА КЕША
         import shutil
+        import time
 
         storage_dir = Path("storage")
         if storage_dir.exists():
-            shutil.rmtree(storage_dir)
-            logger.info("🗑️ Очищен кеш Crawlee")
+            try:
+                shutil.rmtree(storage_dir)
+                logger.info("🗑️ Очищен кеш Crawlee")
+            except PermissionError:
+                logger.warning("⚠️ Кеш занят, пропускаем очистку...")
 
-        proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=5)
-
-        proxy_crawler = None
-        if proxy_list:
-            proxy_crawler = PlaywrightCrawler(
-                request_handler=self.request_handler,
-                proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
-                use_session_pool=False,
-                # persist_storage=False,
-                max_request_retries=3,
-                concurrency_settings=ConcurrencySettings(
-                    max_concurrency=MAX_WORKERS // 2,
-                    desired_concurrency=MAX_WORKERS // 2,
-                ),
-                headless=True,
-            )
-            logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
+        # 🔥 АВТОРИЗАЦИЯ ДО CRAWLER (сохраняем флаг)
+        if ENABLE_NAME_PARSING or ENABLE_PRICE_PARSING:
+            self._avtoformula_needs_auth = True
         else:
-            logger.warning("⚠️ Прокси не получены → Armtek пойдёт БЕЗ прокси")
+            self._avtoformula_needs_auth = False
 
+        # Построение запросов
+        normal_requests, armtek_requests = self._build_requests()
+
+        # 🔥 РАЗДЕЛЯЕМ по сайтам
+        stparts_requests = [
+            r for r in normal_requests if r.user_data.get("site") == "stparts"
+        ]
+        japarts_requests = [
+            r for r in normal_requests if r.user_data.get("site") == "japarts"
+        ]
+
+        logger.debug(f"📋 Normal tasks: {len(normal_requests)}")
+        logger.debug(f"📋 Armtek proxy tasks: {len(armtek_requests)}")
+
+        # ПРОКСИ только если есть Armtek задачи
+        proxy_list = []
+        proxy_crawler = None
+
+        if ENABLE_WEIGHT_PARSING and armtek_requests:
+            logger.info("🌐 Режим ВЕСА → загрузка прокси для Armtek...")
+            proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=5)
+
+            if proxy_list:
+                proxy_crawler = PlaywrightCrawler(
+                    request_handler=self.request_handler,
+                    proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
+                    use_session_pool=False,
+                    max_request_retries=3,
+                    concurrency_settings=ConcurrencySettings(
+                        max_concurrency=MAX_WORKERS // 2,
+                        desired_concurrency=MAX_WORKERS // 2,
+                    ),
+                    headless=True,
+                )
+                logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
+            else:
+                logger.warning("⚠️ Прокси не получены → Armtek пойдёт БЕЗ прокси")
+
+        # Normal crawler (БЕЗ browser_pool_options)
         normal_crawler = PlaywrightCrawler(
             request_handler=self.request_handler,
             max_request_retries=3,
-            use_session_pool=True,
-            # persist_storage=True,
+            use_session_pool=True,  # ✅ Сохранение сессии между запросами
             concurrency_settings=ConcurrencySettings(
                 max_concurrency=MAX_WORKERS,
                 desired_concurrency=MAX_WORKERS,
@@ -601,12 +721,7 @@ class ParserCrawler:
             headless=True,
         )
 
-        normal_requests, armtek_requests = self._build_requests()
-
-        logger.info(f"📋 Normal tasks: {len(normal_requests)}")
-        logger.info(f"📋 Armtek proxy tasks: {len(armtek_requests)}")
-
-        # 1️⃣ СНАЧАЛА Armtek (прокси)
+        # ЗАПУСК
         if ENABLE_WEIGHT_PARSING and armtek_requests:
             if proxy_crawler:
                 logger.info("🚀 Сначала Armtek (proxy)")
@@ -615,28 +730,55 @@ class ParserCrawler:
                 logger.info("🚀 Сначала Armtek (без proxy)")
                 await normal_crawler.run(armtek_requests)
 
-        # 2️⃣ ПОТОМ Japarts
-        if normal_requests:
-            logger.info("🚀 Затем Japarts (normal)")
-            await normal_crawler.run(normal_requests)
+        # 2️⃣ ИМЕНА: сначала Stparts, потом Avtoformula (fallback)
+        elif ENABLE_NAME_PARSING:
+            if stparts_requests:
+                logger.info(f"🚀 Этап 1: Stparts ({len(stparts_requests)} задач)")
+                await normal_crawler.run(stparts_requests)
 
-        # Финализация
+            # 🔥 FALLBACK: Avtoformula только для пустых
+            avtoformula_fallback = []
+            for idx, row in self.df.iterrows():
+                if (
+                    pd.isna(row.get("finde_name"))
+                    or row.get("finde_name") in BAD_DETAIL_NAMES
+                ):
+                    brand = str(row[INPUT_COL_BRAND]).strip()
+                    article = str(row[INPUT_COL_ARTICLE]).strip()
+
+                    if article:
+                        avtoformula_fallback.append(
+                            Request.from_url(
+                                url=SiteUrls.avtoformula_search(brand, article),
+                                user_data={
+                                    "idx": idx,
+                                    "brand": brand,
+                                    "part": article,
+                                    "site": "avtoformula",
+                                    "task_type": "name",
+                                },
+                                unique_key=f"avtoformula_fallback_{idx}",
+                            )
+                        )
+
+            if avtoformula_fallback:
+                logger.info(
+                    f"🚀 Этап 2: Avtoformula fallback ({len(avtoformula_fallback)} пустых)"
+                )
+                await normal_crawler.run(avtoformula_fallback)
+            else:
+                logger.info("✅ Все имена найдены на Stparts")
+
+            if normal_requests:
+                logger.info("🚀 Затем остальные сайты (normal)")
+                await normal_crawler.run(normal_requests)
+
+        # 🔥 Статистика авторизаций
+        logger.info(
+            f"📊 Всего уникальных сессий авторизовано: {len(self.authorized_sessions)}"
+        )
+
         await self._finalize()
-
-    async def _pre_navigation_hook(self, context: PlaywrightCrawlingContext):
-        """
-        Выполняется ДО навигации на каждый URL
-        Здесь делаем авторизацию ОДИН раз для Avtoformula
-        """
-        if context.request.user_data.get("site") == "avtoformula":
-            # Crawlee сам управляет сессией, поэтому логин нужен только 1 раз
-            if not hasattr(self, "_avtoformula_logged_in"):
-                logger.info("🔐 Авторизация Avtoformula...")
-                success = await SimpleAuth.login_avtoformula(context.page)
-                if success:
-                    self._avtoformula_logged_in = True
-                else:
-                    raise Exception("Авторизация не удалась")
 
     async def _finalize(self):
         """Финальная обработка"""

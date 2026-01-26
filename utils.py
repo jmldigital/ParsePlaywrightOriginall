@@ -20,6 +20,7 @@ from config import (
     avtoformula_price,
     avtoformula_delivery,
     API_KEY_2CAPTCHA,
+    LOG_LEVEL,
 )
 from config import input_price
 import asyncio
@@ -296,8 +297,8 @@ def get_run_count():
 def setup_logger():
     """Настраивает основной логгер"""
     global _logger
-    if _logger is not None:
-        return _logger
+    # if _logger is not None:
+    #     return _logger
 
     count = get_run_count()
     log_path = Path(LOG_FILE)
@@ -308,7 +309,12 @@ def setup_logger():
             print(f"parser.log очищен (запуск №{count})")
 
     _logger = logging.getLogger("parser")
-    _logger.setLevel(logging.INFO)
+
+    # 🔥 Импортируем уровень из config
+    from config import LOG_LEVEL
+
+    # Устанавливаем уровень логирования
+    _logger.setLevel(getattr(logging, LOG_LEVEL.upper()))
 
     if _logger.handlers:
         _logger.handlers.clear()
@@ -326,6 +332,7 @@ def setup_logger():
     _logger.addHandler(ch)
 
     _logger.info(f"🔄 Запуск парсера №{count}")
+    _logger.info(f"📊 Уровень логирования: {LOG_LEVEL}")
     return _logger
 
 

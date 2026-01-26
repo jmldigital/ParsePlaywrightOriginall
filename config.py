@@ -12,7 +12,7 @@ load_dotenv()
 
 LOG_LEVEL = "INFO"
 
-TEMP_RAW = 200
+TEMP_RAW = 100
 MAX_WORKERS = 5
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 TASK_TIMEOUT = 180
