@@ -145,7 +145,9 @@ async def solve_captcha_universal(
                 return True
             else:
                 logger.warning(f"[{site_key}] ❌ Капча всё ещё видна")
+                # 🆕 СОХРАНЯЕМ КАПЧУ + ПОЛНЫЙ СКРИНШОТ СТРАНИЦЫ
                 await _save_debug_screenshot(img, site_key, captcha_text, "failed")
+                await _save_full_page_screenshot(page, site_key, captcha_text)
                 await asyncio.sleep(3)
 
         except asyncio.TimeoutError:
@@ -159,19 +161,50 @@ async def solve_captcha_universal(
     return False
 
 
-async def _save_debug_screenshot(
-    img: Image.Image, site_key: str, captcha_text: str, status: str
-) -> None:
-    """Сохранение скриншота для отладки."""
+# 🆕 НОВАЯ ФУНКЦИЯ: Сохранение полного скриншота страницы
+async def _save_full_page_screenshot(
+    page: Page, site_key: str, captcha_text: str, attempt: int
+):
+    """
+    Сохраняет полный скриншот страницы для диагностики капчи
+    """
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        folder = Path(f"screenshots/{site_key}/{status}")
-        folder.mkdir(parents=True, exist_ok=True)
+        filename = f"captcha_debug/{site_key}_page_attempt{attempt}_{captcha_text}_{timestamp}.png"
 
-        filename = f"{captcha_text}_{timestamp}.png"
-        img.save(folder / filename)
-    except Exception:
-        pass  # Не критично если не сохранилось
+        # Создаём директорию если не существует
+        Path("captcha_debug").mkdir(exist_ok=True)
+
+        # Полный скриншот страницы
+        await page.screenshot(path=filename, full_page=True)
+
+        logger.info(f"[{site_key}] 📸 Скриншот страницы сохранён: {filename}")
+
+    except Exception as e:
+        logger.error(f"[{site_key}] Ошибка сохранения скриншота страницы: {e}")
+
+
+# Обновлённая вспомогательная функция для отладки
+async def _save_debug_screenshot(
+    img: Image.Image,
+    site_key: str,
+    captcha_text: str,
+    status: str,  # "sent", "success", "failed"
+):
+    """
+    Сохраняет скриншот капчи для отладки
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"captcha_debug/{site_key}_{status}_{captcha_text}_{timestamp}.png"
+
+        Path("captcha_debug").mkdir(exist_ok=True)
+        img.save(filename)
+
+        logger.debug(f"[{site_key}] 💾 Капча сохранена: {filename}")
+
+    except Exception as e:
+        logger.error(f"[{site_key}] Ошибка сохранения капчи: {e}")
 
 
 def get_2captcha_proxy() -> dict[str, str]:

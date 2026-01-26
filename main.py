@@ -53,12 +53,14 @@ from config import (
     reload_config,
     TEMP_RAW,
     LOG_LEVEL,
+    SAVE_INTERVAL,
 )
 from utils import (
     logger,
     preprocess_dataframe,
     consolidate_weights,
     get_2captcha_proxy_pool,
+    clear_debug_folders_sync,
 )
 from captcha_manager import CaptchaManager
 
@@ -715,68 +717,51 @@ class ParserCrawler:
             max_request_retries=3,
             use_session_pool=True,  # ✅ Сохранение сессии между запросами
             concurrency_settings=ConcurrencySettings(
-                max_concurrency=MAX_WORKERS,
-                desired_concurrency=MAX_WORKERS,
+                max_concurrency=MAX_WORKERS // 2,
+                desired_concurrency=MAX_WORKERS // 2,
             ),
             headless=True,
         )
 
-        # ЗАПУСК
-        if ENABLE_WEIGHT_PARSING and armtek_requests:
-            if proxy_crawler:
-                logger.info("🚀 Сначала Armtek (proxy)")
-                await proxy_crawler.run(armtek_requests)
-            else:
-                logger.info("🚀 Сначала Armtek (без proxy)")
-                await normal_crawler.run(armtek_requests)
+        # 🔥 УНИВЕРСАЛЬНАЯ БАТЧ-ОБРАБОТКА
+        BATCH_SIZE = SAVE_INTERVAL
+        total_rows = min(len(self.df), MAX_ROWS)
 
-        # 2️⃣ ИМЕНА: сначала Stparts, потом Avtoformula (fallback)
-        elif ENABLE_NAME_PARSING:
-            if stparts_requests:
-                logger.info(f"🚀 Этап 1: Stparts ({len(stparts_requests)} задач)")
-                await normal_crawler.run(stparts_requests)
+        for batch_start in range(0, total_rows, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total_rows)
+            batch_num = batch_start // BATCH_SIZE + 1
 
-            # 🔥 FALLBACK: Avtoformula только для пустых
-            avtoformula_fallback = []
-            for idx, row in self.df.iterrows():
-                if (
-                    pd.isna(row.get("finde_name"))
-                    or row.get("finde_name") in BAD_DETAIL_NAMES
-                ):
-                    brand = str(row[INPUT_COL_BRAND]).strip()
-                    article = str(row[INPUT_COL_ARTICLE]).strip()
+            logger.info(f"📦 БАТЧ #{batch_num}: строки {batch_start}-{batch_end}")
 
-                    if article:
-                        avtoformula_fallback.append(
-                            Request.from_url(
-                                url=SiteUrls.avtoformula_search(brand, article),
-                                user_data={
-                                    "idx": idx,
-                                    "brand": brand,
-                                    "part": article,
-                                    "site": "avtoformula",
-                                    "task_type": "name",
-                                },
-                                unique_key=f"avtoformula_fallback_{idx}",
-                            )
-                        )
-
-            if avtoformula_fallback:
-                logger.info(
-                    f"🚀 Этап 2: Avtoformula fallback ({len(avtoformula_fallback)} пустых)"
+            # 🔥 РЕЖИМ ВЕСОВ (Japarts → Armtek с прокси)
+            if ENABLE_WEIGHT_PARSING:
+                await self._process_weight_batch(
+                    normal_crawler,
+                    proxy_crawler,  # 🔥 Передаём прокси crawler
+                    batch_start,
+                    batch_end,
+                    batch_num,
                 )
-                await normal_crawler.run(avtoformula_fallback)
-            else:
-                logger.info("✅ Все имена найдены на Stparts")
 
-            if normal_requests:
-                logger.info("🚀 Затем остальные сайты (normal)")
-                await normal_crawler.run(normal_requests)
+            # 🔥 РЕЖИМ ИМЁН (Stparts → Avtoformula)
+            elif ENABLE_NAME_PARSING:
+                await self._process_name_batch(
+                    normal_crawler, batch_start, batch_end, batch_num
+                )
 
-        # 🔥 Статистика авторизаций
-        logger.info(
-            f"📊 Всего уникальных сессий авторизовано: {len(self.authorized_sessions)}"
-        )
+            # 🔥 РЕЖИМ ЦЕН (параллельно)
+            elif ENABLE_PRICE_PARSING:
+                await self._process_price_batch(
+                    normal_crawler, batch_start, batch_end, batch_num
+                )
+
+            # 💾 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ
+            output_file = get_output_file(self.mode)
+            await asyncio.to_thread(self.df.to_excel, output_file, index=False)
+            logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
+
+        logger.info(f"📊 Всего обработано: {self.processed_count} строк")
+        logger.info(f"📊 Всего сессий авторизовано: {len(self.authorized_sessions)}")
 
         await self._finalize()
 
@@ -798,9 +783,197 @@ class ParserCrawler:
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
 
+    async def _process_weight_batch(
+        self, normal_crawler, proxy_crawler, batch_start, batch_end, batch_num
+    ):
+        """Обработка батча для ВЕСОВ: Japarts (обычный) → Armtek (прокси)"""
+
+        # 1️⃣ JAPARTS (без прокси)
+        japarts_requests = []
+        for idx in range(batch_start, batch_end):
+            row = self.df.iloc[idx]
+            article = str(row[INPUT_COL_ARTICLE]).strip()
+
+            if not article:
+                continue
+
+            brand = str(row[INPUT_COL_BRAND]).strip()
+
+            japarts_requests.append(
+                Request.from_url(
+                    url=SiteUrls.japarts_search(article),
+                    user_data={
+                        "idx": idx,
+                        "brand": brand,
+                        "part": article,
+                        "site": "japarts",
+                        "task_type": "weight",
+                    },
+                )
+            )
+
+        if japarts_requests:
+            logger.info(f"  🚀 Japarts (normal): {len(japarts_requests)} задач")
+            await normal_crawler.run(japarts_requests)
+
+        # 2️⃣ ARMTEK FALLBACK (С ПРОКСИ, только если физический вес НЕ найден)
+        from config import JPARTS_P_W
+
+        armtek_fallback = []
+        for idx in range(batch_start, batch_end):
+            row = self.df.iloc[idx]
+
+            # Проверяем: есть ли физический вес с Japarts?
+            if pd.isna(row.get(JPARTS_P_W)):
+                article = str(row[INPUT_COL_ARTICLE]).strip()
+                brand = str(row[INPUT_COL_BRAND]).strip()
+
+                if article:
+                    armtek_fallback.append(
+                        Request.from_url(
+                            url=SiteUrls.armtek_search(article),
+                            user_data={
+                                "idx": idx,
+                                "brand": brand,
+                                "part": article,
+                                "site": "armtek",
+                                "task_type": "weight",
+                            },
+                            unique_key=f"armtek_{batch_num}_{idx}",
+                        )
+                    )
+
+        if armtek_fallback:
+            # 🔥 Используем ПРОКСИ crawler если есть, иначе обычный
+            crawler_to_use = proxy_crawler if proxy_crawler else normal_crawler
+            proxy_status = "proxy" if proxy_crawler else "без proxy"
+
+            logger.info(
+                f"  🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
+            )
+            await crawler_to_use.run(armtek_fallback)
+        else:
+            logger.info(f"  ✅ Все физ. веса найдены на Japarts")
+
+    async def _process_name_batch(self, crawler, batch_start, batch_end, batch_num):
+        """Обработка батча для ИМЁН: Stparts → Avtoformula fallback"""
+
+        # 1️⃣ STPARTS (приоритет)
+        stparts_requests = []
+        for idx in range(batch_start, batch_end):
+            row = self.df.iloc[idx]
+            article = str(row[INPUT_COL_ARTICLE]).strip()
+
+            if not article:
+                continue
+
+            brand = str(row[INPUT_COL_BRAND]).strip()
+
+            stparts_requests.append(
+                Request.from_url(
+                    url=SiteUrls.stparts_search(article),
+                    user_data={
+                        "idx": idx,
+                        "brand": brand,
+                        "part": article,
+                        "site": "stparts",
+                        "task_type": "name",
+                    },
+                )
+            )
+
+        if stparts_requests:
+            logger.info(f"  🚀 Stparts: {len(stparts_requests)} задач")
+            await crawler.run(stparts_requests)
+
+        # 2️⃣ AVTOFORMULA FALLBACK
+        avtoformula_fallback = []
+        for idx in range(batch_start, batch_end):
+            row = self.df.iloc[idx]
+
+            if (
+                pd.isna(row.get("finde_name"))
+                or row.get("finde_name") in BAD_DETAIL_NAMES
+            ):
+                article = str(row[INPUT_COL_ARTICLE]).strip()
+                brand = str(row[INPUT_COL_BRAND]).strip()
+
+                if article:
+                    avtoformula_fallback.append(
+                        Request.from_url(
+                            url=SiteUrls.avtoformula_search(brand, article),
+                            user_data={
+                                "idx": idx,
+                                "brand": brand,
+                                "part": article,
+                                "site": "avtoformula",
+                                "task_type": "name",
+                            },
+                            unique_key=f"avtoformula_{batch_num}_{idx}",
+                        )
+                    )
+
+        if avtoformula_fallback:
+            logger.info(
+                f"  🚀 Avtoformula fallback: {len(avtoformula_fallback)} пустых"
+            )
+            await crawler.run(avtoformula_fallback)
+        else:
+            logger.info(f"  ✅ Все имена найдены на Stparts")
+
+    async def _process_price_batch(self, crawler, batch_start, batch_end, batch_num):
+        """Обработка батча для ЦЕН: Stparts + Avtoformula ПАРАЛЛЕЛЬНО"""
+
+        all_requests = []
+
+        for idx in range(batch_start, batch_end):
+            row = self.df.iloc[idx]
+            article = str(row[INPUT_COL_ARTICLE]).strip()
+
+            if not article:
+                continue
+
+            brand = str(row[INPUT_COL_BRAND]).strip()
+
+            # Stparts
+            all_requests.append(
+                Request.from_url(
+                    url=SiteUrls.stparts_search(article),
+                    user_data={
+                        "idx": idx,
+                        "brand": brand,
+                        "part": article,
+                        "site": "stparts",
+                        "task_type": "price",
+                    },
+                )
+            )
+
+            # Avtoformula
+            all_requests.append(
+                Request.from_url(
+                    url=SiteUrls.avtoformula_search(brand, article),
+                    user_data={
+                        "idx": idx,
+                        "brand": brand,
+                        "part": article,
+                        "site": "avtoformula",
+                        "task_type": "price",
+                    },
+                    unique_key=f"avtoformula_price_{batch_num}_{idx}",
+                )
+            )
+
+        if all_requests:
+            logger.info(
+                f"  🚀 Stparts + Avtoformula (параллельно): {len(all_requests)} задач"
+            )
+            await crawler.run(all_requests)
+
 
 async def main():
     logger.setLevel(getattr(logging, LOG_LEVEL.upper()))
+    clear_debug_folders_sync()
     parser = ParserCrawler()
     logger.debug("🔍 Детальная информация (видна только при LOG_LEVEL=DEBUG)")
     logger.info("🔍  информация (видна только при LOG_LEVEL=INFO)")

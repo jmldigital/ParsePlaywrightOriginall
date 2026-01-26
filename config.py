@@ -20,7 +20,7 @@ PROXY_TIMOUT = 240  # ✅ Задержка на прокси
 PAGE_GOTO_TIMEOUT = 30000
 CLOUD_FLARE_DETEKTOR = 30000
 MAX_ROWS = 23000
-SAVE_INTERVAL = 100
+SAVE_INTERVAL = 20
 
 
 # === API и авторизация ===
@@ -158,9 +158,12 @@ SELECTORS = {
 }
 BAD_DETAIL_NAMES = {
     "деталь",
+    "Деталь",
     "автозапчасть",
     "запчасть",
     "part",
+    "Detail",
+    "detail",
 }  # Расширяй по необходимости
 
 
