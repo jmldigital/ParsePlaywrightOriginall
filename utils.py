@@ -130,24 +130,36 @@ async def solve_captcha_universal(
             await input_el.fill(captcha_text)
             logger.info(f"[{site_key}] Введено: '{captcha_text}'")
 
+            # 🆕 Скриншот СТРАНИЦЫ ДО submit (с той же капчей!)
+            await _save_full_page_screenshot(page, site_key, captcha_text, "sent")
+
             # 7. Отправляем форму
             submit_button = page.locator(selectors["captcha_submit"])
             if await submit_button.is_visible():
                 await submit_button.click()
                 logger.info(f"[{site_key}] Submit нажат")
 
-            # 8. Ждём и проверяем результат
-            await page.wait_for_timeout(2000)
+            # 🆕 ДИНАМИЧЕСКОЕ ОЖИДАНИЕ (вместо фиксированных 2000мс)
+            try:
+                # Ждём исчезновения капчи (максимум 5 сек)
+                await page.wait_for_selector(
+                    selectors["captcha_img"], state="hidden", timeout=5000
+                )
+                logger.info(f"[{site_key}] ✅ Капча исчезла (динамическое ожидание)")
 
-            if not await captcha_img.is_visible():
-                logger.info(f"[{site_key}] ✅ Успех! Капча исчезла")
+                # Скриншоты успеха
                 await _save_debug_screenshot(img, site_key, captcha_text, "success")
+                await _save_full_page_screenshot(
+                    page, site_key, captcha_text, "success"
+                )
                 return True
-            else:
-                logger.warning(f"[{site_key}] ❌ Капча всё ещё видна")
-                # 🆕 СОХРАНЯЕМ КАПЧУ + ПОЛНЫЙ СКРИНШОТ СТРАНИЦЫ
+
+            except asyncio.TimeoutError:
+                logger.warning(f"[{site_key}] ❌ Капча не исчезла за 5 сек")
+
+                # Скриншоты неудачи
                 await _save_debug_screenshot(img, site_key, captcha_text, "failed")
-                await _save_full_page_screenshot(page, site_key, captcha_text)
+                await _save_full_page_screenshot(page, site_key, captcha_text, "failed")
                 await asyncio.sleep(3)
 
         except asyncio.TimeoutError:
@@ -161,19 +173,50 @@ async def solve_captcha_universal(
     return False
 
 
-# 🆕 НОВАЯ ФУНКЦИЯ: Сохранение полного скриншота страницы
-async def _save_full_page_screenshot(
-    page: Page, site_key: str, captcha_text: str, attempt: int
+# Обновлённая функция для сохранения капчи
+async def _save_debug_screenshot(
+    img: Image.Image,
+    site_key: str,
+    captcha_text: str,
+    status: str,  # "sent", "success", "failed"
 ):
     """
-    Сохраняет полный скриншот страницы для диагностики капчи
+    Сохраняет скриншот капчи в папку по статусу
     """
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"captcha_debug/{site_key}_page_attempt{attempt}_{captcha_text}_{timestamp}.png"
 
-        # Создаём директорию если не существует
-        Path("captcha_debug").mkdir(exist_ok=True)
+        # 🆕 Создаём путь с подпапкой статуса
+        status_dir = f"captcha_debug_{site_key}/{status}"
+        Path(status_dir).mkdir(parents=True, exist_ok=True)
+
+        filename = f"{status_dir}/{site_key}_captcha_{captcha_text}_{timestamp}.png"
+        img.save(filename)
+
+        logger.debug(f"[{site_key}] 💾 Капча сохранена: {filename}")
+
+    except Exception as e:
+        logger.error(f"[{site_key}] Ошибка сохранения капчи: {e}")
+
+
+# 🆕 Функция для сохранения полного скриншота страницы
+async def _save_full_page_screenshot(
+    page: Page,
+    site_key: str,
+    captcha_text: str,
+    status: str,  # 🔥 Теперь принимает status вместо attempt
+):
+    """
+    Сохраняет полный скриншот страницы в ту же папку что и капчу
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 🆕 Создаём путь с подпапкой статуса (та же что у капчи)
+        status_dir = f"captcha_debug_{site_key}/{status}"
+        Path(status_dir).mkdir(parents=True, exist_ok=True)
+
+        filename = f"{status_dir}/{site_key}_page_{captcha_text}_{timestamp}.png"
 
         # Полный скриншот страницы
         await page.screenshot(path=filename, full_page=True)
@@ -182,29 +225,6 @@ async def _save_full_page_screenshot(
 
     except Exception as e:
         logger.error(f"[{site_key}] Ошибка сохранения скриншота страницы: {e}")
-
-
-# Обновлённая вспомогательная функция для отладки
-async def _save_debug_screenshot(
-    img: Image.Image,
-    site_key: str,
-    captcha_text: str,
-    status: str,  # "sent", "success", "failed"
-):
-    """
-    Сохраняет скриншот капчи для отладки
-    """
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"captcha_debug/{site_key}_{status}_{captcha_text}_{timestamp}.png"
-
-        Path("captcha_debug").mkdir(exist_ok=True)
-        img.save(filename)
-
-        logger.debug(f"[{site_key}] 💾 Капча сохранена: {filename}")
-
-    except Exception as e:
-        logger.error(f"[{site_key}] Ошибка сохранения капчи: {e}")
 
 
 def get_2captcha_proxy() -> dict[str, str]:
@@ -588,35 +608,57 @@ async def save_debug_info(
     logger.warning(f"   📄 {html_path}")
 
 
-def clear_debug_folders_sync(sites: List[str], logger: logging.Logger):
-    """Синхронная очистка debug_* + скринов капчи перед запуском."""
-    for site in sites:
-        # 1️⃣ Debug папки (как было)
-        debug_dir = f"debug_{site}"
-        if os.path.exists(debug_dir):
-            _safe_rmtree(debug_dir, logger, f"debug_{site}")
+# def clear_debug_folders_sync(sites: List[str], logger: logging.Logger):
+#     """Синхронная очистка debug_* + скринов капчи перед запуском."""
+#     for site in sites:
+#         # 1️⃣ Debug папки (как было)
+#         debug_dir = f"debug_{site}"
+#         if os.path.exists(debug_dir):
+#             _safe_rmtree(debug_dir, logger, f"debug_{site}")
 
-        # 2️⃣ Скрины капчи
-        screenshot_base = f"screenshots/{site}"
-        if os.path.exists(screenshot_base):
-            captcha_folders = [
-                "sent",
-                "success",
-                "failed",
-                "changed",
-                "errors",
-                "processed",
-            ]
-            for folder in captcha_folders:
-                folder_path = f"{screenshot_base}/{folder}"
-                if os.path.exists(folder_path):
-                    _safe_rmtree(folder_path, logger, f"{site}/{folder}")
+#         # 2️⃣ Скрины капчи
+#         screenshot_base = f"screenshots/{site}"
+#         if os.path.exists(screenshot_base):
+#             captcha_folders = [
+#                 "sent",
+#                 "success",
+#                 "failed",
+#                 "changed",
+#                 "errors",
+#                 "processed",
+#             ]
+#             for folder in captcha_folders:
+#                 folder_path = f"{screenshot_base}/{folder}"
+#                 if os.path.exists(folder_path):
+#                     _safe_rmtree(folder_path, logger, f"{site}/{folder}")
 
-            # ✅ Создать пустые папки заново
-            os.makedirs(screenshot_base, exist_ok=True)
-            for folder in captcha_folders:
-                os.makedirs(f"{screenshot_base}/{folder}", exist_ok=True)
-            logger.info(f"🧹 Cleared & recreated screenshots/{site}/")
+#             # ✅ Создать пустые папки заново
+#             os.makedirs(screenshot_base, exist_ok=True)
+#             for folder in captcha_folders:
+#                 os.makedirs(f"{screenshot_base}/{folder}", exist_ok=True)
+#             logger.info(f"🧹 Cleared & recreated screenshots/{site}/")
+
+
+def clear_debug_folders_sync(logger: logging.Logger):
+    """Синхронная очистка screenshots/ перед запуском."""
+
+    # 1️⃣ Очистка ВСЕХ папок с "debug" ТОЛЬКО в корне
+    for item in os.listdir("."):
+        if os.path.isdir(item) and "debug" in item.lower():
+            _safe_rmtree(item, logger, item)
+            logger.info(f"🧹 Cleared {item}")
+
+    # 2️⃣ Удаление STOP-флага (если был)
+    stop_flag = "input/STOP.flag"
+    if os.path.exists(stop_flag):
+        os.remove(stop_flag)
+        logger.info("🛑 STOP.flag удалён")
+
+    # 2️⃣ Очистка Crawlee storage (request_queues + key_value_stores)
+    storage_dir = "storage"
+    if os.path.exists(storage_dir):
+        _safe_rmtree(storage_dir, logger, "storage")
+        logger.info("🗑️ Cleared Crawlee storage (request_queues + key_value_stores)")
 
 
 def _safe_rmtree(path: str, logger, label: str, max_retries: int = 3):

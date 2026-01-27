@@ -92,8 +92,13 @@ async def parse_stparts_price(
                 price = parse_price(price_text)
 
                 if price is not None:
+                    delivery_clean = (
+                        delivery_min.replace("\n", " ").replace("\r", "").strip()
+                    )
                     logger.info(
-                        f"✅ Stparts {brand_in_row} ({delivery_min}): {price} ₽"
+                        "✅ Stparts {} ({}) : {} ₽".format(
+                            brand_in_row, delivery_clean, price
+                        )
                     )
                     return price, delivery_min
 

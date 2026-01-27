@@ -271,84 +271,55 @@ class ParserCrawler:
                     self.df[col] = None
 
     async def request_handler(self, context: PlaywrightCrawlingContext):
-        """
-        Обработчик Crawlee - вызывается для каждого Request
-        Получает УЖЕ открытую страницу с нужным URL
-        """
+        """Обработчик Crawlee - ТОЛЬКО парсинг"""
         page = context.page
         request = context.request
         session = context.session
 
+        # 🛑 Быстрый стоп
+        if Path("input/STOP.flag").exists():
+            logger.warning(
+                "🛑 STOP.flag найден внутри request_handler → прерываем задачу"
+            )
+            return  # или raise Exception("STOP") если хочешь, чтобы Crawlee не ретраил
+
         idx = request.user_data["idx"]
         brand = request.user_data["brand"]
         part = request.user_data["part"]
-        site = request.user_data["site"]
-        task_type = request.user_data["task_type"]  # "weight"/"name"/"price"
+        site = request.user_data["site"]  # 🔥 Объявляем здесь
+        task_type = request.user_data["task_type"]
 
-        # 🔥 ПОЛУЧАЕМ ID СЕССИИ
         session_id = session.id if session else "no-session"
 
-        # 🔥 УПРОЩЁННАЯ АВТОРИЗАЦИЯ
-        if site == "avtoformula":
-            # Проверяем: залогинены ли?
-            is_logged_in = (
-                await page.locator("span:has-text('Вы авторизованы как')").count() > 0
-            )
-
-            # if not is_logged_in:
-            #     logger.info(f"🔐 [{idx}] Авторизация...")
-            #     await SimpleAuth.login_avtoformula(page)
-
         try:
-            # 🔥 АВТОРИЗАЦИЯ ДЛЯ AVTOFORMULA - только если сессия ещё не авторизована
+            # 🔥 АВТОРИЗАЦИЯ ДЛЯ AVTOFORMULA
             if site == "avtoformula":
                 async with self.session_lock:
-                    # Проверяем, авторизована ли эта сессия
                     if session_id not in self.authorized_sessions:
-                        logger.debug(
-                            f"🔐 [{idx}] Session {session_id}: первая авторизация"
-                        )
+                        logger.debug(f"🔐 [{idx}] Session {session_id}: авторизация")
                         success = await SimpleAuth.login_avtoformula(page, session_id)
 
                         if success:
-                            # Помечаем сессию как авторизованную
                             self.authorized_sessions.add(session_id)
-                            logger.debug(
-                                f"✅ [{idx}] Session {session_id}: авторизована и сохранена"
-                            )
+                            logger.debug(f"✅ [{idx}] Session {session_id}: сохранена")
                         else:
                             raise Exception("Авторизация не удалась")
-                    else:
-                        logger.debug(
-                            f"✅ [{idx}] Session {session_id}: уже авторизована (переиспользование)"
-                        )
-        except Exception as e:
-            logger.error(f"❌ [{idx}] {site}: {e}")
 
-        # 🆕 ПРОВЕРКА IP (только для первых 3 запросов)
-        if not hasattr(self, "_ip_check_count"):
-            self._ip_check_count = 0
+            # 🆕 ПРОВЕРКА IP (первые 3 запроса)
+            if not hasattr(self, "_ip_check_count"):
+                self._ip_check_count = 0
 
-        if self._ip_check_count < 3:
-            try:
-                actual_ip = await page.evaluate(
-                    "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
-                )
-                logger.debug(f"🌍 [{idx}] IP запроса: {actual_ip}")
-                self._ip_check_count += 1
-            except Exception as e:
-                logger.warning(f"⚠️ [{idx}] Не удалось проверить IP: {e}")
+            if self._ip_check_count < 3:
+                try:
+                    actual_ip = await page.evaluate(
+                        "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
+                    )
+                    logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
+                    self._ip_check_count += 1
+                except:
+                    pass
 
-            site = request.user_data["site"]
-
-        if site == "armtek":
-            proxy_info = context.proxy_info
-            logger.debug(
-                f"🧪 ARMTEK proxy: {proxy_info.url if proxy_info else 'NO PROXY'}"
-            )
-
-        try:
-            # Выбор парсера в зависимости от сайта и задачи
+            # 🔥 ТОЛЬКО ПАРСИНГ
             result = await self._route_to_parser(
                 page, idx, brand, part, site, task_type
             )
@@ -356,18 +327,33 @@ class ParserCrawler:
             if result:
                 await self._save_result(idx, result)
 
+            # 🔥 ПРОГРЕСС (обновляется после каждого запроса)
+            async with self.results_lock:
+                self.processed_count += 1
+
+                # Лог каждые N задач
+                if self.processed_count % 50 == 0:
+                    logger.info(
+                        f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
+                    )
+
             # Прогресс
             async with self.results_lock:
                 self.processed_count += 1
-                if self.processed_count % TEMP_RAW / 2 == 0:
+                if self.processed_count % (TEMP_RAW // 2) == 0:
                     logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
 
         except Exception as e:
             logger.error(f"❌ [{idx}] {site}: {e}")
-            # Crawlee автоматически повторит
+            raise
 
     async def _route_to_parser(self, page, idx, brand, part, site, task_type):
         """Роутинг к нужному парсеру"""
+
+        # 🔥 ОБНОВЛЯЕМ СТАТИСТИКУ
+        if site in self.stats:
+            async with self.results_lock:
+                self.stats[site]["total"] += 1
 
         # ======== ВЕСА ========
         if task_type == "weight":
@@ -494,12 +480,26 @@ class ParserCrawler:
 
             if site == "stparts":
                 price, delivery = await parse_stparts_price(page, brand, part, logger)
+
+                if price == "NeedCaptcha":
+                    if await self._solve_captcha(page, "stparts"):
+                        price, delivery = await parse_stparts_price(
+                            page, brand, part, logger
+                        )
+
                 return {stparts_price: price, stparts_delivery: delivery}
 
             elif site == "avtoformula":
                 price, delivery = await parse_avtoformula_price(
                     page, brand, part, logger
                 )
+
+                if price == "NeedCaptcha":
+                    if await self._solve_captcha(page, "avtoformula"):
+                        price, delivery = await parse_avtoformula_price(
+                            page, brand, part, logger
+                        )
+
                 return {avtoformula_price: price, avtoformula_delivery: delivery}
 
         return None
@@ -531,168 +531,28 @@ class ParserCrawler:
                 await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
                 logger.info(f"💾 Промежуточное сохранение {self.processed_count} строк")
 
-    def _build_requests(self):
-        """
-        Построение Request-ов для Crawlee
-        КЛЮЧЕВОЕ ОТЛИЧИЕ: URL теперь реальные!
-        """
-        normal_requests = []
-        armtek_proxy_requests = []
-        logger.info(
-            f"🔧 _build_requests: MAX_ROWS={MAX_ROWS}, df.shape={self.df.shape}"
-        )
-
-        for idx, row in self.df.head(MAX_ROWS).iterrows():
-            article = str(row[INPUT_COL_ARTICLE]).strip()
-
-            # 🆕 ЛОГ КАЖДОЙ ИТЕРАЦИИ
-            # logger.debug(f"  Loop: idx={idx}, article={article}")
-
-            if not article:
-                # logger.warning(f"  ⚠️ Пропуск idx={idx}: пустой артикул")
-                continue
-
-            brand = str(row[INPUT_COL_BRAND]).strip()
-
-            # ======== ВЕСА ========
-            if ENABLE_WEIGHT_PARSING:
-                # Japarts → обычный crawler
-                normal_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.japarts_search(article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "japarts",
-                            "task_type": "weight",
-                        },
-                    )
-                )
-
-                # 🆕 ЛОГ ДОБАВЛЕНИЯ
-                # logger.info(
-                #     f"  ✅ Request #{len(requests)}: idx={idx}, site=japarts, part={article}"
-                # )
-
-                # Armtek (fallback - будет обработано если Japarts вернет None)
-                armtek_proxy_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.armtek_search(article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "armtek",
-                            "task_type": "weight",
-                        },
-                    )
-                )
-
-            # ======== ИМЕНА ========
-            elif ENABLE_NAME_PARSING:
-                # Stparts (приоритет)
-                normal_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.stparts_search(article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "stparts",
-                            "task_type": "name",
-                        },
-                    )
-                )
-
-                # Avtoformula (fallback)
-                # normal_requests.append(
-                #     Request.from_url(
-                #         url=SiteUrls.avtoformula_search(brand, article),
-                #         user_data={
-                #             "idx": idx,
-                #             "brand": brand,
-                #             "part": article,
-                #             "site": "avtoformula",
-                #             "task_type": "name",
-                #         },
-                #         # 🔥 УНИКАЛЬНЫЙ ID для каждого запроса
-                #         unique_key=f"avtoformula_{idx}_{article}",
-                #     )
-                # )
-
-            # ======== ЦЕНЫ ========
-            elif ENABLE_PRICE_PARSING:
-                # Параллельно оба сайта
-                normal_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.stparts_search(article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "stparts",
-                            "task_type": "price",
-                        },
-                    )
-                )
-                normal_requests.append(
-                    Request.from_url(
-                        url=SiteUrls.avtoformula_search(brand, article),
-                        user_data={
-                            "idx": idx,
-                            "brand": brand,
-                            "part": article,
-                            "site": "avtoformula",
-                            "task_type": "price",
-                        },
-                    )
-                )
-
-        return normal_requests, armtek_proxy_requests
-
     async def run(self):
         """Главный метод запуска"""
         await self.setup()
 
-        # ОЧИСТКА КЕША
-        import shutil
-        import time
+        # 🔥 СОЗДАЁМ CRAWLERS ОДИН РАЗ
 
-        storage_dir = Path("storage")
-        if storage_dir.exists():
-            try:
-                shutil.rmtree(storage_dir)
-                logger.info("🗑️ Очищен кеш Crawlee")
-            except PermissionError:
-                logger.warning("⚠️ Кеш занят, пропускаем очистку...")
+        # Normal crawler (БЕЗ прокси)
+        normal_crawler = PlaywrightCrawler(
+            request_handler=self.request_handler,
+            max_request_retries=3,
+            use_session_pool=True,  # ✅ Сохранение сессии для Avtoformula
+            concurrency_settings=ConcurrencySettings(
+                max_concurrency=MAX_WORKERS // 2,
+                desired_concurrency=MAX_WORKERS // 2,
+            ),
+            headless=True,
+        )
 
-        # 🔥 АВТОРИЗАЦИЯ ДО CRAWLER (сохраняем флаг)
-        if ENABLE_NAME_PARSING or ENABLE_PRICE_PARSING:
-            self._avtoformula_needs_auth = True
-        else:
-            self._avtoformula_needs_auth = False
-
-        # Построение запросов
-        normal_requests, armtek_requests = self._build_requests()
-
-        # 🔥 РАЗДЕЛЯЕМ по сайтам
-        stparts_requests = [
-            r for r in normal_requests if r.user_data.get("site") == "stparts"
-        ]
-        japarts_requests = [
-            r for r in normal_requests if r.user_data.get("site") == "japarts"
-        ]
-
-        logger.debug(f"📋 Normal tasks: {len(normal_requests)}")
-        logger.debug(f"📋 Armtek proxy tasks: {len(armtek_requests)}")
-
-        # ПРОКСИ только если есть Armtek задачи
-        proxy_list = []
+        # Proxy crawler (только для Armtek в режиме ВЕСОВ)
         proxy_crawler = None
-
-        if ENABLE_WEIGHT_PARSING and armtek_requests:
-            logger.info("🌐 Режим ВЕСА → загрузка прокси для Armtek...")
+        if ENABLE_WEIGHT_PARSING:
+            logger.info("🌐 Загрузка прокси для Armtek...")
             proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=5)
 
             if proxy_list:
@@ -709,47 +569,35 @@ class ParserCrawler:
                 )
                 logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
             else:
-                logger.warning("⚠️ Прокси не получены → Armtek пойдёт БЕЗ прокси")
+                logger.warning("⚠️ Прокси не получены → Armtek БЕЗ прокси")
 
-        # Normal crawler (БЕЗ browser_pool_options)
-        normal_crawler = PlaywrightCrawler(
-            request_handler=self.request_handler,
-            max_request_retries=3,
-            use_session_pool=True,  # ✅ Сохранение сессии между запросами
-            concurrency_settings=ConcurrencySettings(
-                max_concurrency=MAX_WORKERS // 2,
-                desired_concurrency=MAX_WORKERS // 2,
-            ),
-            headless=True,
-        )
-
-        # 🔥 УНИВЕРСАЛЬНАЯ БАТЧ-ОБРАБОТКА
+        # 🔥 БАТЧ-ОБРАБОТКА
         BATCH_SIZE = SAVE_INTERVAL
         total_rows = min(len(self.df), MAX_ROWS)
+        stop_flag = Path("input/STOP.flag")
 
         for batch_start in range(0, total_rows, BATCH_SIZE):
+            # 🛑 Проверка стоп-флага перед каждым батчем
+            if stop_flag.exists():
+                logger.warning(
+                    "🛑 STOP.flag найден, останавливаем парсер после текущего состояния"
+                )
+                break
+
             batch_end = min(batch_start + BATCH_SIZE, total_rows)
             batch_num = batch_start // BATCH_SIZE + 1
 
             logger.info(f"📦 БАТЧ #{batch_num}: строки {batch_start}-{batch_end}")
 
-            # 🔥 РЕЖИМ ВЕСОВ (Japarts → Armtek с прокси)
+            # 🔥 ВЫБОР МЕТОДА ПО РЕЖИМУ
             if ENABLE_WEIGHT_PARSING:
                 await self._process_weight_batch(
-                    normal_crawler,
-                    proxy_crawler,  # 🔥 Передаём прокси crawler
-                    batch_start,
-                    batch_end,
-                    batch_num,
+                    normal_crawler, proxy_crawler, batch_start, batch_end, batch_num
                 )
-
-            # 🔥 РЕЖИМ ИМЁН (Stparts → Avtoformula)
             elif ENABLE_NAME_PARSING:
                 await self._process_name_batch(
                     normal_crawler, batch_start, batch_end, batch_num
                 )
-
-            # 🔥 РЕЖИМ ЦЕН (параллельно)
             elif ENABLE_PRICE_PARSING:
                 await self._process_price_batch(
                     normal_crawler, batch_start, batch_end, batch_num
@@ -760,8 +608,16 @@ class ParserCrawler:
             await asyncio.to_thread(self.df.to_excel, output_file, index=False)
             logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
 
+            # После сохранения сырых данных
+            await self.finalize_saved_file(
+                output_file, batch_num
+            )  # output_file → input_file
+
         logger.info(f"📊 Всего обработано: {self.processed_count} строк")
-        logger.info(f"📊 Всего сессий авторизовано: {len(self.authorized_sessions)}")
+        if ENABLE_NAME_PARSING or ENABLE_PRICE_PARSING:
+            logger.info(
+                f"📊 Всего сессий авторизовано: {len(self.authorized_sessions)}"
+            )
 
         await self._finalize()
 
@@ -782,6 +638,28 @@ class ParserCrawler:
 
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
+
+    async def finalize_saved_file(self, input_file: str, batch_num: int):
+        """Асинхронно финализирует уже сохранённый файл"""
+
+        logger.info(f"🔄 Финализация batch_finalize.xlsx (батч #{batch_num})...")
+
+        # Загружаем сохранённый файл
+        df_final = pd.read_excel(input_file)
+
+        if ENABLE_WEIGHT_PARSING:
+            df_final = await asyncio.to_thread(consolidate_weights, df_final)
+            logger.info("✅ Веса консолидированы")
+
+        # 🆕 ОДИН файл для финализированных батчей
+        batch_final_file = "output/batch_finalize.xlsx"
+
+        if ENABLE_PRICE_PARSING:
+            await asyncio.to_thread(adjust_prices_and_save, df_final, batch_final_file)
+        else:
+            await asyncio.to_thread(df_final.to_excel, batch_final_file, index=False)
+
+        logger.info(f"💾 batch_finalize.xlsx готов ({len(df_final)} строк)")
 
     async def _process_weight_batch(
         self, normal_crawler, proxy_crawler, batch_start, batch_end, batch_num
@@ -973,7 +851,7 @@ class ParserCrawler:
 
 async def main():
     logger.setLevel(getattr(logging, LOG_LEVEL.upper()))
-    clear_debug_folders_sync()
+    clear_debug_folders_sync(logger)
     parser = ParserCrawler()
     logger.debug("🔍 Детальная информация (видна только при LOG_LEVEL=DEBUG)")
     logger.info("🔍  информация (видна только при LOG_LEVEL=INFO)")
