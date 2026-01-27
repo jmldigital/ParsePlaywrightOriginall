@@ -545,6 +545,7 @@ class ParserCrawler:
             concurrency_settings=ConcurrencySettings(
                 max_concurrency=MAX_WORKERS // 2,
                 desired_concurrency=MAX_WORKERS // 2,
+                min_concurrency=2,
             ),
             headless=True,
         )
@@ -827,7 +828,7 @@ class ParserCrawler:
                 )
             )
 
-            # Avtoformula
+            # # Avtoformula
             all_requests.append(
                 Request.from_url(
                     url=SiteUrls.avtoformula_search(brand, article),

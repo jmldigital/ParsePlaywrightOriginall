@@ -10,6 +10,8 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from utils import save_debug_info
 
+from config import SELECTORS
+
 
 async def close_city_dialog(page: Page):
     """Закрывает диалог города"""
@@ -29,12 +31,12 @@ async def determine_state(page: Page) -> str:
     Crawlee уже сделал goto(), мы только проверяем результат
     """
     selectors = {
-        "cards": "project-ui-article-card, app-article-card-tile",
-        "list": "div.results-list a, .search-result__list a",
-        "no_results": "div.not-found.ng-star-inserted div.not-found__image",
-        "captcha": "sproit-ui-modal p:has-text('Введите код с картинки')",
-        "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
-        "cloudflare": "#cf-chl-widget, .lds-ring",
+        "cards": SELECTORS["armtek"]["product_card-list"],
+        "list": SELECTORS["armtek"]["product_list"],
+        "no_results": SELECTORS["armtek"]["no_results"],
+        "captcha": SELECTORS["armtek"]["captcha"],
+        "rate_limit": SELECTORS["armtek"]["rate_limit"],
+        "cloudflare": SELECTORS["armtek"]["rate_limit"],
     }
 
     tasks = {
@@ -89,11 +91,9 @@ async def parse_weight_armtek(
     # Переход к карточке товара
     try:
         if state == "cards":
-            link = page.locator(
-                "project-ui-article-card a, app-article-card-tile a"
-            ).first
+            link = page.locator(SELECTORS["armtek"]["product_cards"]).first
         elif state == "list":
-            link = page.locator("div.results-list a, .search-result__list a").first
+            link = page.locator(SELECTORS["armtek"]["product_list"]).first
         else:
             return None, None
 
@@ -110,11 +110,17 @@ async def parse_weight_armtek(
         await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
 
         # Ждём загрузки данных (SPA!)
-        await page.wait_for_selector("product-card-info", state="visible", timeout=8000)
+        await page.wait_for_selector(
+            SELECTORS["armtek"]["product-card-info"],
+            state="visible",
+            timeout=8000,
+        )
 
         # Даём время на рендер JSON → HTML
         for _ in range(10):
-            content = await page.locator("product-card-info").text_content()
+            content = await page.locator(
+                SELECTORS["armtek"]["product-card-info"]
+            ).text_content()
             if content and len(content.strip()) > 20:
                 break
             await page.wait_for_timeout(300)
@@ -133,7 +139,7 @@ async def parse_weight_armtek(
 
     # Попытка 2: клик по вкладке характеристик
     try:
-        tech_tab = page.locator('a[href="#tech-info"]')
+        tech_tab = page.locator(SELECTORS["armtek"]["specifications"])
         if await tech_tab.count() > 0:
             await tech_tab.click()
             await page.wait_for_timeout(1000)
@@ -159,13 +165,7 @@ async def parse_weight_armtek(
 
 async def extract_weight(page: Page) -> Optional[str]:
     """Извлечение веса из DOM"""
-    selectors = [
-        "product-card-info div:has-text('Вес')",
-        "product-card-info tr:has-text('Вес')",
-        ".product-params__item:has-text('Вес')",
-        "div.params-row:has-text('Вес')",
-        "li:has-text('Вес')",
-    ]
+    selectors = [SELECTORS["armtek"]["product-card-weight"]]
 
     for sel in selectors:
         try:
@@ -183,59 +183,3 @@ async def extract_weight(page: Page) -> Optional[str]:
             continue
 
     return None
-
-
-# 🎮 Счётчик вызовов
-_call_counter = 0
-
-
-# async def parse_weight_armtek(
-#     page: Page, part: str, logger
-# ) -> Tuple[Optional[str], Optional[str]]:
-#     """
-#     🎮 СИМУЛЯТОР - загружает страницу, делает скриншот, возвращает сценарий
-#     """
-#     global _call_counter
-#     _call_counter += 1
-
-#     N = 5  # Размер цикла
-
-#     logger.info(f"🎮 [SIM] Вызов #{_call_counter} | Артикул: {part}")
-
-#     # Закрываем диалог города
-#     await close_city_dialog(page)
-
-#     # Ждём любого селектора
-#     state = await determine_state(page)
-#     logger.info(f"🎮 [SIM] Состояние страницы: {state}")
-
-#     # Скриншот
-#     await save_debug_info(
-#         page, part, f"simulator_call_{_call_counter}_state_{state}", logger, "armtek"
-#     )
-
-#     # Определяем сценарий по номеру вызова
-#     if _call_counter <= N:
-#         # Цикл 1: N задач - обычный режим
-#         logger.info(f"✅ [SIM] Цикл 1: Обычный режим ({_call_counter}/{N})")
-#         return None, None
-
-#     elif _call_counter <= N * 2:
-#         # Цикл 2: N*2 задач - NeedProxy
-#         logger.warning(f"🚦 [SIM] Цикл 2: NeedProxy ({_call_counter}/{N*2})")
-#         return "NeedProxy", "NeedProxy"
-
-#     elif _call_counter <= N * 3:
-#         # Цикл 3: N*3 задач - NeedProxy снова
-#         logger.warning(f"🚦 [SIM] Цикл 3: NeedProxy снова ({_call_counter}/{N*3})")
-#         return "NeedProxy", "NeedProxy"
-
-#     elif _call_counter <= N * 4:
-#         # Цикл 4: N*4 задач - CloudFlare
-#         logger.warning(f"☁️ [SIM] Цикл 4: CloudFlare ({_call_counter}/{N*4})")
-#         return "CloudFlare", "CloudFlare"
-
-#     else:
-#         # После всех циклов - обычный режим
-#         logger.info(f"✅ [SIM] После циклов: Обычный режим")
-#         return None, None

@@ -50,4 +50,4 @@ class CaptchaManager:
 
 
 # Глобальный экземпляр
-captcha_manager = CaptchaManager(max_concurrent=1)
+captcha_manager = CaptchaManager(max_concurrent=3)

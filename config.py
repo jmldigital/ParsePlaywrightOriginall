@@ -13,7 +13,7 @@ load_dotenv()
 LOG_LEVEL = "INFO"
 
 TEMP_RAW = 100
-MAX_WORKERS = 5
+MAX_WORKERS = 6
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 TASK_TIMEOUT = 180
 PROXY_TIMOUT = 240  # ✅ Задержка на прокси
@@ -103,7 +103,6 @@ SELECTORS = {
         "case_table": "table.globalCase",
         "case_description": "td.caseDescription",
         "alt_results_table": "table.globalResult",
-        "alt_result_row": "tr",
         "alt_result_description": "td.resultDescription",
     },
     "avtoformula": {
@@ -133,18 +132,19 @@ SELECTORS = {
     "armtek": {
         "search_input": "input[data-test-id='search-input']",
         "search_button": "div.search-input__btn button",
-        # "captcha_img": "sproit-ui-modal project-ui-captcha img",  # Модалка + img
         "captcha_img": "sproit-ui-modal img[src*='blob']",
+        "captcha": "sproit-ui-modal p:has-text('Введите код с картинки')",
         "captcha_input": "sproit-ui-modal project-ui-captcha input.sproit-ui-input__input",  # Модалка + input
         "captcha_submit": "sproit-ui-modal project-ui-captcha sproit-ui-button[color='primary']",  # Модалка + кнопка
-        # "product_card": "product-card-info",
-        # "product_list": ".results-list",  # ✅ КОНТЕЙНЕР списка
-        # "product_cards": ".scroll-item",
-        # "weight_value": "div.product-key-values__item__values span.font__body2",
-        # 🔥 Ubuntu/Windows универсальные
-        "product_list": ".results-list",
-        "product_cards": ".scroll-item, div[data-id]",
-        "product_card": "product-card-info, [data-id]",
+        "specifications": 'a[href="#tech-info"]',
+        "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
+        "cloudflare": "#cf-chl-widget, .lds-ring",
+        "product_list": "div.results-list a, .search-result__list a",
+        "no_results": "div.not-found.ng-star-inserted div.not-found__image",
+        "product_cards": "project-ui-article-card a, app-article-card-tile a",
+        "product_card-list": "project-ui-article-card, app-article-card-tile",
+        "product-card-info": "product-card-info, [data-id]",
+        "product-card-weight": "product-card-info div:has-text('Вес'), product-card-info tr:has-text('Вес'), .product-params__item:has-text('Вес'), div.params-row:has-text('Вес'),li:has-text('Вес')",
         # 🎯 ВЕСА — множественные приоритеты
         "weight_selectors": [
             ".product-key-values__item__right-side span.font__body2",  # Right-side → span
