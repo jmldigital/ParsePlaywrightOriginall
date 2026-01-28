@@ -137,7 +137,7 @@ SELECTORS = {
         "specifications": 'a[href="#tech-info"]',
         "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
         "cloudflare": "#cf-chl-widget, .lds-ring",
-        "product_list": "div.results-list a, .search-result__list a, .results-list, .results-list__items",
+        "product_list": ".search-result__list a, .results-list__items",
         "no_results": "div.not-found.ng-star-inserted div.not-found__image",
         "product_cards": "project-ui-article-card a, app-article-card-tile a",
         "product_card-list": "project-ui-article-card, app-article-card-tile",

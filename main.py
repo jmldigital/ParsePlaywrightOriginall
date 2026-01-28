@@ -359,31 +359,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            # if site == "japarts":
-            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-            #     if physical == "NeedCaptcha":
-            #         if await self._solve_captcha(page, "japarts"):
-            #             physical, volumetric = await parse_weight_japarts(
-            #                 page, part, logger
-            #             )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts"):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
+                        )
 
-            #     from config import JPARTS_P_W, JPARTS_V_W
+                from config import JPARTS_P_W, JPARTS_V_W
 
-            #     # 🆕 Логирование результата
-            #     if physical or volumetric:
-            #         self.stats["japarts"]["success"] += 1
-            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-            #     else:
-            #         self.stats["japarts"]["empty"] += 1
-            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-            #     # 🆕 ДОБАВИТЬ лог ДО return:
-            #     # logger.info(
-            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-            #     # )
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
 
@@ -586,6 +586,7 @@ class ParserCrawler:
                         desired_concurrency=WORKERS,
                         min_concurrency=2,
                     ),
+                    browser_new_context_options={"ignore_https_errors": True},
                     headless=True,
                 )
                 logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")

@@ -101,12 +101,26 @@ async def parse_weight_armtek(
             link = page.locator(SELECTORS["armtek"]["product_cards"]).first
         elif state == "list":
             list_selectors = SELECTORS["armtek"]["product_list"]
-            link = page.locator(list_selectors).filter(has=page.locator("a")).first
-            logger.debug(f"🔗 List: первая <a> в списке {link}")
+            link = page.locator(f"{list_selectors} a[href*='/product/']").first
+            count = await link.count()
+            if count > 0:
+                href = await link.get_attribute("href")
+                text = await link.text_content()
+                logger.debug(f"🔗 List FOUND: href='{href}' | text='{text[:50]}...'")
+            else:
+                logger.debug("🔗 List: 0 ссылок")
         elif state == "product_info":
             list_selectors = SELECTORS["armtek"]["product_list"]
-            link = page.locator(list_selectors).filter(has=page.locator("a")).first
-            logger.debug(f"🔗 product-info: первая <a> в списке {link}")
+            link = page.locator(f"{list_selectors} a[href*='/product/']").first
+            count = await link.count()
+            if count > 0:
+                href = await link.get_attribute("href")
+                text = await link.text_content()
+                logger.debug(
+                    f"🔗 product_info FOUND: href='{href}' | text='{text[:50]}...'"
+                )
+            else:
+                logger.debug("🔗 product_info: 0 ссылок")
         else:
             return None, None
 
@@ -126,18 +140,33 @@ async def parse_weight_armtek(
 
         # Ждём загрузки данных (SPA!)
         # ✅ ИСПРАВИТЬ НА:
-        await page.locator(SELECTORS["armtek"]["product-card-info"]).first.wait_for(
-            state="visible", timeout=8000
+        # await page.locator(SELECTORS["armtek"]["product-card-info"]).first.wait_for(
+        #     state="visible", timeout=8000
+        # )
+
+        # # Даём время на рендер JSON → HTML
+        # for _ in range(10):
+        #     content = await page.locator(
+        #         SELECTORS["armtek"]["product-card-info"]
+        #     ).first.text_content()
+        #     if content and len(content.strip()) > 20:
+        #         break
+        #     await page.wait_for_timeout(300)
+
+        # Ждём появления ссылки "Все характеристики" href="#tech-info"
+        tech_link_selector = 'a[href="#tech-info"]'
+        await page.locator(tech_link_selector).first.wait_for(
+            state="visible", timeout=30000
         )
 
-        # Даём время на рендер JSON → HTML
-        for _ in range(10):
-            content = await page.locator(
-                SELECTORS["armtek"]["product-card-info"]
-            ).first.text_content()
-            if content and len(content.strip()) > 20:
-                break
-            await page.wait_for_timeout(300)
+        # Проверяем, что ссылка кликабельна и имеет текст
+        tech_link = page.locator(tech_link_selector).first
+        link_text = await tech_link.text_content()
+        logger.debug(f"🔗 Tech link найдена: '{link_text}'")
+
+        # КЛИК по ссылке для загрузки характеристик
+        await tech_link.click()
+        await page.wait_for_timeout(1500)  # Даём время на рендер вкладки
 
     except Exception as e:
         logger.error(f"Ошибка навигации к карточке: {e}")
