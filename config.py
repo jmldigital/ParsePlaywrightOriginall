@@ -10,7 +10,7 @@ load_dotenv()
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
 # LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-LOG_LEVEL = "DEBUG"
+LOG_LEVEL = "INFO"
 
 TEMP_RAW = 200
 MAX_WORKERS = 3
@@ -141,7 +141,7 @@ SELECTORS = {
         "no_results": "div.not-found.ng-star-inserted div.not-found__image",
         "product_cards": "project-ui-article-card a, app-article-card-tile a",
         "product_card-list": "project-ui-article-card, app-article-card-tile",
-        "product-card-info": "product-card-info, [data-id],product-card-info__wrapper,#tech-info",
+        "product-card-info": "product-card-info, [data-id],product-card-info__wrapper, #tech-info",
         "product-card-weight": "product-card-info div:has-text('Вес'), product-card-info tr:has-text('Вес'), .product-params__item:has-text('Вес'), div.params-row:has-text('Вес'),li:has-text('Вес')",
         # 🎯 ВЕСА — множественные приоритеты
         "weight_selectors": [

@@ -316,7 +316,7 @@ class ParserCrawler:
                     actual_ip = await page.evaluate(
                         "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
                     )
-                    logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
+                    # logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
                     self._ip_check_count += 1
                 except:
                     pass

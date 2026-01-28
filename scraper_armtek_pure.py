@@ -44,7 +44,9 @@ async def determine_state(page: Page) -> str:
 
     tasks = {
         asyncio.create_task(
-            page.wait_for_selector(sel, state="visible", timeout=10000)
+            page.wait_for_selector(
+                f"{sel}:has(*) >> nth=0", state="visible", timeout=10000
+            )
         ): name
         for name, sel in selectors.items()
     }
@@ -79,6 +81,8 @@ async def parse_weight_armtek(
     # Определяем состояние
     state = await determine_state(page)
 
+    logger.debug(f"✅ Состояние для {page} найдено {state}")
+
     if state == "no_results":
         # logger.info(f"❌ Не найдено: {part}")
         return None, None
@@ -96,29 +100,41 @@ async def parse_weight_armtek(
         if state == "cards":
             link = page.locator(SELECTORS["armtek"]["product_cards"]).first
         elif state == "list":
-            link = page.locator(SELECTORS["armtek"]["product_list"]).first
-        if state in ("product_info", "card_direct"):  # 🔥 Уже карточка!
-            logger.debug(f"🎯 [{part}] Уже карточка (state={state})")
+            list_selectors = SELECTORS["armtek"]["product_list"]
+            link = page.locator(list_selectors).filter(has=page.locator("a")).first
+            logger.debug(f"🔗 List: первая <a> в списке {link}")
+        elif state == "product_info":
+            list_selectors = SELECTORS["armtek"]["product_list"]
+            link = page.locator(list_selectors).filter(has=page.locator("a")).first
+            logger.debug(f"🔗 product-info: первая <a> в списке {link}")
         else:
             return None, None
 
-        if state not in ("product_info", "card_direct"):  # 🔥 Только для списков!
-            if await link.count() == 0 or not await link.get_attribute("href"):
-                return None, None
+        if await link.count() == 0:
+            return None, None
 
-            href = await link.get_attribute("href")
-            full_url = href if href.startswith("http") else "https://armtek.ru" + href
-            await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
+        href = await link.get_attribute("href", timeout=3000)
+        if not href:
+            return None, None
 
-            await page.wait_for_selector(
-                SELECTORS["armtek"]["product-card-info"], timeout=8000
-            )
+        full_url = href if href.startswith("http") else "https://armtek.ru" + href
+
+        logger.debug(f"✅  {page} {state} формируем ссылку для перехода {full_url} ")
+
+        # Переход на карточку
+        await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
+
+        # Ждём загрузки данных (SPA!)
+        # ✅ ИСПРАВИТЬ НА:
+        await page.locator(SELECTORS["armtek"]["product-card-info"]).first.wait_for(
+            state="visible", timeout=8000
+        )
 
         # Даём время на рендер JSON → HTML
         for _ in range(10):
             content = await page.locator(
                 SELECTORS["armtek"]["product-card-info"]
-            ).text_content()
+            ).first.text_content()
             if content and len(content.strip()) > 20:
                 break
             await page.wait_for_timeout(300)
