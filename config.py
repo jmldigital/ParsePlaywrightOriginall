@@ -10,17 +10,15 @@ load_dotenv()
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
 # LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "DEBUG"
 
-TEMP_RAW = 100
-MAX_WORKERS = 6
-DELAY_EXIST = False  # ✅ Задержка перед тасками
-TASK_TIMEOUT = 180
-PROXY_TIMOUT = 240  # ✅ Задержка на прокси
-PAGE_GOTO_TIMEOUT = 30000
-CLOUD_FLARE_DETEKTOR = 30000
+TEMP_RAW = 200
+MAX_WORKERS = 3
+MAX_WORKERS_PROXY = 15
 MAX_ROWS = 23000
-SAVE_INTERVAL = 20
+SAVE_INTERVAL = 100
+
+PROXY_COUNT = 50
 
 
 # === API и авторизация ===
@@ -139,11 +137,11 @@ SELECTORS = {
         "specifications": 'a[href="#tech-info"]',
         "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
         "cloudflare": "#cf-chl-widget, .lds-ring",
-        "product_list": "div.results-list a, .search-result__list a",
+        "product_list": "div.results-list a, .search-result__list a, .results-list, .results-list__items",
         "no_results": "div.not-found.ng-star-inserted div.not-found__image",
         "product_cards": "project-ui-article-card a, app-article-card-tile a",
         "product_card-list": "project-ui-article-card, app-article-card-tile",
-        "product-card-info": "product-card-info, [data-id]",
+        "product-card-info": "product-card-info, [data-id],product-card-info__wrapper,#tech-info",
         "product-card-weight": "product-card-info div:has-text('Вес'), product-card-info tr:has-text('Вес'), .product-params__item:has-text('Вес'), div.params-row:has-text('Вес'),li:has-text('Вес')",
         # 🎯 ВЕСА — множественные приоритеты
         "weight_selectors": [

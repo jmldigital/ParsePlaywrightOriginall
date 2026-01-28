@@ -54,6 +54,8 @@ from config import (
     TEMP_RAW,
     LOG_LEVEL,
     SAVE_INTERVAL,
+    PROXY_COUNT,
+    MAX_WORKERS_PROXY,
 )
 from utils import (
     logger,
@@ -357,33 +359,33 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            if site == "japarts":
-                physical, volumetric = await parse_weight_japarts(page, part, logger)
+            # if site == "japarts":
+            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-                if physical == "NeedCaptcha":
-                    if await self._solve_captcha(page, "japarts"):
-                        physical, volumetric = await parse_weight_japarts(
-                            page, part, logger
-                        )
+            #     if physical == "NeedCaptcha":
+            #         if await self._solve_captcha(page, "japarts"):
+            #             physical, volumetric = await parse_weight_japarts(
+            #                 page, part, logger
+            #             )
 
-                from config import JPARTS_P_W, JPARTS_V_W
+            #     from config import JPARTS_P_W, JPARTS_V_W
 
-                # 🆕 Логирование результата
-                if physical or volumetric:
-                    self.stats["japarts"]["success"] += 1
-                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-                else:
-                    self.stats["japarts"]["empty"] += 1
-                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+            #     # 🆕 Логирование результата
+            #     if physical or volumetric:
+            #         self.stats["japarts"]["success"] += 1
+            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+            #     else:
+            #         self.stats["japarts"]["empty"] += 1
+            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-                # 🆕 ДОБАВИТЬ лог ДО return:
-                # logger.info(
-                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-                # )
+            #     # 🆕 ДОБАВИТЬ лог ДО return:
+            #     # logger.info(
+            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+            #     # )
 
-                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
-            elif site == "armtek":
+            if site == "armtek":
 
                 physical, volumetric = await parse_weight_armtek(page, part, logger)
 
@@ -394,40 +396,49 @@ class ParserCrawler:
                 #         idx, brand, part, site, task_type
                 #     )
 
-                if physical == "NeedCaptcha":
-                    if await self._solve_captcha(page, "armtek"):
-                        physical, volumetric = await parse_weight_armtek(
-                            page, part, logger
-                        )
+                # if physical == "NeedCaptcha":
+                #     if await self._solve_captcha(page, "armtek"):
+                #         physical, volumetric = await parse_weight_armtek(
+                #             page, part, logger
+                #         )
+
+                if physical in ["NeedCaptcha", "CloudFlare", "NeedProxy"]:
+                    # 🔥 Небольшая задержка перед retry (опционально)
+                    retry_delay = 2  # секунды
+                    logger.warning(
+                        f"🔄 [{idx}] {physical} → задержка {retry_delay}с, затем retry"
+                    )
+                    await asyncio.sleep(retry_delay)
+                    raise Exception(f"{physical}: retrying after {retry_delay}s")
 
                 # 🔥 1. CLOUDFLARE - сбросить прокси, retry без прокси
-                if physical == "CloudFlare":
-                    logger.warning(f"☁️ [{idx}] CloudFlare на Armtek → retry без прокси")
+                # if physical == "CloudFlare":
+                #     logger.warning(f"☁️ [{idx}] CloudFlare на Armtek → retry без прокси")
 
-                    # Перезагрузка страницы (Crawlee уже без прокси)
-                    try:
-                        await page.reload(wait_until="domcontentloaded", timeout=30000)
-                        await page.wait_for_timeout(3000)  # Ждём CloudFlare check
+                #     # Перезагрузка страницы (Crawlee уже без прокси)
+                #     try:
+                #         await page.reload(wait_until="domcontentloaded", timeout=30000)
+                #         await page.wait_for_timeout(3000)  # Ждём CloudFlare check
 
-                        # Повторный парсинг
-                        physical, volumetric = await parse_weight_armtek(
-                            page, part, logger
-                        )
+                #         # Повторный парсинг
+                #         physical, volumetric = await parse_weight_armtek(
+                #             page, part, logger
+                #         )
 
-                        # Если снова CloudFlare - пропускаем
-                        if physical == "CloudFlare":
-                            logger.error(f"☁️ [{idx}] CloudFlare персистентен → пропуск")
-                            self.stats["armtek"]["empty"] += 1
-                            from config import ARMTEK_P_W, ARMTEK_V_W
+                #         # Если снова CloudFlare - пропускаем
+                #         if physical == "CloudFlare":
+                #             logger.error(f"☁️ [{idx}] CloudFlare персистентен → пропуск")
+                #             self.stats["armtek"]["empty"] += 1
+                #             from config import ARMTEK_P_W, ARMTEK_V_W
 
-                            return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+                #             return {ARMTEK_P_W: None, ARMTEK_V_W: None}
 
-                    except Exception as e:
-                        logger.error(f"❌ [{idx}] Ошибка retry CloudFlare: {e}")
-                        self.stats["armtek"]["empty"] += 1
-                        from config import ARMTEK_P_W, ARMTEK_V_W
+                #     except Exception as e:
+                #         logger.error(f"❌ [{idx}] Ошибка retry CloudFlare: {e}")
+                #         self.stats["armtek"]["empty"] += 1
+                #         from config import ARMTEK_P_W, ARMTEK_V_W
 
-                        return {ARMTEK_P_W: None, ARMTEK_V_W: None}
+                #         return {ARMTEK_P_W: None, ARMTEK_V_W: None}
 
                 from config import ARMTEK_P_W, ARMTEK_V_W
 
@@ -536,6 +547,12 @@ class ParserCrawler:
         await self.setup()
 
         # 🔥 СОЗДАЁМ CRAWLERS ОДИН РАЗ
+        WORKERS = MAX_WORKERS
+
+        if ENABLE_WEIGHT_PARSING:
+            WORKERS = MAX_WORKERS_PROXY
+        else:
+            WORKERS = MAX_WORKERS
 
         # Normal crawler (БЕЗ прокси)
         normal_crawler = PlaywrightCrawler(
@@ -543,8 +560,8 @@ class ParserCrawler:
             max_request_retries=3,
             use_session_pool=True,  # ✅ Сохранение сессии для Avtoformula
             concurrency_settings=ConcurrencySettings(
-                max_concurrency=MAX_WORKERS // 2,
-                desired_concurrency=MAX_WORKERS // 2,
+                max_concurrency=WORKERS,
+                desired_concurrency=WORKERS,
                 min_concurrency=2,
             ),
             headless=True,
@@ -554,7 +571,9 @@ class ParserCrawler:
         proxy_crawler = None
         if ENABLE_WEIGHT_PARSING:
             logger.info("🌐 Загрузка прокси для Armtek...")
-            proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=5)
+            proxy_list = await asyncio.to_thread(
+                get_2captcha_proxy_pool, count=PROXY_COUNT
+            )
 
             if proxy_list:
                 proxy_crawler = PlaywrightCrawler(
@@ -563,8 +582,9 @@ class ParserCrawler:
                     use_session_pool=False,
                     max_request_retries=3,
                     concurrency_settings=ConcurrencySettings(
-                        max_concurrency=MAX_WORKERS // 2,
-                        desired_concurrency=MAX_WORKERS // 2,
+                        max_concurrency=WORKERS,
+                        desired_concurrency=WORKERS,
+                        min_concurrency=2,
                     ),
                     headless=True,
                 )
@@ -853,6 +873,8 @@ class ParserCrawler:
 async def main():
     logger.setLevel(getattr(logging, LOG_LEVEL.upper()))
     clear_debug_folders_sync(logger)
+    reload_config()
+    logger.info("🚀 START: Config reloaded!")  # Дебаг
     parser = ParserCrawler()
     logger.debug("🔍 Детальная информация (видна только при LOG_LEVEL=DEBUG)")
     logger.info("🔍  информация (видна только при LOG_LEVEL=INFO)")

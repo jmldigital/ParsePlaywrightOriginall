@@ -37,6 +37,9 @@ async def determine_state(page: Page) -> str:
         "captcha": SELECTORS["armtek"]["captcha"],
         "rate_limit": SELECTORS["armtek"]["rate_limit"],
         "cloudflare": SELECTORS["armtek"]["rate_limit"],
+        # 🔥 НОВОЕ СОСТОЯНИЕ!
+        "card_direct": SELECTORS["armtek"]["specifications"],  # Вкладка характеристик
+        "product_info": SELECTORS["armtek"]["product-card-info"],  # Данные товара
     }
 
     tasks = {
@@ -94,27 +97,22 @@ async def parse_weight_armtek(
             link = page.locator(SELECTORS["armtek"]["product_cards"]).first
         elif state == "list":
             link = page.locator(SELECTORS["armtek"]["product_list"]).first
+        if state in ("product_info", "card_direct"):  # 🔥 Уже карточка!
+            logger.debug(f"🎯 [{part}] Уже карточка (state={state})")
         else:
             return None, None
 
-        if await link.count() == 0:
-            return None, None
+        if state not in ("product_info", "card_direct"):  # 🔥 Только для списков!
+            if await link.count() == 0 or not await link.get_attribute("href"):
+                return None, None
 
-        href = await link.get_attribute("href", timeout=3000)
-        if not href:
-            return None, None
+            href = await link.get_attribute("href")
+            full_url = href if href.startswith("http") else "https://armtek.ru" + href
+            await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
 
-        full_url = href if href.startswith("http") else "https://armtek.ru" + href
-
-        # Переход на карточку
-        await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
-
-        # Ждём загрузки данных (SPA!)
-        await page.wait_for_selector(
-            SELECTORS["armtek"]["product-card-info"],
-            state="visible",
-            timeout=8000,
-        )
+            await page.wait_for_selector(
+                SELECTORS["armtek"]["product-card-info"], timeout=8000
+            )
 
         # Даём время на рендер JSON → HTML
         for _ in range(10):
