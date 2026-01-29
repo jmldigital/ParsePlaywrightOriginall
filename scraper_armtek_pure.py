@@ -25,6 +25,19 @@ async def close_city_dialog(page: Page):
         pass
 
 
+async def wait_skeletons_gone(page: Page, logger, timeout: int = 30000) -> bool:
+    """Ждём исчезновение скелетонов в product-card"""
+    try:
+        # ✅ Конкретно скелетоны в карточке товара
+        skeletons = page.locator(".product-card sproit-ui-skeleton")
+        await skeletons.wait_for(state="hidden", timeout=timeout)
+        logger.debug("✅ Скелетоны в карточке исчезли")
+        return True
+    except:
+        logger.warning("⚠️ Скелетоны в карточке висят")
+        return False
+
+
 async def determine_state(page: Page) -> str:
     """
     Определяет состояние страницы после загрузки
@@ -45,7 +58,7 @@ async def determine_state(page: Page) -> str:
     tasks = {
         asyncio.create_task(
             page.wait_for_selector(
-                f"{sel}:has(*) >> nth=0", state="visible", timeout=10000
+                f"{sel}:has(*) >> nth=0", state="visible", timeout=20000
             )
         ): name
         for name, sel in selectors.items()
@@ -77,6 +90,12 @@ async def parse_weight_armtek(
     """
 
     await close_city_dialog(page)
+
+    # 🔥 1️⃣ Ждём исчезновения скелетонов (ВСЕГДА!)
+    if not await wait_skeletons_gone(page, logger, timeout=30000):
+        logger.warning(f"⏳ Скелетоны не исчезли: {part}")
+        await save_debug_info(page, part, "skeleton_timeout", logger, "armtek")
+        return None, None
 
     # Определяем состояние
     state = await determine_state(page)
@@ -138,20 +157,11 @@ async def parse_weight_armtek(
         # Переход на карточку
         await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
 
-        # Ждём загрузки данных (SPA!)
-        # ✅ ИСПРАВИТЬ НА:
-        # await page.locator(SELECTORS["armtek"]["product-card-info"]).first.wait_for(
-        #     state="visible", timeout=8000
-        # )
-
-        # # Даём время на рендер JSON → HTML
-        # for _ in range(10):
-        #     content = await page.locator(
-        #         SELECTORS["armtek"]["product-card-info"]
-        #     ).first.text_content()
-        #     if content and len(content.strip()) > 20:
-        #         break
-        #     await page.wait_for_timeout(300)
+        # 🔥 1️⃣ Ждём исчезновения скелетонов (ВСЕГДА!)
+        if not await wait_skeletons_gone(page, logger, timeout=30000):
+            logger.warning(f"⏳ Скелетоны не исчезли: {part}")
+            await save_debug_info(page, part, "skeleton_timeout", logger, "armtek")
+            return None, None
 
         # Ждём появления ссылки "Все характеристики" href="#tech-info"
         tech_link_selector = 'a[href="#tech-info"]'
@@ -174,46 +184,59 @@ async def parse_weight_armtek(
         return None, None
 
     # Парсинг веса (3 попытки)
-    weight = await extract_weight(page)
+    weight = await extract_weight(page, part, logger)
     if weight:
-        # logger.info(f"✅ Вес: {weight} ({part})")
+        logger.debug(f"🎯 Вес: {weight} ({part})")
         # return "NeedProxy", None
-        return weight, None
-
-    # Попытка 2: клик по вкладке характеристик
-    try:
-        tech_tab = page.locator(SELECTORS["armtek"]["specifications"])
-        if await tech_tab.count() > 0:
-            await tech_tab.click()
-            await page.wait_for_timeout(1000)
-            weight = await extract_weight(page)
-    except Exception:
-        pass
-
-    if weight:
-        logger.info(f"✅ Вес (после клика): {weight} ({part})")
         return weight, None
 
     # Попытка 3: последний шанс
     await page.wait_for_timeout(2000)
-    weight = await extract_weight(page)
+    weight = await extract_weight(page, part, logger)
 
     if weight:
-        logger.info(f"✅ Вес (delayed): {weight} ({part})")
+        logger.info(f"🎯 Вес (delayed): {weight} ({part})")
         return weight, None
 
     logger.warning(f"❌ Вес не найден: {part}")
+    await save_debug_info(page, part, "not_found", logger, "armtek")
     return None, None
 
 
-async def extract_weight(page: Page) -> Optional[str]:
-    """Извлечение веса из DOM"""
+# async def extract_weight(page: Page) -> Optional[str]:
+#     """Извлечение веса из DOM"""
+#     selectors = [SELECTORS["armtek"]["weight_selectors"]]
+
+#     for sel in selectors:
+#         try:
+#             elements = page.locator(sel)
+#             count = await elements.count()
+#             for i in range(count):
+#                 text = await elements.nth(i).text_content()
+#                 if text:
+#                     match = re.search(
+#                         r"(\d+(?:[.,]\d+)?)\s*(?:кг|kg)", text, re.IGNORECASE
+#                     )
+#                     if match:
+#                         return match.group(1).replace(",", ".")
+#         except Exception:
+
+#             pass
+#             continue
+
+#     return None
+
+
+async def extract_weight(page: Page, part: str, logger) -> Optional[str]:
+    """Извлечение веса из DOM + скриншот если fail"""
     selectors = [SELECTORS["armtek"]["product-card-weight"]]
 
     for sel in selectors:
         try:
             elements = page.locator(sel)
             count = await elements.count()
+            logger.debug(f"🔍 {sel}: {count} элементов")
+
             for i in range(count):
                 text = await elements.nth(i).text_content()
                 if text:
@@ -221,8 +244,17 @@ async def extract_weight(page: Page) -> Optional[str]:
                         r"(\d+(?:[.,]\d+)?)\s*(?:кг|kg)", text, re.IGNORECASE
                     )
                     if match:
+                        logger.debug(f"✅ Вес найден: {match.group(1)}")
                         return match.group(1).replace(",", ".")
-        except Exception:
+        except Exception as e:
+            logger.debug(f"❌ Селектор {sel}: {e}")
             continue
+
+    # 🔥 СКРИНШОТ если вес НЕТ НАЙДЕН
+    try:
+        await save_debug_info(page, part, "no_weight_found", logger, "armtek")
+        logger.warning(f"📸 Скриншот сохранён: no_weight_{part}")
+    except Exception as e:
+        logger.error(f"❌ Скриншот failed: {e}")
 
     return None

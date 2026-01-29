@@ -396,11 +396,11 @@ class ParserCrawler:
                 #         idx, brand, part, site, task_type
                 #     )
 
-                # if physical == "NeedCaptcha":
-                #     if await self._solve_captcha(page, "armtek"):
-                #         physical, volumetric = await parse_weight_armtek(
-                #             page, part, logger
-                #         )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "armtek"):
+                        physical, volumetric = await parse_weight_armtek(
+                            page, part, logger
+                        )
 
                 if physical in ["NeedCaptcha", "CloudFlare", "NeedProxy"]:
                     # 🔥 Небольшая задержка перед retry (опционально)
@@ -576,20 +576,22 @@ class ParserCrawler:
             )
 
             if proxy_list:
-                proxy_crawler = PlaywrightCrawler(
-                    request_handler=self.request_handler,
-                    proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
-                    use_session_pool=False,
-                    max_request_retries=3,
-                    concurrency_settings=ConcurrencySettings(
-                        max_concurrency=WORKERS,
-                        desired_concurrency=WORKERS,
-                        min_concurrency=2,
-                    ),
-                    browser_new_context_options={"ignore_https_errors": True},
-                    headless=True,
-                )
-                logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
+                # proxy_crawler = PlaywrightCrawler(
+                #     request_handler=self.request_handler,
+                #     proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
+                #     use_session_pool=False,
+                #     max_request_retries=3,
+                #     concurrency_settings=ConcurrencySettings(
+                #         max_concurrency=WORKERS,
+                #         desired_concurrency=WORKERS,
+                #         min_concurrency=2,
+                #     ),
+                #     browser_new_context_options={"ignore_https_errors": True},
+                #     headless=True,
+                # )
+                proxy_crawler = None  # ← ДОБАВИТЬ!
+                logger.info(f"✅ Proxy отключены армтек на нормально мпрокси)")
+                # logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
             else:
                 logger.warning("⚠️ Прокси не получены → Armtek БЕЗ прокси")
 
