@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
-LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
+# LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-# LOG_LEVEL = "INFO"
+LOG_LEVEL = "INFO"
 
 TEMP_RAW = 100
 MAX_WORKERS = 15
@@ -131,7 +131,8 @@ SELECTORS = {
         "search_input": "input[data-test-id='search-input']",
         "search_button": "div.search-input__btn button",
         "captcha_img": "sproit-ui-modal img[src*='blob']",
-        "captcha": "sproit-ui-modal p:has-text('Введите код с картинки')",
+        # "captcha": ".captcha-modal p:has-text('Введите код с картинки')",
+        "captcha": ".captcha-modal p:has-text('Введите код с картинки'), p.sproit-ui-modal-header__title:has-text('Введите код с картинки'), .captcha-modal",
         "captcha_input": "sproit-ui-modal project-ui-captcha input.sproit-ui-input__input",  # Модалка + input
         "captcha_submit": "sproit-ui-modal project-ui-captcha sproit-ui-button[color='primary']",  # Модалка + кнопка
         "specifications": 'a[href="#tech-info"]',

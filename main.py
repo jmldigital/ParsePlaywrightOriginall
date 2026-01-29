@@ -371,31 +371,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            # if site == "japarts":
-            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-            #     if physical == "NeedCaptcha":
-            #         if await self._solve_captcha(page, "japarts"):
-            #             physical, volumetric = await parse_weight_japarts(
-            #                 page, part, logger
-            #             )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts"):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
+                        )
 
-            #     from config import JPARTS_P_W, JPARTS_V_W
+                from config import JPARTS_P_W, JPARTS_V_W
 
-            #     # 🆕 Логирование результата
-            #     if physical or volumetric:
-            #         self.stats["japarts"]["success"] += 1
-            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-            #     else:
-            #         self.stats["japarts"]["empty"] += 1
-            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-            #     # 🆕 ДОБАВИТЬ лог ДО return:
-            #     # logger.info(
-            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-            #     # )
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
 
@@ -409,7 +409,10 @@ class ParserCrawler:
                 #     )
 
                 # 🔥 RateLimit - ГЛОБАЛЬНАЯ ПАУЗА 10 МИНУТ
-                if physical == "NeedProxy":  # добавьте RateLimit в парсер
+                if physical in [
+                    "CloudFlare",
+                    "NeedProxy",
+                ]:  # добавьте RateLimit в парсер
                     logger.warning(
                         f"🚦 [{idx}] RateLimit на Armtek → ГЛОБАЛЬНАЯ ПАУЗА 10 мин"
                     )
@@ -432,14 +435,14 @@ class ParserCrawler:
                             page, part, logger
                         )
 
-                if physical in ["NeedCaptcha", "CloudFlare", "NeedProxy"]:
-                    # 🔥 Небольшая задержка перед retry (опционально)
-                    retry_delay = 2  # секунды
-                    logger.warning(
-                        f"🔄 [{idx}] {physical} → задержка {retry_delay}с, затем retry"
-                    )
-                    await asyncio.sleep(retry_delay)
-                    raise Exception(f"{physical}: retrying after {retry_delay}s")
+                # if physical in ["NeedCaptcha", "CloudFlare", "NeedProxy"]:
+                #     # 🔥 Небольшая задержка перед retry (опционально)
+                #     retry_delay = 2  # секунды
+                #     logger.warning(
+                #         f"🔄 [{idx}] {physical} → задержка {retry_delay}с, затем retry"
+                #     )
+                #     await asyncio.sleep(retry_delay)
+                #     raise Exception(f"{physical}: retrying after {retry_delay}s")
 
                 # 🔥 1. CLOUDFLARE - сбросить прокси, retry без прокси
                 # if physical == "CloudFlare":

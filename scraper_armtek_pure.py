@@ -31,8 +31,20 @@ async def wait_skeletons_gone(page: Page, logger, timeout: int = 20000) -> bool:
 
         # 🔥 1. Ждём ЛОГОТИП (страница живая!)
         logo = page.locator('img[alt="armtek logo"][src*="logo-armtek"]').first
-        await logo.wait_for(state="visible", timeout=10000)
+        await logo.wait_for(state="attached", timeout=10000)
         logger.debug("✅ Логотип ARMTEK OK")
+
+        # 🔥 2. Проверяем ПРЕЛОАДЕР (sproit-ui-loading)
+        preloader = page.locator("sproit-ui-loading").first
+        preloader_count = await preloader.count()
+
+        if preloader_count > 0:
+            logger.info("⏳ Ждём исчезновения прелоадера...")
+            try:
+                await preloader.wait_for(state="hidden", timeout=timeout)
+                logger.debug("✅ Прелоадер исчез")
+            except PlaywrightTimeout:
+                logger.warning("⚠️ Прелоадер не исчез, продолжаем")
 
         # 🔥 ТОЧНЫЙ селектор ГЛОБАЛЬНЫХ!
         skeletons = page.locator(
@@ -62,50 +74,6 @@ async def wait_skeletons_gone(page: Page, logger, timeout: int = 20000) -> bool:
     except Exception as e:
         logger.warning(f"⚠️ Skip глобальных скелетонов: {e}")
         return True  # ✅ ВАЖНО: ПРОДОЛЖАЕМ ПАРСИНГ!
-
-
-# async def determine_state(page: Page) -> str:
-#     """
-#     Определяет состояние страницы после загрузки
-#     Crawlee уже сделал goto(), мы только проверяем результат
-#     """
-#     selectors = {
-#         "cards": SELECTORS["armtek"]["product_card-list"],
-#         "no_results": SELECTORS["armtek"]["no_results"],
-#         "captcha": SELECTORS["armtek"]["captcha"],
-#         "rate_limit": SELECTORS["armtek"]["rate_limit"],
-#         "cloudflare": SELECTORS["armtek"]["rate_limit"],
-#         # 🔥 НОВОЕ СОСТОЯНИЕ!
-#         "card_direct": SELECTORS["armtek"]["specifications"],  # Вкладка характеристик
-#         "product_info": SELECTORS["armtek"]["product-card-info"],  # Данные товара
-#     }
-
-#     tasks = {
-#         asyncio.create_task(
-#             page.wait_for_selector(
-#                 f"{sel}:has(*) >> nth=0", state="visible", timeout=20000
-#             )
-#         ): (name, sel)
-#         for name, sel in selectors.items()
-#     }
-
-#     done, pending = await asyncio.wait(
-#         tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-#     )
-
-#     for task in pending:
-#         task.cancel()
-
-
-#     try:
-#         first_task = list(done)[0]
-#         await first_task
-#         state_name, found_sel = tasks[first_task]  # 🔥 Распаковываем tuple
-#         return state_name, found_sel
-#     except PlaywrightTimeout:
-#         return "timeout"
-#     except Exception:
-#         return "error"
 
 
 async def determine_state(page: Page) -> tuple[str, str]:

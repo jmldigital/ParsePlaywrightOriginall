@@ -4,28 +4,44 @@ services:
   price-parser:
     build: .
     container_name: price-parser-bot
+    
+    # ✅ КРИТИЧНО ДЛЯ CRAWLEE/PLAYWRIGHT
+    ipc: host              # shared memory Chromium
+    shm_size: 4gb          # tabs + concurrency (было 2gb)
+    
     volumes:
-      - .:/app                         # горячая правка кода
-      - ./output:/app/output           # результаты
-      - ./input:/app/input             # входные файлы
-      - ./temp:/app/temp               # временные файлы
-      - ./logs:/app/logs               # логи
-      - ./screenshots:/app/screenshots # скриншоты при ошибках
+      - .:/app                   # dev: hot reload (прод: удали)
+      - ./output:/app/output
+      - ./input:/app/input
+      - ./temp:/app/temp
+      - ./logs:/app/logs
+      - ./screenshots:/app/screenshots
+      
+      # ✅ Crawlee кэш (cookies/state, не теряется)
+      - ./cache:/app/cache
+      - ./cookies:/app/cookies
 
     environment:
       - TZ=Europe/Moscow
-      - PYTHONUNBUFFERED=1             # Логи в реальном времени
-      - PLAYWRIGHT_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      - PYTHONUNBUFFERED=1
+      - PLAYWRIGHT_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      
+      # ✅ Crawlee/Playwright
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - HEADLESS=true
 
-    # Для Playwright headless Chrome
-    shm_size: '2gb'
-    
-    # Логирование
+    # ✅ Ресурсы для concurrency
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+
     logging:
       driver: json-file
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"  # было 3
 
-    # Автоматический перезапуск
     restart: unless-stopped

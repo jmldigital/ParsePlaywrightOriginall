@@ -1,34 +1,32 @@
-# Используем официальный образ Playwright с Python 3.11
 FROM mcr.microsoft.com/playwright/python:v1.34.0-jammy
 
-# Установка дополнительных системных зависимостей (если нужны)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Системные deps (только curl, остальное в образе)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка uv для быстрой установки пакетов
-RUN pip install --no-cache-dir uv
+# uv как бинарник (быстрее pip, меньше размер)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
-# Рабочая директория
 WORKDIR /app
 
-# Копируем файлы проекта
-COPY pyproject.toml .
+# Только pyproject.toml + lock сначала (кэш deps)
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-install-isolated
+
+# Копируем КОД ПОСЛЕ deps (кэш сохраняется)
 COPY . .
 
-# Устанавливаем зависимости через uv
-RUN uv pip install --system -r pyproject.toml
+# Браузеры Playwright (образ имеет, но гарантия)
+RUN playwright install chromium
 
-# Создаём необходимые директории
-RUN mkdir -p output cache cookies logs screenshots input temp
+# Директории
+RUN mkdir -p output cache cookies logs screenshots input temp \
+    && chmod -R 777 output cache cookies logs screenshots input temp
 
-# Переменные окружения (опционально, можно задать в docker-compose.yml)
-ENV TZ=Europe/Moscow
+# ENV в docker-compose
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONIOENCODING=utf-8
-ENV LC_ALL=C.UTF-8
+ENV TZ=Europe/Moscow
 
-# Точка входа — bot.py
-CMD ["python", "bot.py"]
+# uv run (editable support)
+CMD ["uv", "run", "bot.py"]

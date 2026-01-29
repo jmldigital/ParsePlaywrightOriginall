@@ -10,7 +10,7 @@ from utils import logger
 import json
 from pathlib import Path
 import asyncio
-import threading
+
 
 _login_lock = asyncio.Lock()
 _global_login_done = False
@@ -74,7 +74,7 @@ async def login_manually(page: Page, login: str, password: str) -> bool:
         password_field = page.locator(f"#{SELECTORS['avtoformula']['password_field']}")
         await password_field.fill(password)
 
-        submit_btn = page.locator(SELECTORS['avtoformula']['login_button'])
+        submit_btn = page.locator(SELECTORS["avtoformula"]["login_button"])
         await submit_btn.click()
 
         # Ждём исчезновения формы логина
@@ -137,7 +137,7 @@ async def check_if_logged_out(page: Page) -> bool:
         return False
 
 
-async def handle_relogin(page: Page,  login: str, password: str) -> bool:
+async def handle_relogin(page: Page, login: str, password: str) -> bool:
     """Повторный логин при разлогине"""
     logger.warning(f"🔄 Попытка повторного логина для ")
     try:
