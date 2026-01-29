@@ -207,6 +207,12 @@ class ParserCrawler:
         self.processed_count = 0
         self.total_tasks = 0
 
+        # 🔥 ГЛОБАЛЬНАЯ ПАУЗА при RateLimit
+        self.rate_limit_pause = False
+        self.pause_event = asyncio.Event()
+        self.pause_event.set()  # ✅ Разблокировано при старте
+        self.pause_lock = asyncio.Lock()
+
         # 🔥 Трекинг авторизованных сессий
         self.authorized_sessions = set()
         self.session_lock = asyncio.Lock()
@@ -240,6 +246,8 @@ class ParserCrawler:
         self._init_columns()
 
         logger.info(f"📊 Загружено {len(self.df)} строк")
+        self.total_tasks = len(self.df)
+        logger.info(f"📊 Цель: {self.total_tasks} строк")
 
     def _init_columns(self):
         """Инициализация колонок"""
@@ -277,6 +285,10 @@ class ParserCrawler:
         page = context.page
         request = context.request
         session = context.session
+
+        # 🔥 ГЛОБАЛЬНАЯ ПАУЗА - ждём разблокировки
+        if not self.pause_event.is_set():
+            await self.pause_event.wait()
 
         # 🛑 Быстрый стоп
         if Path("input/STOP.flag").exists():
@@ -334,16 +346,16 @@ class ParserCrawler:
                 self.processed_count += 1
 
                 # Лог каждые N задач
-                if self.processed_count % 50 == 0:
+                if self.processed_count % (TEMP_RAW // 2) == 0:
                     logger.info(
                         f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
                     )
 
-            # Прогресс
-            async with self.results_lock:
-                self.processed_count += 1
-                if self.processed_count % (TEMP_RAW // 2) == 0:
-                    logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
+            # # Прогресс
+            # async with self.results_lock:
+            #     self.processed_count += 1
+            #     if self.processed_count % (TEMP_RAW // 2) == 0:
+            #         logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
 
         except Exception as e:
             logger.error(f"❌ [{idx}] {site}: {e}")
@@ -359,31 +371,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            if site == "japarts":
-                physical, volumetric = await parse_weight_japarts(page, part, logger)
+            # if site == "japarts":
+            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-                if physical == "NeedCaptcha":
-                    if await self._solve_captcha(page, "japarts"):
-                        physical, volumetric = await parse_weight_japarts(
-                            page, part, logger
-                        )
+            #     if physical == "NeedCaptcha":
+            #         if await self._solve_captcha(page, "japarts"):
+            #             physical, volumetric = await parse_weight_japarts(
+            #                 page, part, logger
+            #             )
 
-                from config import JPARTS_P_W, JPARTS_V_W
+            #     from config import JPARTS_P_W, JPARTS_V_W
 
-                # 🆕 Логирование результата
-                if physical or volumetric:
-                    self.stats["japarts"]["success"] += 1
-                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-                else:
-                    self.stats["japarts"]["empty"] += 1
-                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+            #     # 🆕 Логирование результата
+            #     if physical or volumetric:
+            #         self.stats["japarts"]["success"] += 1
+            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+            #     else:
+            #         self.stats["japarts"]["empty"] += 1
+            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-                # 🆕 ДОБАВИТЬ лог ДО return:
-                # logger.info(
-                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-                # )
+            #     # 🆕 ДОБАВИТЬ лог ДО return:
+            #     # logger.info(
+            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+            #     # )
 
-                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
 
@@ -395,6 +407,24 @@ class ParserCrawler:
                 #     return await self._retry_with_proxy(
                 #         idx, brand, part, site, task_type
                 #     )
+
+                # 🔥 RateLimit - ГЛОБАЛЬНАЯ ПАУЗА 10 МИНУТ
+                if physical == "NeedProxy":  # добавьте RateLimit в парсер
+                    logger.warning(
+                        f"🚦 [{idx}] RateLimit на Armtek → ГЛОБАЛЬНАЯ ПАУЗА 10 мин"
+                    )
+
+                    async with self.pause_lock:
+                        if not self.rate_limit_pause:  # только первый раз
+                            self.rate_limit_pause = True
+                            await self._trigger_global_pause()
+
+                    # Ждём разблокировки
+                    await self.pause_event.wait()
+                    self.rate_limit_pause = False
+
+                    # Retry после паузы
+                    physical, volumetric = await parse_weight_armtek(page, part, logger)
 
                 if physical == "NeedCaptcha":
                     if await self._solve_captcha(page, "armtek"):
@@ -871,6 +901,23 @@ class ParserCrawler:
                 f"  🚀 Stparts + Avtoformula (параллельно): {len(all_requests)} задач"
             )
             await crawler.run(all_requests)
+
+    async def _trigger_global_pause(self):
+        """Глобальная пауза ВСЕГО краулера на 10 минут"""
+        logger.critical("⏸️  ГЛОБАЛЬНАЯ ПАУЗА 10 МИНУТ (RateLimit)")
+
+        # 🔥 Сохраняем текущий прогресс
+        temp_file = f"output/temp_progress_{int(asyncio.get_event_loop().time())}.xlsx"
+        await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
+        logger.info(f"💾 Прогресс сохранён: {temp_file}")
+
+        # Ждём 10 минут
+        await asyncio.sleep(600)  # 10 минут
+
+        logger.critical("▶️  ВОЗОБНОВЛЕНИЕ после RateLimit")
+
+        # Разблокируем все воркеры
+        self.pause_event.set()
 
 
 async def main():

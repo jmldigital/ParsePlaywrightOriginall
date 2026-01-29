@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
-# LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
+LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-LOG_LEVEL = "INFO"
+# LOG_LEVEL = "INFO"
 
 TEMP_RAW = 100
 MAX_WORKERS = 15
@@ -18,7 +18,7 @@ MAX_WORKERS_PROXY = 15
 MAX_ROWS = 23000
 SAVE_INTERVAL = 100
 
-PROXY_COUNT = 5
+PROXY_COUNT = 10
 
 
 # === API и авторизация ===
@@ -137,11 +137,11 @@ SELECTORS = {
         "specifications": 'a[href="#tech-info"]',
         "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
         "cloudflare": "#cf-chl-widget, .lds-ring",
-        "product_list": ".search-result__list a, .results-list__items",
+        "product_list": ".search-result__list a, .results-list__items, .card-view",
         "no_results": "div.not-found.ng-star-inserted div.not-found__image",
         "product_cards": "project-ui-article-card a, app-article-card-tile a",
-        "product_card-list": "project-ui-article-card, app-article-card-tile",
-        "product-card-info": "product-card-info, [data-id],product-card-info__wrapper, #tech-info",
+        "product_card-list": ".project-ui-article-card, .app-article-card-tile, .list-view, .card-view, .results-list__items, ",
+        "product-card-info": ".project-ui-smart-scroll, product-card-info, [data-id],product-card-info__wrapper, #tech-info",
         "product-card-weight": "product-card-info div:has-text('Вес'), product-card-info tr:has-text('Вес'), .product-params__item:has-text('Вес'), div.params-row:has-text('Вес'),li:has-text('Вес')",
         # 🎯 ВЕСА — множественные приоритеты
         "weight_selectors": [
