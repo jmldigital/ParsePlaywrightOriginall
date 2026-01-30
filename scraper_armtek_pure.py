@@ -280,10 +280,29 @@ async def parse_weight_armtek(
         #     return None, None
 
         # Ждём появления ссылки "Все характеристики" href="#tech-info"
+        # tech_link_selector = 'a[href="#tech-info"]'
+        # await page.locator(tech_link_selector).first.wait_for(
+        #     state="visible", timeout=30000
+        # )
+
+        # 🔥 1️⃣ БЫСТРО проверяем tech-info (3 сек) - проверка н скелетоны внутри страницы после перехода
         tech_link_selector = 'a[href="#tech-info"]'
-        await page.locator(tech_link_selector).first.wait_for(
-            state="visible", timeout=30000
-        )
+        try:
+            await page.locator(tech_link_selector).first.wait_for(
+                state="visible", timeout=3000
+            )
+            logger.debug(f"✅ [{part}] Tech-info мгновенно готова")
+
+        except PlaywrightTimeout:
+            logger.debug(f"⏳ [{part}] Tech-info не готова → ждём скелетоны")
+
+            # 🔥 2️⃣ Fallback: ждём скелетоны (20 сек)
+            if not await wait_skeletons_gone(page, logger, timeout=20000):
+                logger.warning(f"⚠️ [{part}] Скелетоны не исчезли")
+                await save_debug_info(
+                    page, part, "skeleton_timeout_card", logger, "armtek"
+                )
+                return None, None
 
         # Проверяем, что ссылка кликабельна и имеет текст
         tech_link = page.locator(tech_link_selector).first

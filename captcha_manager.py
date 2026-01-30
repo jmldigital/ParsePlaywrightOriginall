@@ -11,8 +11,11 @@ class CaptchaManager:
             max_concurrent
         )  # Макс. 1 капча одновременно!
         self._active_captchas: Dict[str, str] = {}  # site_key → статус
+        self.numeric_only = False
 
-    async def solve_captcha(self, page, logger, site_key: str, selectors: dict) -> bool:
+    async def solve_captcha(
+        self, page, logger, site_key: str, selectors: dict, numeric_only: bool = False
+    ) -> bool:
         """
         Очередь на капчу: максимум 1 решение одновременно!
         """
@@ -32,6 +35,7 @@ class CaptchaManager:
                     site_key=site_key,
                     selectors=selectors,
                     max_attempts=3,
+                    numeric_only=numeric_only,
                 )
 
                 self._active_captchas[site_key] = "success" if success else "failed"

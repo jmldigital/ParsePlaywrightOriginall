@@ -207,6 +207,9 @@ class ParserCrawler:
         self.processed_count = 0
         self.total_tasks = 0
 
+        self.normal_crawler: PlaywrightCrawler | None = None
+        self.proxy_crawler: PlaywrightCrawler | None = None
+
         # 🔥 ГЛОБАЛЬНАЯ ПАУЗА при RateLimit
         self.rate_limit_pause = False
         self.pause_event = asyncio.Event()
@@ -409,25 +412,25 @@ class ParserCrawler:
                 #     )
 
                 # 🔥 RateLimit - ГЛОБАЛЬНАЯ ПАУЗА 10 МИНУТ
-                if physical in [
-                    "CloudFlare",
-                    "NeedProxy",
-                ]:  # добавьте RateLimit в парсер
-                    logger.warning(
-                        f"🚦 [{idx}] RateLimit на Armtek → ГЛОБАЛЬНАЯ ПАУЗА 10 мин"
-                    )
+                # if physical in [
+                #     "CloudFlare",
+                #     "NeedProxy",
+                # ]:  # добавьте RateLimit в парсер
+                #     logger.warning(
+                #         f"🚦 [{idx}] RateLimit на Armtek → ГЛОБАЛЬНАЯ ПАУЗА 10 мин"
+                #     )
 
-                    async with self.pause_lock:
-                        if not self.rate_limit_pause:  # только первый раз
-                            self.rate_limit_pause = True
-                            await self._trigger_global_pause()
+                #     async with self.pause_lock:
+                #         if not self.rate_limit_pause:  # только первый раз
+                #             self.rate_limit_pause = True
+                #             await self._trigger_global_pause()
 
-                    # Ждём разблокировки
-                    await self.pause_event.wait()
-                    self.rate_limit_pause = False
+                #     # Ждём разблокировки
+                #     await self.pause_event.wait()
+                #     self.rate_limit_pause = False
 
-                    # Retry после паузы
-                    physical, volumetric = await parse_weight_armtek(page, part, logger)
+                #     # Retry после паузы
+                #     physical, volumetric = await parse_weight_armtek(page, part, logger)
 
                 if physical == "NeedCaptcha":
                     if await self._solve_captcha(page, "armtek"):
@@ -526,7 +529,7 @@ class ParserCrawler:
                 price, delivery = await parse_stparts_price(page, brand, part, logger)
 
                 if price == "NeedCaptcha":
-                    if await self._solve_captcha(page, "stparts"):
+                    if await self._solve_captcha(page, "stparts", numeric_only=True):
                         price, delivery = await parse_stparts_price(
                             page, brand, part, logger
                         )
@@ -548,7 +551,7 @@ class ParserCrawler:
 
         return None
 
-    async def _solve_captcha(self, page, site_key):
+    async def _solve_captcha(self, page, site_key, numeric_only):
         """Решение капчи"""
         logger.info(f"🔒 Капча {site_key}")
 
@@ -587,8 +590,31 @@ class ParserCrawler:
         else:
             WORKERS = MAX_WORKERS
 
+        proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=PROXY_COUNT)
+        self.proxy_crawler = None
+        logger.info("🌐 Загрузка прокси для Armtek...")
+        if proxy_list:
+            self.proxy_crawler = PlaywrightCrawler(
+                request_handler=self.request_handler,
+                proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
+                use_session_pool=False,
+                max_request_retries=3,
+                concurrency_settings=ConcurrencySettings(
+                    max_concurrency=WORKERS,
+                    desired_concurrency=WORKERS,
+                    min_concurrency=2,
+                ),
+                browser_new_context_options={"ignore_https_errors": True},
+                headless=True,
+            )
+            # proxy_crawler = None  # ← ДОБАВИТЬ!
+            # logger.info(f"✅ Proxy отключены армтек на нормально мпрокси)")
+            logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
+        else:
+            logger.warning("⚠️ Прокси не получены → Armtek БЕЗ прокси")
+
         # Normal crawler (БЕЗ прокси)
-        normal_crawler = PlaywrightCrawler(
+        self.normal_crawler = PlaywrightCrawler(
             request_handler=self.request_handler,
             max_request_retries=3,
             use_session_pool=True,  # ✅ Сохранение сессии для Avtoformula
@@ -601,32 +627,6 @@ class ParserCrawler:
         )
 
         # Proxy crawler (только для Armtek в режиме ВЕСОВ)
-        proxy_crawler = None
-        if ENABLE_WEIGHT_PARSING:
-            logger.info("🌐 Загрузка прокси для Armtek...")
-            proxy_list = await asyncio.to_thread(
-                get_2captcha_proxy_pool, count=PROXY_COUNT
-            )
-
-            if proxy_list:
-                # proxy_crawler = PlaywrightCrawler(
-                #     request_handler=self.request_handler,
-                #     proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
-                #     use_session_pool=False,
-                #     max_request_retries=3,
-                #     concurrency_settings=ConcurrencySettings(
-                #         max_concurrency=WORKERS,
-                #         desired_concurrency=WORKERS,
-                #         min_concurrency=2,
-                #     ),
-                #     browser_new_context_options={"ignore_https_errors": True},
-                #     headless=True,
-                # )
-                proxy_crawler = None  # ← ДОБАВИТЬ!
-                logger.info(f"✅ Proxy отключены армтек на нормально мпрокси)")
-                # logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
-            else:
-                logger.warning("⚠️ Прокси не получены → Armtek БЕЗ прокси")
 
         # 🔥 БАТЧ-ОБРАБОТКА
         BATCH_SIZE = SAVE_INTERVAL
@@ -648,17 +648,11 @@ class ParserCrawler:
 
             # 🔥 ВЫБОР МЕТОДА ПО РЕЖИМУ
             if ENABLE_WEIGHT_PARSING:
-                await self._process_weight_batch(
-                    normal_crawler, proxy_crawler, batch_start, batch_end, batch_num
-                )
+                await self._process_weight_batch(batch_start, batch_end, batch_num)
             elif ENABLE_NAME_PARSING:
-                await self._process_name_batch(
-                    normal_crawler, batch_start, batch_end, batch_num
-                )
+                await self._process_name_batch(batch_start, batch_end, batch_num)
             elif ENABLE_PRICE_PARSING:
-                await self._process_price_batch(
-                    normal_crawler, batch_start, batch_end, batch_num
-                )
+                await self._process_price_batch(batch_start, batch_end, batch_num)
 
             # 💾 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ
             output_file = get_output_file(self.mode)
@@ -718,9 +712,7 @@ class ParserCrawler:
 
         logger.info(f"💾 batch_finalize.xlsx готов ({len(df_final)} строк)")
 
-    async def _process_weight_batch(
-        self, normal_crawler, proxy_crawler, batch_start, batch_end, batch_num
-    ):
+    async def _process_weight_batch(self, batch_start, batch_end, batch_num):
         """Обработка батча для ВЕСОВ: Japarts (обычный) → Armtek (прокси)"""
 
         # 1️⃣ JAPARTS (без прокси)
@@ -749,7 +741,7 @@ class ParserCrawler:
 
         if japarts_requests:
             logger.info(f"  🚀 Japarts (normal): {len(japarts_requests)} задач")
-            await normal_crawler.run(japarts_requests)
+            await self.normal_crawler.run(japarts_requests)
 
         # 2️⃣ ARMTEK FALLBACK (С ПРОКСИ, только если физический вес НЕ найден)
         from config import JPARTS_P_W
@@ -779,10 +771,8 @@ class ParserCrawler:
                     )
 
         if armtek_fallback:
-            # 🔥 Используем ПРОКСИ crawler если есть, иначе обычный
-            crawler_to_use = proxy_crawler if proxy_crawler else normal_crawler
-            proxy_status = "proxy" if proxy_crawler else "без proxy"
-
+            crawler_to_use = self.proxy_crawler or self.normal_crawler
+            proxy_status = "proxy" if self.proxy_crawler else "без proxy"
             logger.info(
                 f"  🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
             )
@@ -790,7 +780,7 @@ class ParserCrawler:
         else:
             logger.info(f"  ✅ Все физ. веса найдены на Japarts")
 
-    async def _process_name_batch(self, crawler, batch_start, batch_end, batch_num):
+    async def _process_name_batch(self, batch_start, batch_end, batch_num):
         """Обработка батча для ИМЁН: Stparts → Avtoformula fallback"""
 
         # 1️⃣ STPARTS (приоритет)
@@ -818,8 +808,12 @@ class ParserCrawler:
             )
 
         if stparts_requests:
-            logger.info(f"  🚀 Stparts: {len(stparts_requests)} задач")
-            await crawler.run(stparts_requests)
+            crawler_to_use = (
+                self.proxy_crawler if self.proxy_crawler else self.normal_crawler
+            )
+            status = "proxy" if self.proxy_crawler else "normal"
+            logger.info(f"  🚀 Stparts ({status}): {len(stparts_requests)} задач")
+            await crawler_to_use.run(stparts_requests)  # 🔥 ПРОКСИ!
 
         # 2️⃣ AVTOFORMULA FALLBACK
         avtoformula_fallback = []
@@ -852,14 +846,15 @@ class ParserCrawler:
             logger.info(
                 f"  🚀 Avtoformula fallback: {len(avtoformula_fallback)} пустых"
             )
-            await crawler.run(avtoformula_fallback)
+            await self.normal_crawler.run(avtoformula_fallback)
         else:
             logger.info(f"  ✅ Все имена найдены на Stparts")
 
-    async def _process_price_batch(self, crawler, batch_start, batch_end, batch_num):
+    async def _process_price_batch(self, batch_start, batch_end, batch_num):
         """Обработка батча для ЦЕН: Stparts + Avtoformula ПАРАЛЛЕЛЬНО"""
 
-        all_requests = []
+        stparts_requests = []
+        avto_requests = []
 
         for idx in range(batch_start, batch_end):
             row = self.df.iloc[idx]
@@ -871,7 +866,7 @@ class ParserCrawler:
             brand = str(row[INPUT_COL_BRAND]).strip()
 
             # Stparts
-            all_requests.append(
+            stparts_requests.append(
                 Request.from_url(
                     url=SiteUrls.stparts_search(article),
                     user_data={
@@ -885,7 +880,7 @@ class ParserCrawler:
             )
 
             # # Avtoformula
-            all_requests.append(
+            avto_requests.append(
                 Request.from_url(
                     url=SiteUrls.avtoformula_search(brand, article),
                     user_data={
@@ -899,11 +894,15 @@ class ParserCrawler:
                 )
             )
 
-        if all_requests:
-            logger.info(
-                f"  🚀 Stparts + Avtoformula (параллельно): {len(all_requests)} задач"
-            )
-            await crawler.run(all_requests)
+        if stparts_requests:
+            crawler_to_use = self.proxy_crawler or self.normal_crawler
+            status = "proxy" if self.proxy_crawler else "normal"
+            logger.info(f"  🚀 Stparts ({status}): {len(stparts_requests)} задач")
+            await crawler_to_use.run(stparts_requests)
+
+        if avto_requests:
+            logger.info(f"  🚀 Avtoformula: {len(avto_requests)} задач")
+            await self.normal_crawler.run(avto_requests)
 
     async def _trigger_global_pause(self):
         """Глобальная пауза ВСЕГО краулера на 10 минут"""
