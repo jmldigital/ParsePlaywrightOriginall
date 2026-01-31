@@ -5,11 +5,11 @@ Armtek парсер - ТОЛЬКО парсинг DOM
 
 import re
 import asyncio
+import time
 from typing import Tuple, Optional
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from utils import save_debug_info
-
 from config import SELECTORS
 
 
@@ -25,66 +25,36 @@ async def close_city_dialog(page: Page):
         pass
 
 
-async def wait_skeletons_gone(page: Page, logger, timeout: int = 20000) -> bool:
-    """Глобальные скелетоны = НЕ картинки/характеристики"""
-    try:
-
-        # 🔥 1. Ждём ЛОГОТИП (страница живая!)
-        logo = page.locator('img[alt="armtek logo"][src*="logo-armtek"]').first
-        await logo.wait_for(state="attached", timeout=10000)
-        logger.debug("✅ Логотип ARMTEK OK")
-
-        # 🔥 2. Проверяем ПРЕЛОАДЕР (sproit-ui-loading)
-        preloader = page.locator("sproit-ui-loading").first
-        preloader_count = await preloader.count()
-
-        if preloader_count > 0:
-            logger.info("⏳ Ждём исчезновения прелоадера...")
-            try:
-                await preloader.wait_for(state="hidden", timeout=timeout)
-                logger.debug("✅ Прелоадер исчез")
-            except PlaywrightTimeout:
-                logger.warning("⚠️ Прелоадер не исчез, продолжаем")
-
-        # 🔥 ТОЧНЫЙ селектор ГЛОБАЛЬНЫХ!
-        skeletons = page.locator(
-            ".product-card__skeleton_desktop sproit-ui-skeleton, .product-card__skeleton_mobile sproit-ui-skeleton"
-        )
-
-        initial_count = await skeletons.count()
-        if initial_count == 0:
-            logger.debug("✅ Нет глобальных скелетонов")
-            return True
-
-        logger.info(f"⏳ Ждём {initial_count} глобальных скелетонов...")
-
-        # Ждём ключевые (первые заголовки)
-        await skeletons.filter(has_text=re.compile(r"height:\s*32px")).first.wait_for(
-            state="hidden", timeout=timeout
-        )
-
-        final_count = await skeletons.count()
-        success = final_count < initial_count * 0.7  # 70% исчезли = OK
-
-        logger.debug(
-            f"✅ Глобальных осталось: {final_count}/{initial_count} → {success}"
-        )
-        return success
-
-    except Exception as e:
-        logger.warning(f"⚠️ Skip глобальных скелетонов: {e}")
-        return True  # ✅ ВАЖНО: ПРОДОЛЖАЕМ ПАРСИНГ!
-
-
-async def determine_state(page: Page) -> tuple[str, str]:
+async def determine_state(page: Page, timeout: int = 5000) -> tuple[str, str]:
     """
     Определяет состояние страницы после загрузки
-    Crawlee уже сделал goto(), мы только проверяем результат
 
     Returns:
         tuple[str, str]: (state_name, matched_selector)
+
+    States:
+        ✅ READY (можно парсить):
+            - cards: список товаров
+            - card_direct: карточка товара (характеристики видны)
+            - product_info: инфо о товаре
+            - no_results: ничего не найдено
+
+        🚫 BLOCKING (нужно действие):
+            - captcha: капча
+            - rate_limit: блокировка по лимиту
+            - cloudflare: CloudFlare challenge
+
+        ⏳ LOADING (нужно ждать):
+            - loading: прелоадер/скелетоны видны
+
+        ❌ ERROR:
+            - timeout: ничего не нашлось
+            - error: ошибка
     """
+
+    # 🔥 ВСЕ состояния в одном race (включая loading)
     selectors = {
+        # Ready states (высокий приоритет - проверяем с :has(*) для непустых)
         "cards": SELECTORS["armtek"]["product_card-list"],
         "no_results": SELECTORS["armtek"]["no_results"],
         "captcha": SELECTORS["armtek"]["captcha"],
@@ -92,30 +62,35 @@ async def determine_state(page: Page) -> tuple[str, str]:
         "cloudflare": SELECTORS["armtek"]["rate_limit"],
         "card_direct": SELECTORS["armtek"]["specifications"],
         "product_info": SELECTORS["armtek"]["product-card-info"],
+        # 🆕 Loading states (ищем ВИДИМЫЕ прелоадеры/скелетоны)
+        "loading": SELECTORS["armtek"]["loading"],
     }
 
     tasks = {}
 
     for state_name, selector_string in selectors.items():
-        # Разбиваем строку селекторов по запятой
         individual_selectors = [
             s.strip() for s in selector_string.split(",") if s.strip()
         ]
 
         for sel in individual_selectors:
+            # Для loading - просто ищем видимый элемент
+            # Для остальных - ищем непустой (:has(*))
+            if state_name == "loading":
+                full_sel = sel  # уже содержит :visible
+            else:
+                full_sel = f"{sel}:has(*) >> nth=0"
+
             task = asyncio.create_task(
-                page.wait_for_selector(
-                    f"{sel}:has(*) >> nth=0", state="visible", timeout=20000
-                )
+                page.wait_for_selector(full_sel, state="visible", timeout=timeout)
             )
-            # Сохраняем tuple (state_name, конкретный_селектор)
             tasks[task] = (state_name, sel)
 
     done, pending = await asyncio.wait(
         tasks.keys(), return_when=asyncio.FIRST_COMPLETED
     )
 
-    # Отменяем остальные задачи
+    # Отменяем остальные
     for task in pending:
         task.cancel()
 
@@ -127,9 +102,162 @@ async def determine_state(page: Page) -> tuple[str, str]:
 
     except PlaywrightTimeout:
         return "timeout", ""
-    except Exception as e:
-
+    except Exception:
         return "error", ""
+
+
+# async def wait_for_ready_state(
+#     page: Page, logger, timeout: int = 30000, poll_interval: int = 500
+# ) -> tuple[str, str]:
+#     """
+#     🔥 Ждёт пока страница перейдёт в готовое состояние
+#     Крутится в цикле пока state == "loading"
+
+#     Args:
+#         page: Playwright page
+#         logger: логгер
+#         timeout: общий таймаут (мс)
+#         poll_interval: интервал между проверками (мс)
+
+#     Returns:
+#         tuple[str, str]: (state_name, matched_selector)
+#     """
+#     start_time = time.time()
+#     attempt = 0
+
+#     while True:
+#         attempt += 1
+#         elapsed_ms = (time.time() - start_time) * 1000
+
+#         # 🔥 Проверяем таймаут
+#         if elapsed_ms > timeout:
+#             logger.warning(
+#                 f"⏳ Таймаут ожидания готового состояния ({timeout}ms, {attempt} попыток)"
+#             )
+#             return "timeout", ""
+
+#         # 🔥 Определяем текущее состояние (короткий таймаут для быстрой проверки)
+#         remaining = int(timeout - elapsed_ms)
+#         check_timeout = min(3000, remaining)  # Не больше 3 сек на проверку
+
+#         state, selector = await determine_state(page, timeout=check_timeout)
+
+#         # ✅ Готовые состояния - выходим
+#         if state in (
+#             "cards",
+#             "card_direct",
+#             "product_info",
+#             "no_results",
+#             "captcha",
+#             "rate_limit",
+#             "cloudflare",
+#             "error",
+#         ):
+#             logger.debug(
+#                 f"✅ Готовое состояние: {state} (за {elapsed_ms:.0f}ms, {attempt} попыток)"
+#             )
+#             return state, selector
+
+#         # ⏳ Loading - ждём и повторяем
+#         if state == "loading":
+#             if attempt == 1:
+#                 logger.info(f"⏳ Обнаружен прелоадер/скелетоны, ждём...")
+#             elif attempt % 5 == 0:  # Логируем каждые 5 попыток
+#                 logger.debug(f"⏳ Всё ещё loading... ({elapsed_ms:.0f}ms)")
+
+#             await page.wait_for_timeout(poll_interval)
+#             continue
+
+#         # ❓ Timeout от determine_state - пробуем ещё раз
+#         if state == "timeout":
+#             logger.debug(f"⏳ Состояние не определено, повторяем... ({attempt})")
+#             await page.wait_for_timeout(poll_interval)
+#             continue
+
+#         # ❌ Неизвестное состояние
+#         logger.warning(f"⚠️ Неизвестное состояние: {state}")
+#         return state, selector
+
+
+async def wait_for_ready_state(
+    page: Page, logger, timeout: int = 30000, poll_interval: int = 500
+) -> tuple[str, str]:
+    """
+    Ждёт пока страница перейдёт в готовое состояние
+
+    1. Сначала проверяет что страница "живая" (логотип)
+    2. Потом ждёт готового состояния контента
+    """
+    start_time = time.time()
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🔥 ШАГ 1: Проверка "живости" страницы (логотип)
+    # ═══════════════════════════════════════════════════════════════
+
+    try:
+        logo = page.locator('img[alt="armtek logo"][src*="logo-armtek"]').first
+        await logo.wait_for(state="attached", timeout=10000)
+        logger.debug("✅ Логотип ARMTEK OK — страница живая")
+    except PlaywrightTimeout:
+        logger.warning("❌ Логотип не найден — страница не загрузилась")
+        return "dead_page", ""
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка проверки логотипа: {e}")
+        # Продолжаем — возможно страница всё равно работает
+
+    # ═══════════════════════════════════════════════════════════════
+    # 🔥 ШАГ 2: Ожидание готового состояния контента
+    # ═══════════════════════════════════════════════════════════════
+
+    attempt = 0
+
+    while True:
+        attempt += 1
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        if elapsed_ms > timeout:
+            logger.warning(f"⏳ Таймаут ожидания ({timeout}ms, {attempt} попыток)")
+            return "timeout", ""
+
+        remaining = int(timeout - elapsed_ms)
+        check_timeout = min(3000, remaining)
+
+        state, selector = await determine_state(page, timeout=check_timeout)
+
+        # ✅ Готовые состояния — выходим
+        if state in (
+            "cards",
+            "card_direct",
+            "product_info",
+            "no_results",
+            "captcha",
+            "rate_limit",
+            "cloudflare",
+            "error",
+        ):
+            logger.debug(
+                f"✅ Состояние: {state} ({elapsed_ms:.0f}ms, {attempt} попыток)"
+            )
+            return state, selector
+
+        # ⏳ Loading — ждём и повторяем
+        if state == "loading":
+            if attempt == 1:
+                logger.info("⏳ Прелоадер/скелетоны, ждём...")
+            elif attempt % 5 == 0:
+                logger.debug(f"⏳ Всё ещё loading... ({elapsed_ms:.0f}ms)")
+
+            await page.wait_for_timeout(poll_interval)
+            continue
+
+        # Timeout от determine_state — пробуем ещё
+        if state == "timeout":
+            logger.debug(f"⏳ Состояние не определено, повтор... ({attempt})")
+            await page.wait_for_timeout(poll_interval)
+            continue
+
+        logger.warning(f"⚠️ Неизвестное состояние: {state}")
+        return state, selector
 
 
 async def parse_weight_armtek(
@@ -142,206 +270,167 @@ async def parse_weight_armtek(
 
     await close_city_dialog(page)
 
-    # Определяем состояние
-    state, container_sel = await determine_state(page)
+    # 🔥 ГЛАВНОЕ ИЗМЕНЕНИЕ: ждём готового состояния вместо отдельной функции
+    state, container_sel = await wait_for_ready_state(page, logger, timeout=30000)
 
-    # ✅ КАРТОЧКА УЖЕ ГОТОВА? → ПРОПУСКАЕМ СКЕЛЕТОНЫ!
+    logger.debug(f"✅ Состояние для {part}: {state}, селектор: {container_sel}")
+
+    # ═══════════════════════════════════════════════════════════════
+    # ОБРАБОТКА СОСТОЯНИЙ
+    # ═══════════════════════════════════════════════════════════════
+
+    # 🆕 Страница "мёртвая" — нужен retry
+    if state == "dead_page":
+        logger.warning(f"💀 [{part}] Страница не загрузилась (нет логотипа)")
+        # await save_debug_info(page, part, "dead_page", logger, "armtek")
+        return "DeadPage", "DeadPage"  # Crawlee сделает retry
+
+    # 🎯 ПРЯМО НА КАРТОЧКЕ → парсим характеристики
     if state == "card_direct":
-        logger.info(f"🎯 [{part}] ПРЯМО НА КАРТОЧКЕ → парсим характеристики")
-        # Проверяем скелетоны ТОЛЬКО на карточке
+        logger.info(f"🎯 [{part}] ПРЯМО НА КАРТОЧКЕ → парсим")
         weight = await extract_weight(page, part, logger)
-
         return weight or (None, None)
 
-    logger.debug(f"✅ Состояние для {part} найдено {state}, сектор {container_sel}")
-
+    # 🚫 BLOCKING STATES
     if state == "no_results":
-        await save_debug_info(page, part, "no_state", logger, "armtek")
+        logger.info(f"❌ [{part}] Ничего не найдено")
+        await save_debug_info(page, part, "no_results", logger, "armtek")
         return None, None
-    elif state == "captcha":
+
+    if state == "captcha":
+        logger.warning(f"🔒 [{part}] Капча!")
         return "NeedCaptcha", "NeedCaptcha"
-    elif state == "rate_limit":
+
+    if state == "rate_limit":
+        logger.warning(f"🚫 [{part}] Rate limit!")
         return "NeedProxy", "NeedProxy"
-    elif state == "cloudflare":
+
+    if state == "cloudflare":
+        logger.warning(f"☁️ [{part}] CloudFlare!")
         return "CloudFlare", "CloudFlare"
-    elif state in ("timeout", "error"):
+
+    # ⏳ LOADING - не дождались готового состояния
+    if state == "loading":
+        logger.warning(f"⏳ [{part}] Прелоадер не исчез за таймаут")
+        await save_debug_info(page, part, "loading_timeout", logger, "armtek")
+        return "PreloaderState", "PreloaderState"  # 🆕 Новый статус!
+
+    # ❌ ERROR STATES
+    if state in ("timeout", "error"):
+        logger.warning(f"❌ [{part}] Таймаут/ошибка определения состояния")
         await save_debug_info(page, part, "state_timeout", logger, "armtek")
         return None, None
 
-    # 🔥 1️⃣ Ждём исчезновения скелетонов (ВСЕГДА!)
-    if not await wait_skeletons_gone(page, logger, timeout=30000):
-        logger.debug(f"⏳ Скелетоны не исчезли: {part}")
-        # await save_debug_info(
-        #     page, part, "skeleton_timeout_after_block", logger, "armtek"
-        # )
-        return
+    # ═══════════════════════════════════════════════════════════════
+    # ПЕРЕХОД К КАРТОЧКЕ ТОВАРА
+    # ═══════════════════════════════════════════════════════════════
 
-    # Переход к карточке товара
     try:
-        if state == "cards":
-            # await save_debug_info(page, part, "state_cards", logger, "armtek")
+        link = await find_product_link(page, state, container_sel, logger)
 
-            # 🔥 ТОЧНЫЕ селекторы по классам + fallback
-            link_selectors = [
-                f"{container_sel} a.title[href^='/product/']",
-                f"{container_sel} a.suggestion-itemtitle-name[href^='/product/']",  # Из файлов
-                f"{container_sel} a[href^='/product/']",  # fallback
-            ]
-
-            link = None
-            for sel in link_selectors:
-                all_links = page.locator(sel).all()  # 🔥 ВСЕ ссылки!
-                for temp_link in await all_links:  # 🔥 Проходим по всем
-                    href = await temp_link.get_attribute("href")
-                    if href:  # ✅ Первая НЕПУСТАЯ!
-                        link = temp_link
-                        logger.debug(f"✅ Ссылка найдена: {sel} | href={href}")
-                        break
-                if link:  # 🔥 Выходим если нашли
-                    break
-
-            if not link:
-                # Highlight ВСЕХ ссылок для отладки
-                await page.add_style_tag(
-                    content="""
-                    a[href^='/product/'] { 
-                        border: 3px solid red !important; 
-                        background: yellow !important; 
-                    }
-                    a.title[href^='/product/'] { 
-                        border: 5px solid green !important; 
-                        background: lime !important; 
-                    }
-                """
-                )
-                await save_debug_info(
-                    page, part, "no_valid_links_highlighted", logger, "armtek"
-                )
-                return None, None
-
-            text = await link.text_content()
-            logger.debug(
-                f"🔗 List FOUND: href='{await link.get_attribute('href')}' | text='{text[:50]}...'"
-            )
-
-        elif state == "product_info":
-            # await save_debug_info(page, part, "product_info", logger, "armtek")
-
-            # 🔥 Используем container_sel из determine_state!
-            link_selectors = [
-                f"{container_sel} a[href^='/product/']",
-                f"{container_sel} a.title[href^='/product/']",
-                f"{container_sel} a.suggestion-itemtitle-name[href^='/product/']",  # Из файлов
-            ]
-
-            link = None
-            for sel in link_selectors:
-                temp_link = page.locator(sel).first
-                count = await temp_link.count()
-                if count > 0:
-                    href = await temp_link.get_attribute("href")
-                    if href:
-                        link = temp_link
-                        text = await link.text_content()
-                        logger.debug(
-                            f"🔗 product_info FOUND: {sel} | href='{href}' | text='{text[:50]}...'"
-                        )
-                        break
-
-            if not link:
-                await save_debug_info(page, part, "no_product_info", logger, "armtek")
-                logger.debug("🔗 product_info: 0 ссылок")
-
-        else:
-            await save_debug_info(page, part, "no_state", logger, "armtek")
-            return None, None
-
-        # Финальная проверка (дублирует, но оставляем для безопасности)
-        if await link.count() == 0:
-            await save_debug_info(page, part, "no_link_final", logger, "armtek")
+        if not link:
+            await save_debug_info(page, part, "no_link", logger, "armtek")
             return None, None
 
         href = await link.get_attribute("href", timeout=3000)
         if not href:
-            await save_debug_info(page, part, "no_herf_final", logger, "armtek")
+            await save_debug_info(page, part, "no_href", logger, "armtek")
             return None, None
 
         full_url = href if href.startswith("http") else "https://armtek.ru" + href
-
-        logger.debug(f"✅  {page} {state} формируем ссылку для перехода {full_url} ")
+        logger.debug(f"🔗 Переходим: {full_url}")
 
         # Переход на карточку
         await page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
 
-        # 🔥 1️⃣ Ждём исчезновения скелетонов (ВСЕГДА!)
-        # if not await wait_skeletons_gone(page, logger, timeout=30000):
-        #     logger.debug(f"⏳ Скелетоны не исчезли: {part}")
-        #     await save_debug_info(page, part, "skeleton_timeout_after_All", logger, "armtek")
-        #     return None, None
+        # 🔥 Снова ждём готового состояния на карточке
+        card_state, _ = await wait_for_ready_state(page, logger, timeout=30000)
 
-        # Ждём появления ссылки "Все характеристики" href="#tech-info"
-        # tech_link_selector = 'a[href="#tech-info"]'
-        # await page.locator(tech_link_selector).first.wait_for(
-        #     state="visible", timeout=30000
-        # )
+        if card_state == "loading":
+            logger.warning(f"⏳ [{part}] Карточка не загрузилась (прелоадер)")
+            await save_debug_info(page, part, "card_loading_timeout", logger, "armtek")
+            return "PreloaderState", "PreloaderState"
 
-        # 🔥 1️⃣ БЫСТРО проверяем tech-info (3 сек) - проверка н скелетоны внутри страницы после перехода
-        tech_link_selector = 'a[href="#tech-info"]'
-        try:
-            await page.locator(tech_link_selector).first.wait_for(
-                state="visible", timeout=3000
-            )
-            logger.debug(f"✅ [{part}] Tech-info мгновенно готова")
+        if card_state in ("timeout", "error"):
+            logger.warning(f"❌ [{part}] Карточка не загрузилась")
+            await save_debug_info(page, part, "card_timeout", logger, "armtek")
+            return None, None
 
-        except PlaywrightTimeout:
-            logger.debug(f"⏳ [{part}] Tech-info не готова → ждём скелетоны")
-
-            # 🔥 2️⃣ Fallback: ждём скелетоны (20 сек)
-            if not await wait_skeletons_gone(page, logger, timeout=20000):
-                logger.warning(f"⚠️ [{part}] Скелетоны не исчезли")
-                await save_debug_info(
-                    page, part, "skeleton_timeout_card", logger, "armtek"
-                )
-                return None, None
-
-        # Проверяем, что ссылка кликабельна и имеет текст
-        tech_link = page.locator(tech_link_selector).first
-        link_text = await tech_link.text_content()
-        logger.debug(f"🔗 Tech link найдена: '{link_text}'")
-
-        # КЛИК по ссылке для загрузки характеристик
-        await tech_link.click()
-        await page.wait_for_timeout(1500)  # Даём время на рендер вкладки
+        # Ждём и кликаем по "Все характеристики"
+        await click_tech_info(page, part, logger)
 
     except Exception as e:
-        logger.error(f"Ошибка навигации к карточке: {e}")
-        await save_debug_info(page, part, "card_error", logger, "armtek")
+        logger.error(f"❌ [{part}] Ошибка навигации: {e}")
+        await save_debug_info(page, part, "navigation_error", logger, "armtek")
         return None, None
 
-    # Парсинг веса (3 попытки)
+    # ═══════════════════════════════════════════════════════════════
+    # ПАРСИНГ ВЕСА
+    # ═══════════════════════════════════════════════════════════════
+
     weight = await extract_weight(page, part, logger)
     if weight:
-        logger.debug(f"🎯 Вес: {weight} ({part})")
-        # return "NeedProxy", None
-        # await save_debug_info(page, part, "no_weigh_extract", logger, "armtek")
+        logger.debug(f"🎯 [{part}] Вес: {weight}")
         return weight, None
 
-    # Попытка 3: последний шанс
+    # Последняя попытка
     await page.wait_for_timeout(2000)
     weight = await extract_weight(page, part, logger)
 
     if weight:
-        logger.info(f"🎯 Вес (delayed): {weight} ({part})")
-        await save_debug_info(page, part, "no_weigh_delayed", logger, "armtek")
+        logger.debug(f"🎯 [{part}] Вес (delayed): {weight}")
         return weight, None
 
-    logger.warning(f"❌ Вес не найден: {part}")
-    await save_debug_info(page, part, "not_found", logger, "armtek")
+    logger.warning(f"❌ [{part}] Вес не найден")
+    await save_debug_info(page, part, "no_weight", logger, "armtek")
     return None, None
 
 
+async def find_product_link(page: Page, state: str, container_sel: str, logger):
+    """Находит ссылку на товар в зависимости от состояния"""
+
+    link_selectors = [
+        f"{container_sel} a.title[href^='/product/']",
+        f"{container_sel} a.suggestion-itemtitle-name[href^='/product/']",
+        f"{container_sel} a[href^='/product/']",
+    ]
+
+    for sel in link_selectors:
+        try:
+            all_links = await page.locator(sel).all()
+            for temp_link in all_links:
+                href = await temp_link.get_attribute("href")
+                if href:
+                    text = await temp_link.text_content()
+                    logger.debug(
+                        f"🔗 Найдена ссылка: {sel} | href={href} | text={text[:50] if text else ''}..."
+                    )
+                    return temp_link
+        except Exception as e:
+            logger.debug(f"⚠️ Селектор {sel}: {e}")
+            continue
+
+    return None
+
+
+async def click_tech_info(page: Page, part: str, logger):
+    """Кликает по вкладке 'Все характеристики'"""
+    tech_link_selector = 'a[href="#tech-info"]'
+
+    try:
+        await page.locator(tech_link_selector).first.wait_for(
+            state="visible", timeout=10000
+        )
+        tech_link = page.locator(tech_link_selector).first
+        await tech_link.click()
+        await page.wait_for_timeout(1500)
+        logger.debug(f"✅ [{part}] Клик по tech-info")
+    except PlaywrightTimeout:
+        logger.debug(f"⚠️ [{part}] Tech-info не найден, продолжаем")
+
+
 async def extract_weight(page: Page, part: str, logger) -> Optional[str]:
-    """Извлечение веса из DOM + скриншот если fail"""
+    """Извлечение веса из DOM"""
     selectors = [SELECTORS["armtek"]["product-card-weight"]]
 
     for sel in selectors:
@@ -362,12 +451,5 @@ async def extract_weight(page: Page, part: str, logger) -> Optional[str]:
         except Exception as e:
             logger.debug(f"❌ Селектор {sel}: {e}")
             continue
-
-    # 🔥 СКРИНШОТ если вес НЕТ НАЙДЕН
-    try:
-        await save_debug_info(page, part, "no_weight_found-2", logger, "armtek")
-        logger.warning(f"📸 Скриншот сохранён: no_weight_{part}")
-    except Exception as e:
-        logger.error(f"❌ Скриншот failed: {e}")
 
     return None

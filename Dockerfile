@@ -18,7 +18,7 @@ RUN uv sync --frozen --no-install-isolated
 COPY . .
 
 # Браузеры Playwright (образ имеет, но гарантия)
-RUN playwright install chromium
+RUN playwright install chromium --with-deps || true
 
 # Директории
 RUN mkdir -p output cache cookies logs screenshots input temp \

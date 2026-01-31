@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
+import aiohttp
+
 
 import asyncio
 import sys
@@ -36,6 +38,19 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 
 load_dotenv()
 
+
+async def block_media_requests(context: PlaywrightCrawlingContext) -> None:
+    """Блокирует изображения, шрифты и медиафайлы"""
+    await context.page.route(
+        "**/*",
+        lambda route: (
+            route.abort()
+            if route.request.resource_type in ("image", "media", "font")
+            else route.continue_()
+        ),
+    )
+
+
 from config import (
     INPUT_FILE,
     MAX_ROWS,
@@ -53,9 +68,12 @@ from config import (
     reload_config,
     TEMP_RAW,
     LOG_LEVEL,
-    SAVE_INTERVAL,
+    BATCH_SIZE,
     PROXY_COUNT,
     MAX_WORKERS_PROXY,
+    ARMTEK_PROXY,
+    STPARTS_PROXY,
+    NOTIFY_PROGRESS,
 )
 from utils import (
     logger,
@@ -97,7 +115,7 @@ class SiteUrls:
         return "https://www.avtoformula.ru"
 
 
-# # ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
+# # # ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
 # class SimpleAuth:
 #     """Упрощенная авторизация через Crawlee session"""
 
@@ -139,7 +157,7 @@ class SiteUrls:
 #             return False
 
 
-# # ===================== АВТОРИЗАЦИЯ С SESSION TRACKING =====================
+# # # ===================== АВТОРИЗАЦИЯ С SESSION TRACKING =====================
 class SimpleAuth:
     """Авторизация с отслеживанием сессий"""
 
@@ -206,6 +224,9 @@ class ParserCrawler:
         self.results_lock = asyncio.Lock()
         self.processed_count = 0
         self.total_tasks = 0
+
+        self.telegram_chat_id = os.getenv("ADMIN_CHAT_ID")
+        self.telegram_bot_token = os.getenv("BOT_TOKEN")
 
         self.normal_crawler: PlaywrightCrawler | None = None
         self.proxy_crawler: PlaywrightCrawler | None = None
@@ -348,17 +369,12 @@ class ParserCrawler:
             async with self.results_lock:
                 self.processed_count += 1
 
-                # Лог каждые N задач
-                if self.processed_count % (TEMP_RAW // 2) == 0:
+                # Лог + Telegram каждые NOTIFY_PROGRESS задач
+                if self.processed_count % NOTIFY_PROGRESS == 0:
                     logger.info(
                         f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
                     )
-
-            # # Прогресс
-            # async with self.results_lock:
-            #     self.processed_count += 1
-            #     if self.processed_count % (TEMP_RAW // 2) == 0:
-            #         logger.info(f"📊 {self.processed_count}/{self.total_tasks}")
+                    await self._send_telegram_notification(self.processed_count)
 
         except Exception as e:
             logger.error(f"❌ [{idx}] {site}: {e}")
@@ -374,111 +390,86 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            if site == "japarts":
-                physical, volumetric = await parse_weight_japarts(page, part, logger)
+            # if site == "japarts":
+            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-                if physical == "NeedCaptcha":
-                    if await self._solve_captcha(page, "japarts"):
-                        physical, volumetric = await parse_weight_japarts(
-                            page, part, logger
-                        )
+            #     if physical == "NeedCaptcha":
+            #         if await self._solve_captcha(page, "japarts", numeric_only=False):
+            #             physical, volumetric = await parse_weight_japarts(
+            #                 page, part, logger
+            #             )
 
-                from config import JPARTS_P_W, JPARTS_V_W
+            #     from config import JPARTS_P_W, JPARTS_V_W
 
-                # 🆕 Логирование результата
-                if physical or volumetric:
-                    self.stats["japarts"]["success"] += 1
-                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-                else:
-                    self.stats["japarts"]["empty"] += 1
-                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+            #     # 🆕 Логирование результата
+            #     if physical or volumetric:
+            #         self.stats["japarts"]["success"] += 1
+            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+            #     else:
+            #         self.stats["japarts"]["empty"] += 1
+            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-                # 🆕 ДОБАВИТЬ лог ДО return:
-                # logger.info(
-                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-                # )
+            #     # 🆕 ДОБАВИТЬ лог ДО return:
+            #     # logger.info(
+            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+            #     # )
 
-                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
+                max_retries = 2  # Локальные ретраи для transient ошибок
 
-                physical, volumetric = await parse_weight_armtek(page, part, logger)
+                for retry in range(max_retries + 1):
+                    physical, volumetric = await parse_weight_armtek(page, part, logger)
 
-                # 🔥 RateLimit обработка
-                # if physical == "NeedProxy":
-                #     logger.warning(f"🚦 [{idx}] RateLimit на Armtek → прокси retry")
-                #     return await self._retry_with_proxy(
-                #         idx, brand, part, site, task_type
-                #     )
+                    # 🔥 PROXY РЕЖИМ: все блокировки → новый proxy
+                    if ARMTEK_PROXY:
+                        if physical in [
+                            "CloudFlare",
+                            "NeedProxy",
+                            "PreloaderState",
+                            "DeadPage",
+                            "NeedCaptcha",
+                        ]:
+                            logger.warning(
+                                f"🔄 [ARMTEK] Proxy retry: {physical} | {part}"
+                            )
+                            raise Exception(f"proxy block: {physical}")
 
-                # 🔥 RateLimit - ГЛОБАЛЬНАЯ ПАУЗА 10 МИНУТ
-                # if physical in [
-                #     "CloudFlare",
-                #     "NeedProxy",
-                # ]:  # добавьте RateLimit в парсер
-                #     logger.warning(
-                #         f"🚦 [{idx}] RateLimit на Armtek → ГЛОБАЛЬНАЯ ПАУЗА 10 мин"
-                #     )
+                    # 🔥 NORMAL РЕЖИМ:
+                    else:
+                        if physical == "NeedCaptcha":
+                            if await self._solve_captcha(
+                                page, "armtek", numeric_only=False
+                            ):
+                                continue  # Перепарсим после капчи
 
-                #     async with self.pause_lock:
-                #         if not self.rate_limit_pause:  # только первый раз
-                #             self.rate_limit_pause = True
-                #             await self._trigger_global_pause()
+                        elif physical in ["PreloaderState", "DeadPage"]:
+                            logger.warning(
+                                f"🔄 [ARMTEK] Transient retry {retry+1}/{max_retries}: {physical}"
+                            )
+                            if retry < max_retries:
+                                await asyncio.sleep(2**retry)  # 2s, 4s backoff
+                                continue
+                            # Если ретраи исчерпаны → как CloudFlare (пауза)
 
-                #     # Ждём разблокировки
-                #     await self.pause_event.wait()
-                #     self.rate_limit_pause = False
+                        elif physical in ["CloudFlare", "NeedProxy"]:
+                            # Global pause 10мин
+                            logger.warning(f"⏸️ [ARMTEK] Rate limit: {physical}")
+                            async with self.pause_lock:
+                                if not self.rate_limit_pause:
+                                    self.rate_limit_pause = True
+                                    await self._trigger_global_pause()
+                            await self.pause_event.wait()
+                            self.rate_limit_pause = False
+                            continue  # Перепарсим после паузы
 
-                #     # Retry после паузы
-                #     physical, volumetric = await parse_weight_armtek(page, part, logger)
+                    # ✅ Если дошли сюда = данные готовы
+                    break
 
-                if physical == "NeedCaptcha":
-                    if await self._solve_captcha(page, "armtek"):
-                        physical, volumetric = await parse_weight_armtek(
-                            page, part, logger
-                        )
-
-                # if physical in ["NeedCaptcha", "CloudFlare", "NeedProxy"]:
-                #     # 🔥 Небольшая задержка перед retry (опционально)
-                #     retry_delay = 2  # секунды
-                #     logger.warning(
-                #         f"🔄 [{idx}] {physical} → задержка {retry_delay}с, затем retry"
-                #     )
-                #     await asyncio.sleep(retry_delay)
-                #     raise Exception(f"{physical}: retrying after {retry_delay}s")
-
-                # 🔥 1. CLOUDFLARE - сбросить прокси, retry без прокси
-                # if physical == "CloudFlare":
-                #     logger.warning(f"☁️ [{idx}] CloudFlare на Armtek → retry без прокси")
-
-                #     # Перезагрузка страницы (Crawlee уже без прокси)
-                #     try:
-                #         await page.reload(wait_until="domcontentloaded", timeout=30000)
-                #         await page.wait_for_timeout(3000)  # Ждём CloudFlare check
-
-                #         # Повторный парсинг
-                #         physical, volumetric = await parse_weight_armtek(
-                #             page, part, logger
-                #         )
-
-                #         # Если снова CloudFlare - пропускаем
-                #         if physical == "CloudFlare":
-                #             logger.error(f"☁️ [{idx}] CloudFlare персистентен → пропуск")
-                #             self.stats["armtek"]["empty"] += 1
-                #             from config import ARMTEK_P_W, ARMTEK_V_W
-
-                #             return {ARMTEK_P_W: None, ARMTEK_V_W: None}
-
-                #     except Exception as e:
-                #         logger.error(f"❌ [{idx}] Ошибка retry CloudFlare: {e}")
-                #         self.stats["armtek"]["empty"] += 1
-                #         from config import ARMTEK_P_W, ARMTEK_V_W
-
-                #         return {ARMTEK_P_W: None, ARMTEK_V_W: None}
-
+                # Логи + return
                 from config import ARMTEK_P_W, ARMTEK_V_W
 
-                # 🆕 Логирование результата
                 if physical or volumetric:
                     self.stats["armtek"]["success"] += 1
                     logger.info(f"[ARMTEK] ✅ {part} | P={physical} | V={volumetric}")
@@ -494,9 +485,18 @@ class ParserCrawler:
                 name = await parse_stparts_name(page, part, logger)
 
                 if name == "NeedCaptcha":
-                    if await self._solve_captcha(page, "stparts"):
-                        name = await parse_stparts_name(page, part, logger)
+                    if STPARTS_PROXY:
+                        # Proxy: быстрый retry на новом IP
+                        raise Exception("NeedCaptcha: proxy rotate")
+                    else:
+                        # Normal: решаем капчу
+                        if await self._solve_captcha(
+                            page, "stparts", numeric_only=True
+                        ):
+                            name = await parse_stparts_name(page, part, logger)
+                        # Если solve FAIL → name остается "NeedCaptcha" → ниже None
 
+                # ✅ ЕДИНЫЙ return в конце (все проверки)
                 return (
                     {"finde_name": name}
                     if name and name not in BAD_DETAIL_NAMES
@@ -507,7 +507,9 @@ class ParserCrawler:
                 name = await parse_avtoformula_name(page, part, logger)
 
                 if name == "NeedCaptcha":
-                    if await self._solve_captcha(page, "avtoformula"):
+                    if await self._solve_captcha(
+                        page, "avtoformula", numeric_only=False
+                    ):
                         name = await parse_avtoformula_name(page, part, logger)
 
                 return {
@@ -525,24 +527,33 @@ class ParserCrawler:
                 avtoformula_delivery,
             )
 
-            if site == "stparts":
-                price, delivery = await parse_stparts_price(page, brand, part, logger)
+            # if site == "stparts":
+            #     price, delivery = await parse_stparts_price(page, brand, part, logger)
 
-                if price == "NeedCaptcha":
-                    if await self._solve_captcha(page, "stparts", numeric_only=True):
-                        price, delivery = await parse_stparts_price(
-                            page, brand, part, logger
-                        )
+            #     if price == "NeedCaptcha":
+            #         if STPARTS_PROXY:
+            #             # Proxy: быстрый retry на новом IP
+            #             raise Exception("NeedCaptcha: proxy rotate")
+            #         else:
+            #             # Normal: решаем капчу (numeric)
+            #             if await self._solve_captcha(
+            #                 page, "stparts", numeric_only=True
+            #             ):
+            #                 price, delivery = await parse_stparts_price(
+            #                     page, brand, part, logger
+            #                 )
 
-                return {stparts_price: price, stparts_delivery: delivery}
+            #     return {stparts_price: price, stparts_delivery: delivery}
 
-            elif site == "avtoformula":
+            if site == "avtoformula":
                 price, delivery = await parse_avtoformula_price(
                     page, brand, part, logger
                 )
 
                 if price == "NeedCaptcha":
-                    if await self._solve_captcha(page, "avtoformula"):
+                    if await self._solve_captcha(
+                        page, "avtoformula", numeric_only=False
+                    ):
                         price, delivery = await parse_avtoformula_price(
                             page, brand, part, logger
                         )
@@ -578,6 +589,23 @@ class ParserCrawler:
                 await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
                 logger.info(f"💾 Промежуточное сохранение {self.processed_count} строк")
 
+    async def _send_telegram_notification(self, processed_count: int):
+        """Отправка уведомления в Telegram"""
+        if not self.telegram_chat_id or not self.telegram_bot_token:
+            return
+
+        try:
+            message = f"📊 Парсер: обработано {processed_count}/{self.total_tasks} строк ({self.mode})"
+            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    url, json={"chat_id": self.telegram_chat_id, "text": message}
+                )
+            logger.info(f"📱 Telegram: {message}")
+        except Exception as e:
+            logger.error(f"❌ Telegram error: {e}")
+
     async def run(self):
         """Главный метод запуска"""
         await self.setup()
@@ -607,6 +635,8 @@ class ParserCrawler:
                 browser_new_context_options={"ignore_https_errors": True},
                 headless=True,
             )
+            # 2. Добавляем хук ПОСЛЕ создания
+            self.proxy_crawler._pre_navigation_hooks.append(block_media_requests)
             # proxy_crawler = None  # ← ДОБАВИТЬ!
             # logger.info(f"✅ Proxy отключены армтек на нормально мпрокси)")
             logger.info(f"✅ Proxy crawler создан ({len(proxy_list)} прокси)")
@@ -626,10 +656,13 @@ class ParserCrawler:
             headless=True,
         )
 
+        # 2. Добавляем хук ПОСЛЕ создания
+        self.normal_crawler._pre_navigation_hooks.append(block_media_requests)
+
         # Proxy crawler (только для Armtek в режиме ВЕСОВ)
 
         # 🔥 БАТЧ-ОБРАБОТКА
-        BATCH_SIZE = SAVE_INTERVAL
+        BATCH_SIZE
         total_rows = min(len(self.df), MAX_ROWS)
         stop_flag = Path("input/STOP.flag")
 
@@ -771,12 +804,16 @@ class ParserCrawler:
                     )
 
         if armtek_fallback:
-            crawler_to_use = self.proxy_crawler or self.normal_crawler
-            proxy_status = "proxy" if self.proxy_crawler else "без proxy"
-            logger.info(
-                f"  🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
-            )
-            await crawler_to_use.run(armtek_fallback)
+            if ARMTEK_PROXY and self.proxy_crawler:
+                logger.info(f"🚀 Armtek (proxy): {len(armtek_fallback)} fallback")
+                await self.proxy_crawler.run(armtek_fallback)
+            else:
+                # Normal режим (или proxy недоступен)
+                proxy_status = "proxy недоступен" if ARMTEK_PROXY else "normal"
+                logger.info(
+                    f"🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
+                )
+                await self.normal_crawler.run(armtek_fallback)
         else:
             logger.info(f"  ✅ Все физ. веса найдены на Japarts")
 
@@ -808,12 +845,15 @@ class ParserCrawler:
             )
 
         if stparts_requests:
-            crawler_to_use = (
-                self.proxy_crawler if self.proxy_crawler else self.normal_crawler
-            )
-            status = "proxy" if self.proxy_crawler else "normal"
-            logger.info(f"  🚀 Stparts ({status}): {len(stparts_requests)} задач")
-            await crawler_to_use.run(stparts_requests)  # 🔥 ПРОКСИ!
+            if STPARTS_PROXY and self.proxy_crawler:
+                # Proxy режим
+                logger.info(f"🚀 Stparts (proxy): {len(stparts_requests)} задач")
+                await self.proxy_crawler.run(stparts_requests)
+            else:
+                # Normal режим (или proxy недоступен)
+                status = "proxy недоступен" if STPARTS_PROXY else "normal"
+                logger.info(f"🚀 Stparts ({status}): {len(stparts_requests)} задач")
+                await self.normal_crawler.run(stparts_requests)
 
         # 2️⃣ AVTOFORMULA FALLBACK
         avtoformula_fallback = []
@@ -895,10 +935,15 @@ class ParserCrawler:
             )
 
         if stparts_requests:
-            crawler_to_use = self.proxy_crawler or self.normal_crawler
-            status = "proxy" if self.proxy_crawler else "normal"
-            logger.info(f"  🚀 Stparts ({status}): {len(stparts_requests)} задач")
-            await crawler_to_use.run(stparts_requests)
+            if STPARTS_PROXY and self.proxy_crawler:
+                # Proxy режим
+                logger.info(f"🚀 Stparts (proxy): {len(stparts_requests)} задач")
+                await self.proxy_crawler.run(stparts_requests)
+            else:
+                # Normal режим (или proxy недоступен)
+                status = "proxy недоступен" if STPARTS_PROXY else "normal"
+                logger.info(f"🚀 Stparts ({status}): {len(stparts_requests)} задач")
+                await self.normal_crawler.run(stparts_requests)
 
         if avto_requests:
             logger.info(f"  🚀 Avtoformula: {len(avto_requests)} задач")
