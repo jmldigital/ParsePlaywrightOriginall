@@ -39,16 +39,75 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 load_dotenv()
 
 
-async def block_media_requests(context: PlaywrightCrawlingContext) -> None:
-    """Блокирует изображения, шрифты и медиафайлы"""
-    await context.page.route(
-        "**/*",
-        lambda route: (
-            route.abort()
-            if route.request.resource_type in ("image", "media", "font")
-            else route.continue_()
-        ),
-    )
+# async def block_media_requests(context: PlaywrightCrawlingContext) -> None:
+#     """Блокирует изображения, шрифты и медиафайлы"""
+#     await context.page.route(
+#         "**/*",
+#         lambda route: (
+#             route.abort()
+#             if route.request.resource_type in ("image", "media", "font")
+#             else route.continue_()
+#         ),
+#     )
+
+
+async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
+    """
+    Блокирует тяжелые медиа-файлы (картинки, шрифты, видео),
+    но ПРОПУСКАЕТ всё, что связано с капчами из ваших селекторов.
+
+    Аргументы:
+    - context: контекст PlaywrightCrawler
+    - *args: для совместимости с будущими версиями Crawlee
+    """
+    page = context.page
+
+    # 🔥 Белый список ключевых слов в URL.
+    # Если URL содержит любое из этих слов, ресурс БУДЕТ загружен.
+    whitelist_keywords = [
+        # === Общие и внешние капчи ===
+        "captcha",  # Для stparts и общих случаев
+        "recaptcha",  # Google ReCaptcha
+        "grecaptcha",  # Google ReCaptcha API
+        "hcaptcha",  # hCaptcha
+        "turnstile",  # Cloudflare
+        "challenge",  # Cloudflare / Protection
+        "verify",  # Часто используется в URL проверок
+        # === Avtoformula (из селектора img[src*="/_phplib/check/img.php"]) ===
+        "img.php",
+        "_phplib",
+        # === Armtek (из селектора img[src*='blob']) ===
+        "blob",
+        # === Дополнительно (иконки иногда нужны для UI капчи) ===
+        "svg",
+        "icon",
+    ]
+
+    async def route_handler(route):
+        req = route.request
+        url = req.url.lower()
+        resource_type = req.resource_type
+
+        # 1. Если это тяжелый ресурс (картинка, медиа, шрифт)
+        if resource_type in ("image", "media", "font"):
+
+            # Проверяем, есть ли в URL "разрешенные" слова
+            is_whitelisted = any(keyword in url for keyword in whitelist_keywords)
+
+            if is_whitelisted:
+                # ✅ Это капча или важный элемент -> ГРУЗИМ
+                await route.continue_()
+            else:
+                # ❌ Это реклама, фото товара или баннер -> БЛОКИРУЕМ
+                await route.abort()
+
+        # 2. Скрипты, HTML, JSON (XHR/Fetch), CSS -> ВСЕГДА ГРУЗИМ
+        # (CSS нужен, чтобы капча не "поехала" версткой, скрипты нужны для логики)
+        else:
+            await route.continue_()
+
+    # Применяем фильтр ко всем запросам
+    await page.route("**/*", route_handler)
 
 
 from config import (
@@ -390,31 +449,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            # if site == "japarts":
-            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-            #     if physical == "NeedCaptcha":
-            #         if await self._solve_captcha(page, "japarts", numeric_only=False):
-            #             physical, volumetric = await parse_weight_japarts(
-            #                 page, part, logger
-            #             )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts", numeric_only=False):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
+                        )
 
-            #     from config import JPARTS_P_W, JPARTS_V_W
+                from config import JPARTS_P_W, JPARTS_V_W
 
-            #     # 🆕 Логирование результата
-            #     if physical or volumetric:
-            #         self.stats["japarts"]["success"] += 1
-            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-            #     else:
-            #         self.stats["japarts"]["empty"] += 1
-            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-            #     # 🆕 ДОБАВИТЬ лог ДО return:
-            #     # logger.info(
-            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-            #     # )
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
                 max_retries = 2  # Локальные ретраи для transient ошибок
@@ -527,23 +586,23 @@ class ParserCrawler:
                 avtoformula_delivery,
             )
 
-            # if site == "stparts":
-            #     price, delivery = await parse_stparts_price(page, brand, part, logger)
+            if site == "stparts":
+                price, delivery = await parse_stparts_price(page, brand, part, logger)
 
-            #     if price == "NeedCaptcha":
-            #         if STPARTS_PROXY:
-            #             # Proxy: быстрый retry на новом IP
-            #             raise Exception("NeedCaptcha: proxy rotate")
-            #         else:
-            #             # Normal: решаем капчу (numeric)
-            #             if await self._solve_captcha(
-            #                 page, "stparts", numeric_only=True
-            #             ):
-            #                 price, delivery = await parse_stparts_price(
-            #                     page, brand, part, logger
-            #                 )
+                if price == "NeedCaptcha":
+                    if STPARTS_PROXY:
+                        # Proxy: быстрый retry на новом IP
+                        raise Exception("NeedCaptcha: proxy rotate")
+                    else:
+                        # Normal: решаем капчу (numeric)
+                        if await self._solve_captcha(
+                            page, "stparts", numeric_only=True
+                        ):
+                            price, delivery = await parse_stparts_price(
+                                page, brand, part, logger
+                            )
 
-            #     return {stparts_price: price, stparts_delivery: delivery}
+                return {stparts_price: price, stparts_delivery: delivery}
 
             if site == "avtoformula":
                 price, delivery = await parse_avtoformula_price(
@@ -619,6 +678,7 @@ class ParserCrawler:
             WORKERS = MAX_WORKERS
 
         proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=PROXY_COUNT)
+
         self.proxy_crawler = None
         logger.info("🌐 Загрузка прокси для Armtek...")
         if proxy_list:
@@ -632,7 +692,18 @@ class ParserCrawler:
                     desired_concurrency=WORKERS,
                     min_concurrency=2,
                 ),
-                browser_new_context_options={"ignore_https_errors": True},
+                browser_new_context_options={
+                    "ignore_https_errors": True,
+                    "args": [
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-accelerated-2d-canvas",
+                        "--no-first-run",
+                        "--no-zygote",
+                        "--disable-gpu",
+                    ],
+                },
                 headless=True,
             )
             # 2. Добавляем хук ПОСЛЕ создания
@@ -653,6 +724,18 @@ class ParserCrawler:
                 desired_concurrency=WORKERS,
                 min_concurrency=2,
             ),
+            browser_new_context_options={
+                "ignore_https_errors": True,
+                "args": [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--disable-gpu",
+                ],
+            },
             headless=True,
         )
 

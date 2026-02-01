@@ -3,34 +3,33 @@ version: '3.8'
 services:
   price-parser:
     build: .
-    container_name: price-parser-bot
+    container_name: price-parser-bot-crowly
     
-    # ✅ КРИТИЧНО ДЛЯ CRAWLEE/PLAYWRIGHT
-    ipc: host              # shared memory Chromium
-    shm_size: 4gb          # tabs + concurrency (было 2gb)
+    # ⚡ Важно для Playwright: общая память
+    ipc: host
+    shm_size: '4gb'
     
     volumes:
-      - .:/app                   # dev: hot reload (прод: удали)
+      - .:/app
+      # Исключаем venv, чтобы локальная папка не ломала контейнер
+      - /app/.venv
+      
       - ./output:/app/output
       - ./input:/app/input
       - ./temp:/app/temp
       - ./logs:/app/logs
-      - ./screenshots:/app/screenshots
       
-      # ✅ Crawlee кэш (cookies/state, не теряется)
+      # Кэш Crawlee
       - ./cache:/app/cache
       - ./cookies:/app/cookies
 
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
-      - PLAYWRIGHT_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      
-      # ✅ Crawlee/Playwright
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
       - HEADLESS=true
+      # В образе mcr...v1.34.0 браузеры лежат здесь
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
-    # ✅ Ресурсы для concurrency
     deploy:
       resources:
         limits:
@@ -42,6 +41,6 @@ services:
       driver: json-file
       options:
         max-size: "10m"
-        max-file: "5"  # было 3
+        max-file: "5"
 
     restart: unless-stopped

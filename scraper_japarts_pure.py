@@ -51,7 +51,7 @@ async def parse_weight_japarts(
         physical = p_match.group(1).replace(",", ".") if p_match else None
         volumetric = v_match.group(1).replace(",", ".") if v_match else None
 
-        logger.info(f"🎯 Вес: {physical}/{volumetric} ({part})")
+        # logger.info(f"🎯 Вес: {physical}/{volumetric} ({part})")
         return physical, volumetric
 
     except Exception as e:

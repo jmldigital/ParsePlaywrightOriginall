@@ -1160,83 +1160,152 @@ import time
 from typing import Dict
 
 
-def get_2captcha_proxy() -> Dict[str, str]:
-    """
-    Запрашивает у 2Captcha whitelist прокси
-    Возвращает конфиг в формате Playwright/Crawlee
+# def get_2captcha_proxy() -> Dict[str, str]:
+#     """
+#     Запрашивает у 2Captcha whitelist прокси
+#     Возвращает конфиг в формате Playwright/Crawlee
 
-    Returns:
-        {"server": "http://username:password@IP:PORT"}
-    """
-    from config import (
-        API_KEY_2CAPTCHA,
-        PROXY_COUNTRY,
-        PROXY_PROTOCOL,
-        PROXY_CONNECTIONS,
-        PROXY_IP,
-        PROXY_USERNAME,
-        PROXY_PASSWORD,
-    )
+#     Returns:
+#         {"server": "http://username:password@IP:PORT"}
+#     """
+#     from config import (
+#         API_KEY_2CAPTCHA,
+#         PROXY_COUNTRY,
+#         PROXY_PROTOCOL,
+#         PROXY_CONNECTIONS,
+#         PROXY_IP,
+#         PROXY_USERNAME,
+#         PROXY_PASSWORD,
+#     )
 
-    # Запрос к 2Captcha API
-    base_url = "https://api.rucaptcha.com/proxy/generate_white_list_connections"
-    params = {
-        "key": API_KEY_2CAPTCHA,
-        "country": PROXY_COUNTRY,
-        "protocol": PROXY_PROTOCOL,
-        "connection_count": str(PROXY_CONNECTIONS),
-    }
-    if PROXY_IP:
-        params["ip"] = PROXY_IP
+#     # Запрос к 2Captcha API
+#     base_url = "https://api.rucaptcha.com/proxy/generate_white_list_connections"
+#     params = {
+#         "key": API_KEY_2CAPTCHA,
+#         "country": PROXY_COUNTRY,
+#         "protocol": PROXY_PROTOCOL,
+#         "connection_count": str(PROXY_CONNECTIONS),
+#     }
+#     if PROXY_IP:
+#         params["ip"] = PROXY_IP
 
-    resp = requests.get(base_url, params=params, timeout=30)
-    resp.raise_for_status()
+#     resp = requests.get(base_url, params=params, timeout=30)
+#     resp.raise_for_status()
 
-    payload = resp.json()
-    if payload.get("status") != "OK":
-        raise RuntimeError(f"2Captcha proxy error: {payload}")
+#     payload = resp.json()
+#     if payload.get("status") != "OK":
+#         raise RuntimeError(f"2Captcha proxy error: {payload}")
 
-    ip_list = payload.get("data", [])
-    if not ip_list:
-        raise RuntimeError("2Captcha вернул пустой список прокси")
+#     ip_list = payload.get("data", [])
+#     if not ip_list:
+#         raise RuntimeError("2Captcha вернул пустой список прокси")
 
-    # Выбираем случайный IP:PORT
-    chosen_ip_port = random.choice(ip_list)
-    print(f"🎲 Выбран прокси: {chosen_ip_port}")
+#     # Выбираем случайный IP:PORT
+#     chosen_ip_port = random.choice(ip_list)
+#     print(f"🎲 Выбран прокси: {chosen_ip_port}")
 
-    # ⏳ Ждём активации (КРИТИЧНО!)
-    time.sleep(15)
+#     # ⏳ Ждём активации (КРИТИЧНО!)
+#     time.sleep(15)
 
-    # 🔥 Формат для Playwright/Crawlee
-    proxy_string = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{chosen_ip_port}"
+#     # 🔥 Формат для Playwright/Crawlee
+#     proxy_string = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{chosen_ip_port}"
 
-    return {
-        "server": proxy_string,  # http://username:password@IP:PORT
-    }
+#     return {
+#         "server": proxy_string,  # http://username:password@IP:PORT
+#     }
+
+
+# def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
+#     """
+#     Получение пула прокси от 2Captcha API
+#     Возвращает список в формате ["http://ip:port", ...]
+#     """
+
+#     # Автоматическое определение IP
+#     try:
+#         my_ip_response = requests.get("https://api.ipify.org?format=json", timeout=5)
+#         MY_IP = my_ip_response.json()["ip"]
+#         logger.info(f"🌍 Ваш IP: {MY_IP}")
+#     except:
+#         MY_IP = "152.53.136.84"  # Fallback
+#         logger.warning(f"⚠️ Не удалось определить IP, использую fallback: {MY_IP}")
+
+#     url = (
+#         f"https://api.rucaptcha.com/proxy/generate_white_list_connections"
+#         f"?key={API_KEY_2CAPTCHA}"
+#         f"&country=ru"
+#         f"&protocol=http"
+#         f"&connection_count={count}"
+#         f"&ip={MY_IP}"
+#     )
+
+#     try:
+#         logger.info(f"🌐 Запрос {count} прокси от 2Captcha...")
+#         response = requests.get(url, timeout=15)
+#         data = response.json()
+
+#         if data.get("status") == "OK":
+#             proxies = data.get("data", [])
+#             # Добавляем протокол http://
+#             proxy_urls = [f"http://{proxy}" for proxy in proxies]
+#             logger.info(f"✅ Получено {len(proxy_urls)} прокси")
+#             for i, p in enumerate(proxy_urls, 1):
+#                 logger.info(f"   Прокси #{i}: {p}")
+#             return proxy_urls
+#         else:
+#             logger.error(f"❌ Ошибка 2Captcha API: {data}")
+#             return []
+
+#     except Exception as e:
+#         logger.error(f"❌ Не удалось получить прокси: {e}")
+#         return []
 
 
 def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
     """
-    Получение пула прокси от 2Captcha API
-    Возвращает список в формате ["http://ip:port", ...]
+    1. Пробует 2Captcha → ТОЧНО count прокси
+    2. Фильтрует битые ("error", "Internal server error")
+    3. Если ошибка/пусто → 20 РАБОЧИХ резервных
     """
 
-    # Автоматическое определение IP
+    # 🔥 РЕЗЕРВНЫЙ СПИСОК (20 шт)
+    FALLBACK_PROXIES = [
+        "http://118.193.59.17:11132",
+        "http://118.193.59.92:11027",
+        "http://107.150.117.248:11157",
+        "http://118.193.59.87:11452",
+        "http://118.193.59.17:11129",
+        "http://107.150.117.248:11160",
+        "http://118.193.59.165:11366",
+        "http://118.193.59.87:11450",
+        "http://118.193.59.87:11451",
+        "http://107.150.117.248:11159",
+        "http://118.193.59.92:11026",
+        "http://118.193.59.165:11364",
+        "http://107.150.117.248:11158",
+        "http://118.193.59.17:11131",
+        "http://118.193.59.17:11130",
+        "http://118.193.59.92:11025",
+        "http://118.193.59.92:11028",
+        "http://118.193.59.87:11453",
+        "http://118.193.59.165:11367",
+        "http://118.193.59.165:11365",
+    ]
+
+    # Автоматическое определение IP (без изменений)
     try:
         my_ip_response = requests.get("https://api.ipify.org?format=json", timeout=5)
         MY_IP = my_ip_response.json()["ip"]
         logger.info(f"🌍 Ваш IP: {MY_IP}")
     except:
-        MY_IP = "152.53.136.84"  # Fallback
-        logger.warning(f"⚠️ Не удалось определить IP, использую fallback: {MY_IP}")
+        MY_IP = "152.53.136.84"
+        logger.warning(f"⚠️ Fallback IP: {MY_IP}")
 
+    # Запрос к 2Captcha (без изменений)
     url = (
         f"https://api.rucaptcha.com/proxy/generate_white_list_connections"
-        f"?key={API_KEY_2CAPTCHA}"
-        f"&country=ru"
-        f"&protocol=http"
-        f"&connection_count={count}"
-        f"&ip={MY_IP}"
+        f"?key={API_KEY_2CAPTCHA}&country=ru&protocol=http"
+        f"&connection_count={count}&ip={MY_IP}"
     )
 
     try:
@@ -1246,16 +1315,31 @@ def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
 
         if data.get("status") == "OK":
             proxies = data.get("data", [])
-            # Добавляем протокол http://
             proxy_urls = [f"http://{proxy}" for proxy in proxies]
-            logger.info(f"✅ Получено {len(proxy_urls)} прокси")
-            for i, p in enumerate(proxy_urls, 1):
+
+            # 🔥 ФИЛЬТР БИТЫХ ПРОКСИ
+            valid_proxies = [
+                p
+                for p in proxy_urls
+                if p
+                and len(p) > 15
+                and ":" in p
+                and "500" not in p
+                and "error" not in p.lower()
+            ]
+
+            logger.info(f"✅ Получено {len(proxy_urls)} → валидно {len(valid_proxies)}")
+            for i, p in enumerate(valid_proxies, 1):
                 logger.info(f"   Прокси #{i}: {p}")
-            return proxy_urls
-        else:
-            logger.error(f"❌ Ошибка 2Captcha API: {data}")
-            return []
+
+            if valid_proxies:
+                return valid_proxies[:count]  # ТОЧНО count или меньше
+
+        logger.error(f"❌ 2Captcha API: {data}")
 
     except Exception as e:
-        logger.error(f"❌ Не удалось получить прокси: {e}")
-        return []
+        logger.error(f"❌ 2Captcha ошибка: {e}")
+
+    # 🔥 РЕЗЕРВ - ТОЛЬКО при полном провале
+    logger.info("🔄 Используем резервные прокси (20 шт)")
+    return FALLBACK_PROXIES

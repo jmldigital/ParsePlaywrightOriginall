@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
-# LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
+LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-LOG_LEVEL = "INFO"
+# LOG_LEVEL = "INFO"
 
 TEMP_RAW = 100
 MAX_WORKERS = 15
@@ -21,9 +21,9 @@ BATCH_SIZE = 100
 PROXY_COUNT = 20
 
 ARMTEK_PROXY = False
-STPARTS_PROXY = True
+STPARTS_PROXY = False
 
-NOTIFY_PROGRESS = 100
+NOTIFY_PROGRESS = 1000
 
 # === API и авторизация ===
 
@@ -142,14 +142,33 @@ SELECTORS = {
         "captcha_submit": "sproit-ui-modal project-ui-captcha sproit-ui-button[color='primary']",  # Модалка + кнопка
         "specifications": 'a[href="#tech-info"]',
         "rate_limit": "sproit-ui-modal p:has-text('Превышен лимит запросов')",
-        "cloudflare": "#cf-chl-widget, .lds-ring",
+        "cloudflare": """
+.lds-ring,
+#challenge-error-text,
+#challenge-success-text,
+.h2.spacer-bottom:has-text('Verify'),
+.core-msg:has-text('review'),
+div:has-text('Just a moment'),
+div:has-text('Ray ID'),
+cf-turnstile-response,
+[class*='cf-chl'],
+body:has(.lds-ring)
+""",
         "product_list": ".search-result__list a, .results-list__items, .card-view",
         "no_results": "div.not-found.ng-star-inserted div.not-found__image",
         "product_cards": ".project-ui-article-card a, .app-article-card-tile a",
         "product_card-list": ".project-ui-article-card, .app-article-card-tile, .list-view, .card-view, .results-list__items",
         "product-card-info": ".project-ui-smart-scroll, .product-card-info, [data-id], .product-card-info__wrapper, #tech-info",
         "product-card-weight": ".product-card-info div:has-text('Вес'), .product-card-info tr:has-text('Вес'), .product-params__item:has-text('Вес'), div.params-row:has-text('Вес'), li:has-text('Вес'), .product-key-values__item__values span",
-        "loading": ".sproit-ui-loading:visible, .product-card__skeleton_desktop .sproit-ui-skeleton:visible, .product-card__skeleton_mobile .sproit-ui-skeleton:visible",
+        # "loading": ".lds-ring, .sproit-ui-loading:visible, .product-card__skeleton_desktop .sproit-ui-skeleton:visible, .product-card__skeleton_mobile sproit-ui-skeleton:visible, sproit-ui-loading, [sproit-ui-loading], [class*='loading'], [class*='skeleton']",
+        "loading": """
+sproit-ui-loading:visible,
+[class*="sproit-ui-loading"]:visible,
+[class*="skeleton"]:visible,
+[class*="loading"]:visible,
+.lds-ring:visible,
+[ngcontent-server][class*="loading"]
+""",
     },
 }
 BAD_DETAIL_NAMES = {

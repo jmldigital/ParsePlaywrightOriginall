@@ -76,8 +76,10 @@ async def determine_state(page: Page, timeout: int = 5000) -> tuple[str, str]:
         for sel in individual_selectors:
             # Для loading - просто ищем видимый элемент
             # Для остальных - ищем непустой (:has(*))
+            # В determine_state(), для loading:
             if state_name == "loading":
-                full_sel = sel  # уже содержит :visible
+                # Ищем ЛЮБОЙ видимый loading элемент (даже пустой)
+                full_sel = f"{sel}:visible"  # БЕЗ :has(*)!
             else:
                 full_sel = f"{sel}:has(*) >> nth=0"
 
@@ -104,79 +106,6 @@ async def determine_state(page: Page, timeout: int = 5000) -> tuple[str, str]:
         return "timeout", ""
     except Exception:
         return "error", ""
-
-
-# async def wait_for_ready_state(
-#     page: Page, logger, timeout: int = 30000, poll_interval: int = 500
-# ) -> tuple[str, str]:
-#     """
-#     🔥 Ждёт пока страница перейдёт в готовое состояние
-#     Крутится в цикле пока state == "loading"
-
-#     Args:
-#         page: Playwright page
-#         logger: логгер
-#         timeout: общий таймаут (мс)
-#         poll_interval: интервал между проверками (мс)
-
-#     Returns:
-#         tuple[str, str]: (state_name, matched_selector)
-#     """
-#     start_time = time.time()
-#     attempt = 0
-
-#     while True:
-#         attempt += 1
-#         elapsed_ms = (time.time() - start_time) * 1000
-
-#         # 🔥 Проверяем таймаут
-#         if elapsed_ms > timeout:
-#             logger.warning(
-#                 f"⏳ Таймаут ожидания готового состояния ({timeout}ms, {attempt} попыток)"
-#             )
-#             return "timeout", ""
-
-#         # 🔥 Определяем текущее состояние (короткий таймаут для быстрой проверки)
-#         remaining = int(timeout - elapsed_ms)
-#         check_timeout = min(3000, remaining)  # Не больше 3 сек на проверку
-
-#         state, selector = await determine_state(page, timeout=check_timeout)
-
-#         # ✅ Готовые состояния - выходим
-#         if state in (
-#             "cards",
-#             "card_direct",
-#             "product_info",
-#             "no_results",
-#             "captcha",
-#             "rate_limit",
-#             "cloudflare",
-#             "error",
-#         ):
-#             logger.debug(
-#                 f"✅ Готовое состояние: {state} (за {elapsed_ms:.0f}ms, {attempt} попыток)"
-#             )
-#             return state, selector
-
-#         # ⏳ Loading - ждём и повторяем
-#         if state == "loading":
-#             if attempt == 1:
-#                 logger.info(f"⏳ Обнаружен прелоадер/скелетоны, ждём...")
-#             elif attempt % 5 == 0:  # Логируем каждые 5 попыток
-#                 logger.debug(f"⏳ Всё ещё loading... ({elapsed_ms:.0f}ms)")
-
-#             await page.wait_for_timeout(poll_interval)
-#             continue
-
-#         # ❓ Timeout от determine_state - пробуем ещё раз
-#         if state == "timeout":
-#             logger.debug(f"⏳ Состояние не определено, повторяем... ({attempt})")
-#             await page.wait_for_timeout(poll_interval)
-#             continue
-
-#         # ❌ Неизвестное состояние
-#         logger.warning(f"⚠️ Неизвестное состояние: {state}")
-#         return state, selector
 
 
 async def wait_for_ready_state(
@@ -223,6 +152,9 @@ async def wait_for_ready_state(
         check_timeout = min(3000, remaining)
 
         state, selector = await determine_state(page, timeout=check_timeout)
+        # logger.info(
+        #     f"DEBUG state={state}, selector='{selector}', title='{await page.title()}'"
+        # )
 
         # ✅ Готовые состояния — выходим
         if state in (
