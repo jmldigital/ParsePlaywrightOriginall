@@ -1,6 +1,4 @@
-# Строго версия 1.34.0 (внутри Ubuntu 22.04 и Python 3.10)
 FROM mcr.microsoft.com/playwright/python:v1.34.0-jammy
-# FROM quay.io/playwright/python:v1.34.0-jammy
 
 # Установка uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv

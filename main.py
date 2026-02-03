@@ -310,6 +310,13 @@ class ParserCrawler:
         """Инициализация"""
         reload_config()
 
+        # 🔥 Импортируем ПОСЛЕ reload_config()
+        from config import (
+            ENABLE_WEIGHT_PARSING,
+            ENABLE_NAME_PARSING,
+            ENABLE_PRICE_PARSING,
+        )
+
         # Режим
         active = sum([ENABLE_WEIGHT_PARSING, ENABLE_NAME_PARSING, ENABLE_PRICE_PARSING])
         if active != 1:
@@ -664,6 +671,14 @@ class ParserCrawler:
             logger.info(f"📱 Telegram: {message}")
         except Exception as e:
             logger.error(f"❌ Telegram error: {e}")
+
+    async def _failed_handler(self, context):
+        """Логирует ошибки, если страница ВООБЩЕ не открылась"""
+        req = context.request
+        # Логируем красным цветом или ERROR
+        logger.error(
+            f"💀 FATAL FAIL [{req.user_data.get('site')}]: {req.url} | {context.error}"
+        )
 
     async def run(self):
         """Главный метод запуска"""
