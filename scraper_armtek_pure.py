@@ -20,52 +20,59 @@ TOKEN_LOCK = asyncio.Lock()
 async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
     """
     Гарантирует наличие валидного токена.
-    Если токена нет - идет на сайт и крадет его.
+    Использует Lock, чтобы не открывать браузер во всех потоках сразу.
     """
+    # 1. Быстрая проверка вне блокировки
     if SESSION_CACHE["token"]:
         return SESSION_CACHE["token"]
 
-    logger.info("🔄 [ARMTEK] Получение нового токена авторизации...")
+    async with TOKEN_LOCK:
+        # 2. Повторная проверка внутри блокировки (double-check locking)
+        # Возможно, пока мы ждали очереди, другой поток уже получил токен
+        if SESSION_CACHE["token"]:
+            return SESSION_CACHE["token"]
 
-    token_future = asyncio.Future()
+        logger.info("🔄 [ARMTEK] Поток получил доступ к обновлению токена...")
 
-    async def handle_request(request):
-        if not token_future.done():
-            headers = request.headers
-            if "authorization" in headers:
-                token = headers["authorization"]
-                if token.startswith("Bearer "):
-                    token_future.set_result(token)
+        token_future = asyncio.Future()
 
-    # Подписываемся
-    page.on("request", handle_request)
+        async def handle_request(request):
+            if not token_future.done():
+                headers = request.headers
+                if "authorization" in headers:
+                    token = headers["authorization"]
+                    if token.startswith("Bearer "):
+                        token_future.set_result(token)
+                        # Останавливаем загрузку страницы, она нам больше не нужна
+                        asyncio.create_task(page.evaluate("() => window.stop()"))
 
-    try:
-        # Идем на главную или поиск, чтобы спровоцировать запросы
-        await page.goto(
-            "https://armtek.ru/search?text=BUSHING",
-            wait_until="domcontentloaded",
-            timeout=20000,
-        )
+        page.on("request", handle_request)
 
-        # Ждем токен (макс 10 сек)
         try:
-            token = await asyncio.wait_for(token_future, timeout=10.0)
-            SESSION_CACHE["token"] = token
-            logger.info("🔑 [ARMTEK] Токен успешно получен!")
-            return token
-        except asyncio.TimeoutError:
-            logger.warning("❌ [ARMTEK] Не удалось перехватить токен (Timeout)")
+            # Используем wait_until="commit" вместо "domcontentloaded"
+            # Это еще быстрее - выходим как только сервер ответил первыми байтами
+            await page.goto(
+                "https://armtek.ru/search?text=BUSHING",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            try:
+                token = await asyncio.wait_for(token_future, timeout=10.0)
+                SESSION_CACHE["token"] = token
+                logger.info("🔑 [ARMTEK] Токен успешно получен и сохранен в кэш!")
+                return token
+            except asyncio.TimeoutError:
+                logger.warning("❌ [ARMTEK] Не удалось перехватить токен (Timeout)")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ [ARMTEK] Ошибка получения токена: {e}")
             return None
-
-    except Exception as e:
-        logger.error(f"❌ [ARMTEK] Ошибка получения токена: {e}")
-        return None
-    finally:
-        try:
-            page.remove_listener("request", handle_request)
-        except:
-            pass
+        finally:
+            try:
+                page.remove_listener("request", handle_request)
+            except:
+                pass
 
 
 async def execute_api_chain(

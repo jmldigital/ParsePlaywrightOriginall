@@ -125,7 +125,6 @@ from config import (
     SELECTORS,
     get_output_file,
     reload_config,
-    TEMP_RAW,
     LOG_LEVEL,
     BATCH_SIZE,
     PROXY_COUNT,
@@ -145,7 +144,11 @@ from captcha_manager import CaptchaManager
 
 # Импорт ТОЛЬКО парсеров (без навигации)
 from scraper_japarts_pure import parse_weight_japarts
-from scraper_armtek_pure import parse_weight_armtek
+
+# from scraper_armtek_pure import parse_weight_armtek
+from armtek_pure_aiohtpp import parse_weight_armtek
+
+
 from scraper_stparts_pure import parse_stparts_name, parse_stparts_price
 from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
 from price_adjuster import adjust_prices_and_save
@@ -242,6 +245,7 @@ class ParserCrawler:
         self.processed_count = 0
         self.total_tasks = 0
 
+        self.completed_indices = set()
         self.telegram_chat_id = os.getenv("ADMIN_CHAT_ID")
         self.telegram_bot_token = os.getenv("BOT_TOKEN")
 
@@ -368,18 +372,18 @@ class ParserCrawler:
                             raise Exception("Авторизация не удалась")
 
             # 🆕 ПРОВЕРКА IP (первые 3 запроса)
-            if not hasattr(self, "_ip_check_count"):
-                self._ip_check_count = 0
+            # if not hasattr(self, "_ip_check_count"):
+            #     self._ip_check_count = 0
 
-            if self._ip_check_count < 3:
-                try:
-                    actual_ip = await page.evaluate(
-                        "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
-                    )
-                    # logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
-                    self._ip_check_count += 1
-                except:
-                    pass
+            # if self._ip_check_count < 3:
+            #     try:
+            #         actual_ip = await page.evaluate(
+            #             "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
+            #         )
+            #         # logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
+            #         self._ip_check_count += 1
+            #     except:
+            #         pass
 
             # 🔥 ТОЛЬКО ПАРСИНГ
             result = await self._route_to_parser(
@@ -394,7 +398,7 @@ class ParserCrawler:
                 self.processed_count += 1
 
                 # Лог + Telegram каждые NOTIFY_PROGRESS задач
-                if self.processed_count % NOTIFY_PROGRESS == 0:
+                if self.processed_count % (NOTIFY_PROGRESS * 2) == 0:
                     logger.info(
                         f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
                     )
@@ -414,31 +418,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            # if site == "japarts":
-            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-            #     if physical == "NeedCaptcha":
-            #         if await self._solve_captcha(page, "japarts", numeric_only=False):
-            #             physical, volumetric = await parse_weight_japarts(
-            #                 page, part, logger
-            #             )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts", numeric_only=False):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
+                        )
 
-            #     from config import JPARTS_P_W, JPARTS_V_W
+                from config import JPARTS_P_W, JPARTS_V_W
 
-            #     # 🆕 Логирование результата
-            #     if physical or volumetric:
-            #         self.stats["japarts"]["success"] += 1
-            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-            #     else:
-            #         self.stats["japarts"]["empty"] += 1
-            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-            #     # 🆕 ДОБАВИТЬ лог ДО return:
-            #     # logger.info(
-            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-            #     # )
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
                 max_retries = 2  # Локальные ретраи для transient ошибок
@@ -463,30 +467,12 @@ class ParserCrawler:
                     # 🔥 NORMAL РЕЖИМ:
                     else:
                         if physical == "NeedCaptcha":
-                            if await self._solve_captcha(
-                                page, "armtek", numeric_only=False
-                            ):
-                                continue  # Перепарсим после капчи
-
-                        elif physical in ["PreloaderState", "DeadPage"]:
-                            logger.warning(
-                                f"🔄 [ARMTEK] Transient retry {retry+1}/{max_retries}: {physical}"
-                            )
-                            if retry < max_retries:
-                                await asyncio.sleep(2**retry)  # 2s, 4s backoff
-                                continue
-                            # Если ретраи исчерпаны → как CloudFlare (пауза)
-
-                        elif physical in ["CloudFlare", "NeedProxy"]:
-                            # Global pause 10мин
-                            logger.warning(f"⏸️ [ARMTEK] Rate limit: {physical}")
-                            async with self.pause_lock:
-                                if not self.rate_limit_pause:
-                                    self.rate_limit_pause = True
-                                    await self._trigger_global_pause()
-                            await self.pause_event.wait()
-                            self.rate_limit_pause = False
-                            continue  # Перепарсим после паузы
+                            # if await self._solve_captcha(
+                            #     page, "armtek", numeric_only=False
+                            # ):
+                            #     continue  # Перепарсим после капчи
+                            await asyncio.sleep(180)
+                            continue  # Пробуем еще раз после паузы
 
                     # ✅ Если дошли сюда = данные готовы
                     break
@@ -606,12 +592,6 @@ class ParserCrawler:
             for col, val in result.items():
                 if pd.notna(val):
                     self.df.at[idx, col] = val
-
-            # 🔥 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ каждые 100 строк
-            if (self.processed_count + 1) % TEMP_RAW == 0:
-                temp_file = f"output/temp_progress.xlsx"
-                await asyncio.to_thread(self.df.to_excel, temp_file, index=False)
-                logger.info(f"💾 Промежуточное сохранение {self.processed_count} строк")
 
     async def _send_telegram_notification(self, processed_count: int):
         """Отправка уведомления в Telegram"""
@@ -810,21 +790,95 @@ class ParserCrawler:
 
         logger.info(f"💾 batch_finalize.xlsx готов ({len(df_final)} строк)")
 
-    async def _process_weight_batch(self, batch_start, batch_end, batch_num):
-        """Обработка батча для ВЕСОВ: Japarts (обычный) → Armtek (прокси)"""
+    # async def _process_weight_batch(self, batch_start, batch_end, batch_num):
+    #     """Обработка батча для ВЕСОВ: Japarts (обычный) → Armtek (прокси)"""
 
-        # 1️⃣ JAPARTS (без прокси)
-        japarts_requests = []
+    #     # 1️⃣ JAPARTS (без прокси)
+    #     japarts_requests = []
+    #     for idx in range(batch_start, batch_end):
+    #         row = self.df.iloc[idx]
+    #         article = str(row[INPUT_COL_ARTICLE]).strip()
+
+    #         if not article:
+    #             continue
+
+    #         brand = str(row[INPUT_COL_BRAND]).strip()
+
+    #         japarts_requests.append(
+    #             Request.from_url(
+    #                 url=SiteUrls.japarts_search(article),
+    #                 user_data={
+    #                     "idx": idx,
+    #                     "brand": brand,
+    #                     "part": article,
+    #                     "site": "japarts",
+    #                     "task_type": "weight",
+    #                 },
+    #             )
+    #         )
+
+    #     if japarts_requests:
+    #         logger.info(f"  🚀 Japarts (normal): {len(japarts_requests)} задач")
+    #         await self.normal_crawler.run(japarts_requests)
+
+    #     # 2️⃣ ARMTEK FALLBACK (С ПРОКСИ, только если физический вес НЕ найден)
+    #     from config import JPARTS_P_W
+
+    #     armtek_fallback = []
+    #     for idx in range(batch_start, batch_end):
+    #         row = self.df.iloc[idx]
+    #         val = row.get(JPARTS_P_W)
+    #         # logger.debug(
+    #         #     f"[DEBUG ARMTEK] idx={idx}, part={row[INPUT_COL_ARTICLE]}, JPARTS_P_W={val} (type={type(val)})"
+    #         # )
+    #         # Проверяем: есть ли физический вес с Japarts?
+    #         if pd.isna(row.get(JPARTS_P_W)):
+    #             article = str(row[INPUT_COL_ARTICLE]).strip()
+    #             brand = str(row[INPUT_COL_BRAND]).strip()
+
+    #             if article:
+    #                 armtek_fallback.append(
+    #                     Request.from_url(
+    #                         url=SiteUrls.armtek_search(article),
+    #                         user_data={
+    #                             "idx": idx,
+    #                             "brand": brand,
+    #                             "part": article,
+    #                             "site": "armtek",
+    #                             "task_type": "weight",
+    #                         },
+    #                         unique_key=f"armtek_{batch_num}_{idx}",
+    #                     )
+    #                 )
+
+    #     if armtek_fallback:
+    #         if ARMTEK_PROXY and self.proxy_crawler:
+    #             logger.info(f"🚀 Armtek (proxy): {len(armtek_fallback)} fallback")
+    #             await self.proxy_crawler.run(armtek_fallback)
+    #         else:
+    #             # Normal режим (или proxy недоступен)
+    #             proxy_status = "proxy недоступен" if ARMTEK_PROXY else "normal"
+    #             logger.info(
+    #                 f"🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
+    #             )
+    #             await self.normal_crawler.run(armtek_fallback)
+    #     else:
+    #         logger.info(f"  ✅ Все физ. веса найдены на Japarts")
+
+    async def _process_weight_batch(self, batch_start, batch_end, batch_num):
+        """Оптимизированная параллельная обработка"""
+        all_normal_requests = []
+        armtek_proxy_requests = []
+
         for idx in range(batch_start, batch_end):
             row = self.df.iloc[idx]
             article = str(row[INPUT_COL_ARTICLE]).strip()
-
+            brand = str(row[INPUT_COL_BRAND]).strip()
             if not article:
                 continue
 
-            brand = str(row[INPUT_COL_BRAND]).strip()
-
-            japarts_requests.append(
+            # Запрос для Japarts (всегда normal)
+            all_normal_requests.append(
                 Request.from_url(
                     url=SiteUrls.japarts_search(article),
                     user_data={
@@ -837,53 +891,40 @@ class ParserCrawler:
                 )
             )
 
-        if japarts_requests:
-            logger.info(f"  🚀 Japarts (normal): {len(japarts_requests)} задач")
-            await self.normal_crawler.run(japarts_requests)
+            # Запрос для Armtek
+            arm_req = Request.from_url(
+                url=SiteUrls.armtek_search(article),
+                user_data={
+                    "idx": idx,
+                    "brand": brand,
+                    "part": article,
+                    "site": "armtek",
+                    "task_type": "weight",
+                },
+                unique_key=f"armtek_{batch_num}_{idx}",
+            )
 
-        # 2️⃣ ARMTEK FALLBACK (С ПРОКСИ, только если физический вес НЕ найден)
-        from config import JPARTS_P_W
-
-        armtek_fallback = []
-        for idx in range(batch_start, batch_end):
-            row = self.df.iloc[idx]
-            val = row.get(JPARTS_P_W)
-            # logger.debug(
-            #     f"[DEBUG ARMTEK] idx={idx}, part={row[INPUT_COL_ARTICLE]}, JPARTS_P_W={val} (type={type(val)})"
-            # )
-            # Проверяем: есть ли физический вес с Japarts?
-            if pd.isna(row.get(JPARTS_P_W)):
-                article = str(row[INPUT_COL_ARTICLE]).strip()
-                brand = str(row[INPUT_COL_BRAND]).strip()
-
-                if article:
-                    armtek_fallback.append(
-                        Request.from_url(
-                            url=SiteUrls.armtek_search(article),
-                            user_data={
-                                "idx": idx,
-                                "brand": brand,
-                                "part": article,
-                                "site": "armtek",
-                                "task_type": "weight",
-                            },
-                            unique_key=f"armtek_{batch_num}_{idx}",
-                        )
-                    )
-
-        if armtek_fallback:
             if ARMTEK_PROXY and self.proxy_crawler:
-                logger.info(f"🚀 Armtek (proxy): {len(armtek_fallback)} fallback")
-                await self.proxy_crawler.run(armtek_fallback)
+                armtek_proxy_requests.append(arm_req)
             else:
-                # Normal режим (или proxy недоступен)
-                proxy_status = "proxy недоступен" if ARMTEK_PROXY else "normal"
-                logger.info(
-                    f"🚀 Armtek ({proxy_status}): {len(armtek_fallback)} fallback"
-                )
-                await self.normal_crawler.run(armtek_fallback)
-        else:
-            logger.info(f"  ✅ Все физ. веса найдены на Japarts")
+                all_normal_requests.append(arm_req)
+
+        # ЗАПУСК
+        tasks = []
+        if all_normal_requests:
+            logger.info(
+                f"🚀 Запуск Normal Crawler: {len(all_normal_requests)} задач (Japarts + Armtek)"
+            )
+            tasks.append(self.normal_crawler.run(all_normal_requests))
+
+        if armtek_proxy_requests:
+            logger.info(
+                f"🚀 Запуск Proxy Crawler: {len(armtek_proxy_requests)} задач (Armtek)"
+            )
+            tasks.append(self.proxy_crawler.run(armtek_proxy_requests))
+
+        if tasks:
+            await asyncio.gather(*tasks)
 
     async def _process_name_batch(self, batch_start, batch_end, batch_num):
         """Обработка батча для ИМЁН: Stparts → Avtoformula fallback"""
