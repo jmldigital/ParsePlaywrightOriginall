@@ -8,20 +8,20 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR)
-# LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
+LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть все логи
 
-LOG_LEVEL = "INFO"
+# LOG_LEVEL = "INFO"
 
 TEMP_RAW = 100
-MAX_WORKERS = 2
-MAX_WORKERS_PROXY = 15
+MAX_WORKERS = 10
+MAX_WORKERS_PROXY = 2
 MAX_ROWS = 23000
-BATCH_SIZE = 100
+BATCH_SIZE = 20
 
 PROXY_COUNT = 100
 
 ARMTEK_PROXY = False
-STPARTS_PROXY = False
+STPARTS_PROXY = True
 
 NOTIFY_PROGRESS = 1000
 

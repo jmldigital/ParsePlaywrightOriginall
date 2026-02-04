@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+RUN /app/.venv/bin/pip install ImageHash==4.3.2 browserforge==1.0.0
+
 # 1. Копируем конфиг
 COPY pyproject.toml uv.lock* ./
 
