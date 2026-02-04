@@ -5,6 +5,7 @@ Armtek парсер - TURBO HYBRID (Session Reuse)
 3. При 401: снова открывает браузер и обновляет Токен.
 """
 
+from utils import _save_full_page_screenshot
 import asyncio
 from typing import Tuple, Optional
 from playwright.async_api import Page, APIRequestContext
@@ -12,6 +13,8 @@ from playwright.async_api import Page, APIRequestContext
 # ⚡ ГЛОБАЛЬНЫЙ КЭШ СЕССИИ (Токен + Куки)
 # Храним: {"token": "Bearer ...", "cookies_ready": False}
 SESSION_CACHE = {"token": None, "last_success": 0}
+
+TOKEN_LOCK = asyncio.Lock()
 
 
 async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
@@ -66,7 +69,7 @@ async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
 
 
 async def execute_api_chain(
-    request_context: APIRequestContext, token: str, part: str, logger
+    request_context: APIRequestContext, token: str, part: str, logger, page: Page = None
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Выполняет цепочку API запросов: Search -> Alias -> Details -> Weight
@@ -104,7 +107,8 @@ async def execute_api_chain(
 
         # 🚨 ОБРАБОТКА БЛОКИРОВОК
         if search_response.status == 429:
-            logger.warning(f"🔒 [ARMTEK] Получена капча (429) для {part}")
+            # await page.wait_for_timeout(3000) # Даем время на отрисовку капчи
+            await _save_full_page_screenshot(page, "armtek", part, "429_block")
             return "NeedCaptcha", None
 
         if search_response.status == 401:
@@ -188,7 +192,7 @@ async def parse_weight_armtek(
 
     # 2. Пробуем выполнить API-цепочку
     # Используем page.request (он разделяет куки с page, это важно!)
-    weight, _ = await execute_api_chain(page.request, token, part, logger)
+    weight, _ = await execute_api_chain(page.request, token, part, logger, page=page)
 
     # 3. Реакция на специальные статусы
     if weight == "NeedCaptcha":
@@ -208,7 +212,9 @@ async def parse_weight_armtek(
             return None, None
 
         # Повторяем запрос
-        weight, _ = await execute_api_chain(page.request, token, part, logger)
+        weight, _ = await execute_api_chain(
+            page.request, token, part, logger, page=page
+        )
 
     if weight and weight != "401":
         # logger.info(f"✅ [{part}] Вес (Turbo API): {weight}")
