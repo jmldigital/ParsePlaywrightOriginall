@@ -174,48 +174,6 @@ class SiteUrls:
         return "https://www.avtoformula.ru"
 
 
-# # # ===================== УПРОЩЕННАЯ АВТОРИЗАЦИЯ =====================
-# class SimpleAuth:
-#     """Упрощенная авторизация через Crawlee session"""
-
-#     @staticmethod
-#     async def login_avtoformula(page) -> bool:
-#         """Минимальная логика логина - Crawlee сам сохранит сессию"""
-#         try:
-#             await page.goto("https://www.avtoformula.ru")
-
-#             # Проверка: уже залогинены?
-#             if await page.locator("span:has-text('Вы авторизованы как')").count() > 0:
-#                 logger.info("✅ Уже авторизованы")
-#                 return True
-
-#             # Логин
-#             await page.fill(f"#{SELECTORS['avtoformula']['login_field']}", AVTO_LOGIN)
-#             await page.fill(
-#                 f"#{SELECTORS['avtoformula']['password_field']}", AVTO_PASSWORD
-#             )
-#             await page.click(SELECTORS["avtoformula"]["login_button"])
-
-#             # Ждём завершения
-#             await page.wait_for_selector(
-#                 f"#{SELECTORS['avtoformula']['login_field']}",
-#                 state="hidden",
-#                 timeout=10000,
-#             )
-
-#             # Режим A0 (без аналогов)
-#             await page.select_option(
-#                 f"#{SELECTORS['avtoformula']['smode_select']}", "A0"
-#             )
-
-#             logger.info("✅ Авторизация успешна")
-#             return True
-
-#         except Exception as e:
-#             logger.error(f"❌ Ошибка авторизации: {e}")
-#             return False
-
-
 # # # ===================== АВТОРИЗАЦИЯ С SESSION TRACKING =====================
 class SimpleAuth:
     """Авторизация с отслеживанием сессий"""
@@ -456,31 +414,31 @@ class ParserCrawler:
 
         # ======== ВЕСА ========
         if task_type == "weight":
-            # if site == "japarts":
-            #     physical, volumetric = await parse_weight_japarts(page, part, logger)
+            if site == "japarts":
+                physical, volumetric = await parse_weight_japarts(page, part, logger)
 
-            #     if physical == "NeedCaptcha":
-            #         if await self._solve_captcha(page, "japarts", numeric_only=False):
-            #             physical, volumetric = await parse_weight_japarts(
-            #                 page, part, logger
-            #             )
+                if physical == "NeedCaptcha":
+                    if await self._solve_captcha(page, "japarts", numeric_only=False):
+                        physical, volumetric = await parse_weight_japarts(
+                            page, part, logger
+                        )
 
-            #     from config import JPARTS_P_W, JPARTS_V_W
+                from config import JPARTS_P_W, JPARTS_V_W
 
-            #     # 🆕 Логирование результата
-            #     if physical or volumetric:
-            #         self.stats["japarts"]["success"] += 1
-            #         logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
-            #     else:
-            #         self.stats["japarts"]["empty"] += 1
-            #         logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
+                # 🆕 Логирование результата
+                if physical or volumetric:
+                    self.stats["japarts"]["success"] += 1
+                    logger.info(f"[JAPARTS] ✅ {part} | P={physical} | V={volumetric}")
+                else:
+                    self.stats["japarts"]["empty"] += 1
+                    logger.info(f"[JAPARTS] ⚠️ {part} | Не найдено")
 
-            #     # 🆕 ДОБАВИТЬ лог ДО return:
-            #     # logger.info(
-            #     #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
-            #     # )
+                # 🆕 ДОБАВИТЬ лог ДО return:
+                # logger.info(
+                #     f"🔍 [{idx}] Japarts RESULT → {JPARTS_P_W}={physical}, {JPARTS_V_W}={volumetric}"
+                # )
 
-            #     return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
+                return {JPARTS_P_W: physical, JPARTS_V_W: volumetric}
 
             if site == "armtek":
                 max_retries = 2  # Локальные ретраи для transient ошибок
@@ -684,6 +642,11 @@ class ParserCrawler:
         """Главный метод запуска"""
         await self.setup()
 
+        logger.info(
+            f"DEBUG CONFIG: Weight={ENABLE_WEIGHT_PARSING}, Price={ENABLE_PRICE_PARSING}, Name={ENABLE_NAME_PARSING}"
+        )
+        logger.info(f"CURRENT MODE: {self.mode}")
+
         # 🔥 СОЗДАЁМ CRAWLERS ОДИН РАЗ
         WORKERS = MAX_WORKERS
 
@@ -777,13 +740,17 @@ class ParserCrawler:
 
             logger.info(f"📦 БАТЧ #{batch_num}: строки {batch_start}-{batch_end}")
 
-            # 🔥 ВЫБОР МЕТОДА ПО РЕЖИМУ
-            if ENABLE_WEIGHT_PARSING:
+            current_mode = self.mode.lower().strip()
+
+            # 🔥 ТЕПЕРЬ МЫ ВЫБИРАЕМ СТРОГО ПО CURRENT MODE
+            if current_mode in ["веса", "weight"]:
                 await self._process_weight_batch(batch_start, batch_end, batch_num)
-            elif ENABLE_NAME_PARSING:
+            elif current_mode in ["имена", "name"]:
                 await self._process_name_batch(batch_start, batch_end, batch_num)
-            elif ENABLE_PRICE_PARSING:
+            elif current_mode in ["цены", "price"]:
                 await self._process_price_batch(batch_start, batch_end, batch_num)
+            else:
+                logger.error(f"❌ РЕЖИМ НЕ ОПРЕДЕЛЕН: {self.mode}")
 
             # 💾 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ
             output_file = get_output_file(self.mode)
@@ -880,7 +847,10 @@ class ParserCrawler:
         armtek_fallback = []
         for idx in range(batch_start, batch_end):
             row = self.df.iloc[idx]
-
+            val = row.get(JPARTS_P_W)
+            # logger.debug(
+            #     f"[DEBUG ARMTEK] idx={idx}, part={row[INPUT_COL_ARTICLE]}, JPARTS_P_W={val} (type={type(val)})"
+            # )
             # Проверяем: есть ли физический вес с Japarts?
             if pd.isna(row.get(JPARTS_P_W)):
                 article = str(row[INPUT_COL_ARTICLE]).strip()

@@ -1,142 +1,160 @@
 """
-Armtek парсер - ГИБРИДНЫЙ v3 (Финал)
-1. Перехватывает Token + Alias на поиске
-2. Делает ПРЯМОЙ запрос к API за весом (обходя market-article)
+Armtek парсер - TURBO HYBRID (Session Reuse)
+1. Первый раз: открывает браузер, крадет Токен.
+2. Дальше: работает ТОЛЬКО через API (без загрузки страниц).
+3. При 401: снова открывает браузер и обновляет Токен.
 """
 
 import asyncio
 from typing import Tuple, Optional
-from playwright.async_api import Page
+from playwright.async_api import Page, APIRequestContext
+
+# ⚡ ГЛОБАЛЬНЫЙ КЭШ СЕССИИ (Токен + Куки)
+# Храним: {"token": "Bearer ...", "cookies_ready": False}
+SESSION_CACHE = {"token": None, "last_success": 0}
 
 
-async def parse_weight_armtek(
-    page: Page, part: str, logger
-) -> Tuple[Optional[str], Optional[str]]:
+async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
+    """
+    Гарантирует наличие валидного токена.
+    Если токена нет - идет на сайт и крадет его.
+    """
+    if SESSION_CACHE["token"]:
+        return SESSION_CACHE["token"]
 
-    # Хранилище для пойманных данных
-    context_data = {"alias": None, "token": None}
+    logger.info("🔄 [ARMTEK] Получение нового токена авторизации...")
 
-    # ═══════════════════════════════════════════════════════════
-    # 1. ПЕРЕХВАТЧИК ЗАПРОСОВ (Ловим Token)
-    # ═══════════════════════════════════════════════════════════
+    token_future = asyncio.Future()
+
     async def handle_request(request):
-        # Если токена еще нет, пытаемся найти его в заголовках любого исходящего запроса
-        if not context_data["token"]:
+        if not token_future.done():
             headers = request.headers
             if "authorization" in headers:
                 token = headers["authorization"]
-                if token.startswith("Bearer "):  # Простая валидация
-                    context_data["token"] = token
-                    # logger.debug(f"🔑 Токен перехвачен")
-
-    # ═══════════════════════════════════════════════════════════
-    # 2. ПЕРЕХВАТЧИК ОТВЕТОВ (Ловим Alias)
-    # ═══════════════════════════════════════════════════════════
-    async def handle_response(response):
-        try:
-            if response.status != 200:
-                return
-
-            # Фильтруем URL (ищем ответ поиска, но не мусорный /type)
-            if (
-                "/search-microservice/v1/search" in response.url
-                and "/type" not in response.url
-            ):
-                try:
-                    data = await response.json()
-
-                    # 🔥 БЕЗУСЛОВНОЕ ЛОГИРОВАНИЕ (для отладки, потом уберете)
-                    logger.debug(
-                        f"🔍 [{part}] SEARCH Response перехвачен, структура: typeView={data.get('data', {}).get('typeView')}, articlesData={len(data.get('data', {}).get('articlesData', []))} товаров"
-                    )
-
-                    # Пытаемся найти данные
-                    search_data = data.get("data", {})
-                    items = search_data.get("articlesData", [])
-
-                    if items:
-                        alias = items[0].get("ARTICLE_ALIAS")
-                        if alias:
-                            context_data["alias"] = alias
-                            logger.debug(f"⚡ Alias пойман: {alias[:20]}...")
-                    else:
-                        # Если items пустой - логируем детали
-                        logger.debug(
-                            f"⚠️ [{part}] articlesData ПУСТ. Полный data: {str(data)[:800]}"
-                        )
-
-                except Exception as e:
-                    logger.debug(f"⚠️ JSON error [{part}]: {e}")
-        except Exception as e:
-            logger.debug(f"⚠️ handle_response error [{part}]: {e}")
+                if token.startswith("Bearer "):
+                    token_future.set_result(token)
 
     # Подписываемся
     page.on("request", handle_request)
-    page.on("response", handle_response)
 
     try:
-        # ═══════════════════════════════════════════════════════════
-        # 3. НАВИГАЦИЯ (Триггер для API)
-        # ═══════════════════════════════════════════════════════════
-        target_search_url = f"https://armtek.ru/search?text={part}"
-
-        # Если уже на поиске - релоад, иначе переход
-        if target_search_url in page.url:
-            await page.reload(wait_until="domcontentloaded")
-        else:
-            await page.goto(
-                target_search_url, wait_until="domcontentloaded", timeout=15000
-            )
-
-        # Ждем появления Alias И Токена (макс 4 сек)
-        # Обычно они прилетают почти мгновенно после загрузки
-        for _ in range(20):
-            if context_data["alias"] and context_data["token"]:
-                break
-            await asyncio.sleep(0.2)
-
-        if not context_data["alias"]:
-            logger.warning(f"❌ [{part}] Alias не пойман (нет товара?)")
-            return None, None
-
-        if not context_data["token"]:
-            logger.warning(f"❌ [{part}] Токен не пойман (защита?)")
-            return None, None
-
-        # ═══════════════════════════════════════════════════════════
-        # 4. ПРЯМОЙ ЗАПРОС К API ЗА ВЕСОМ
-        # ═══════════════════════════════════════════════════════════
-        # Нам не нужно переходить в карточку! Мы сами запрашиваем API
-
-        details_url = f"https://armtek.ru/rest/ru/assortment-microservice/v1/articles/details/alias/{context_data['alias']}?weightUnitType=kg&lengthUnitType=cm&country=ru"
-
-        logger.debug(f"⚡ Запрос API details (Direct)...")
-
-        api_response = await page.request.get(
-            details_url,
-            headers={
-                "Authorization": context_data[
-                    "token"
-                ],  # Используем перехваченный токен
-                "Referer": f"https://armtek.ru/product/{context_data['alias']}",
-                "x-app-version": "1.0.331",  # Можно обновить если сайт сменит версию
-                "x-ca-external-system": "IM_RU",
-                "x-ca-vkorg": "4000",
-            },
+        # Идем на главную или поиск, чтобы спровоцировать запросы
+        await page.goto(
+            "https://armtek.ru/search?text=BUSHING",
+            wait_until="domcontentloaded",
+            timeout=20000,
         )
 
-        if api_response.status != 200:
-            logger.warning(f"⚠️ API Details error: {api_response.status}")
+        # Ждем токен (макс 10 сек)
+        try:
+            token = await asyncio.wait_for(token_future, timeout=10.0)
+            SESSION_CACHE["token"] = token
+            logger.info("🔑 [ARMTEK] Токен успешно получен!")
+            return token
+        except asyncio.TimeoutError:
+            logger.warning("❌ [ARMTEK] Не удалось перехватить токен (Timeout)")
+            return None
+
+    except Exception as e:
+        logger.error(f"❌ [ARMTEK] Ошибка получения токена: {e}")
+        return None
+    finally:
+        try:
+            page.remove_listener("request", handle_request)
+        except:
+            pass
+
+
+async def execute_api_chain(
+    request_context: APIRequestContext, token: str, part: str, logger
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Выполняет цепочку API запросов: Search -> Alias -> Details -> Weight
+    Работает без рендеринга страницы!
+    """
+    headers = {
+        "Authorization": token,
+        "x-app-version": "1.0.331",
+        "x-ca-external-system": "IM_RU",
+        "x-ca-vkorg": "4000",
+        "Referer": "https://armtek.ru/",
+    }
+
+    # 1. SEARCH API (POST)
+    try:
+        # Пейлоад в точности как в браузере
+        payload = {
+            "query": part,
+            "queryType": 1,
+            "page": 1,
+            "filters": {"text": part},
+            "userInfo": {
+                "VKORG": "4000",
+                "VSTELS_LIST": ["ME86"],  # Обязательный параметр для гостя
+            },
+            "ZZSIGN": "S",
+        }
+
+        # ВАЖНО: используем json=..., чтобы Playwright отправил application/json
+        search_response = await request_context.post(
+            "https://armtek.ru/rest/ru/search-microservice/v1/search",
+            headers=headers,
+            data=payload,
+        )
+
+        # 🚨 ОБРАБОТКА БЛОКИРОВОК
+        if search_response.status == 429:
+            logger.warning(f"🔒 [ARMTEK] Получена капча (429) для {part}")
+            return "NeedCaptcha", None
+
+        if search_response.status == 401:
+            return "401", None  # Сигнал обновить токен
+
+        if search_response.status != 200:
+            # Читаем тело ошибки, чтобы понять причину
+            err_text = await search_response.text()
+            logger.debug(
+                f"⚠️ Search API Error {search_response.status}: {err_text[:200]}"
+            )
             return None, None
 
-        data = await api_response.json()
+        search_data = await search_response.json()
+        items = search_data.get("data", {}).get("articlesData", [])
+
+        if not items:
+            logger.warning(f"❌ [{part}] Не найдено в поиске (API)")
+            return None, None
+
+        alias = items[0].get("ARTICLE_ALIAS")
+        if not alias:
+            return None, None
+
+    except Exception as e:
+        logger.debug(f"⚠️ Ошибка Search API: {e}")
+        return None, None
+
+    # 2. DETAILS API (GET)
+    try:
+        details_url = f"https://armtek.ru/rest/ru/assortment-microservice/v1/articles/details/alias/{alias}?weightUnitType=kg&lengthUnitType=cm&country=ru"
+
+        details_response = await request_context.get(
+            details_url,
+            headers={**headers, "Referer": f"https://armtek.ru/product/{alias}"},
+        )
+
+        if details_response.status == 401:
+            return "401", None
+
+        if details_response.status != 200:
+            return None, None
+
+        data = await details_response.json()
         item_data = data.get("data", {})
 
-        # Ищем вес
+        # Поиск веса
         weight = item_data.get("weight")
-
-        # Если веса нет в основном поле, ищем в атрибутах (редкий кейс)
         if not weight:
+            # Fallback: Attributes
             attrs = item_data.get("attributes", [])
             for a in attrs:
                 if a.get("name") in ["Вес", "Weight"] or a.get("code") == "WEIGHT":
@@ -144,20 +162,57 @@ async def parse_weight_armtek(
                     break
 
         if weight:
-            logger.info(f"✅ [{part}] Вес: {weight}")
             return str(weight), None
-        else:
-            logger.warning(f"⚠️ [{part}] Вес пуст в API")
-            return None, None
 
-    except Exception as e:
-        logger.error(f"❌ [{part}] Ошибка: {e}")
         return None, None
 
-    finally:
-        # Убираем слушатели, чтобы не дублировались
-        try:
-            page.remove_listener("request", handle_request)
-            page.remove_listener("response", handle_response)
-        except:
-            pass
+    except Exception as e:
+        logger.debug(f"⚠️ Ошибка Details API: {e}")
+        return None, None
+
+
+async def parse_weight_armtek(
+    page: Page, part: str, logger
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Главная функция.
+    Пытается использовать быстрый API. При неудаче (401) обновляет токен.
+    """
+
+    # 1. Получаем токен (если нет - идем в браузер)
+    token = await get_or_refresh_token(page, logger)
+
+    if not token:
+        logger.error(f"❌ [{part}] Не удалось получить доступ к API")
+        return None, None
+
+    # 2. Пробуем выполнить API-цепочку
+    # Используем page.request (он разделяет куки с page, это важно!)
+    weight, _ = await execute_api_chain(page.request, token, part, logger)
+
+    # 3. Реакция на специальные статусы
+    if weight == "NeedCaptcha":
+        # Сбрасываем токен, так как он больше не валиден без решения капчи
+        SESSION_CACHE["token"] = None
+        # Возвращаем статус в main.py, чтобы он вызвал _solve_captcha
+        return "NeedCaptcha", "NeedCaptcha"
+
+    # 3. Обработка протухшего токена (401)
+    if weight == "401":
+        logger.warning(f"🔄 [{part}] Токен протух (401). Обновляем...")
+        SESSION_CACHE["token"] = None  # Сбрасываем
+
+        # Получаем новый
+        token = await get_or_refresh_token(page, logger)
+        if not token:
+            return None, None
+
+        # Повторяем запрос
+        weight, _ = await execute_api_chain(page.request, token, part, logger)
+
+    if weight and weight != "401":
+        # logger.info(f"✅ [{part}] Вес (Turbo API): {weight}")
+        return weight, None
+    else:
+        # Если API не вернул вес (но не 401), значит товара нет или веса нет
+        return None, None
