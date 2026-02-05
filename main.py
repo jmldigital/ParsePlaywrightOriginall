@@ -69,7 +69,13 @@ from armtek_pure_aiohtpp import parse_weight_armtek, reset_armtek_session
 
 
 from scraper_stparts_pure import parse_stparts_name, parse_stparts_price
+
 from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
+
+# from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
+
+# from avtoformula_fast import parse_avtoformula_price
+
 from price_adjuster import adjust_prices_and_save
 
 # UTF-8 setup
@@ -81,18 +87,6 @@ if os.name == "nt":
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 load_dotenv()
-
-
-# async def block_media_requests(context: PlaywrightCrawlingContext) -> None:
-#     """Блокирует изображения, шрифты и медиафайлы"""
-#     await context.page.route(
-#         "**/*",
-#         lambda route: (
-#             route.abort()
-#             if route.request.resource_type in ("image", "media", "font")
-#             else route.continue_()
-#         ),
-#     )
 
 
 async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
@@ -245,7 +239,6 @@ class ParserCrawler:
         self.processed_count = 0
         self.total_tasks = 0
 
-        self.completed_indices = set()
         self.telegram_chat_id = os.getenv("ADMIN_CHAT_ID")
         self.telegram_bot_token = os.getenv("BOT_TOKEN")
 
@@ -371,20 +364,6 @@ class ParserCrawler:
                         else:
                             raise Exception("Авторизация не удалась")
 
-            # 🆕 ПРОВЕРКА IP (первые 3 запроса)
-            # if not hasattr(self, "_ip_check_count"):
-            #     self._ip_check_count = 0
-
-            # if self._ip_check_count < 3:
-            #     try:
-            #         actual_ip = await page.evaluate(
-            #             "() => fetch('https://api.ipify.org?format=json', {timeout: 5000}).then(r => r.json()).then(d => d.ip).catch(() => 'N/A')"
-            #         )
-            #         # logger.debug(f"🌍 [{idx}] IP: {actual_ip}")
-            #         self._ip_check_count += 1
-            #     except:
-            #         pass
-
             # 🔥 ТОЛЬКО ПАРСИНГ
             result = await self._route_to_parser(
                 page, idx, brand, part, site, task_type
@@ -392,26 +371,6 @@ class ParserCrawler:
 
             if result:
                 await self._save_result(idx, result)
-
-            # 🔥 ПРОГРЕСС (обновляется после каждого запроса)
-            async with self.results_lock:
-                self.completed_indices.add(idx)
-                current_count = len(self.completed_indices)
-
-                # Уведомляем строго по кратности
-                if current_count > 0 and current_count % NOTIFY_PROGRESS == 0:
-                    # Защита от спама (отправляем только один раз для каждого порога)
-                    if (
-                        not hasattr(self, "_last_notified_row")
-                        or self._last_notified_row < current_count
-                    ):
-                        logger.info(
-                            f"📊 Прогресс: {current_count}/{self.total_tasks} строк"
-                        )
-                        await self._send_telegram_notification(
-                            current_count
-                        )  # Передаем актуальное число
-                        self._last_notified_row = current_count
 
         except Exception as e:
             logger.error(f"❌ [{idx}] {site}: {e}")
@@ -611,15 +570,13 @@ class ParserCrawler:
                 if pd.notna(val):
                     self.df.at[idx, col] = val
 
-    async def _send_telegram_notification(self, processed_count: int):
+    async def _send_telegram_notification(self, message: str):
         """Отправка уведомления в Telegram"""
         if not self.telegram_chat_id or not self.telegram_bot_token:
             return
 
         try:
-            message = f"📊 Парсер: обработано {processed_count}/{self.total_tasks} строк ({self.mode})"
             url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
-
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     url, json={"chat_id": self.telegram_chat_id, "text": message}
@@ -781,7 +738,12 @@ class ParserCrawler:
             # 💾 ПРОМЕЖУТОЧНОЕ СОХРАНЕНИЕ
             output_file = get_output_file(self.mode)
             await asyncio.to_thread(self.df.to_excel, output_file, index=False)
+            rows_processed = batch_end
             logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
+            # Telegram каждые N батчей (например, каждые 5 батчей = 2500 строк)
+            if batch_num % 2 == 0:
+                message = f"📊 Парсер: обработано <b>{rows_processed}</b> строк из {total_rows} ({self.mode})"
+                await self._send_telegram_notification(message)
 
             # После сохранения сырых данных
             await self.finalize_saved_file(
