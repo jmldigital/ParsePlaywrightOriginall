@@ -27,9 +27,23 @@ async def get_http_session():
     global HTTP_SESSION
     if HTTP_SESSION is None or HTTP_SESSION.closed:
         # Создаем сессию с увеличенными лимитами
-        connector = aiohttp.TCPConnector(limit=100)
+        connector = aiohttp.TCPConnector(limit=50)
         HTTP_SESSION = aiohttp.ClientSession(connector=connector)
     return HTTP_SESSION
+
+
+async def reset_armtek_session(page: Page, logger):
+    """Полный сброс авторизации и кэша"""
+    async with TOKEN_LOCK:
+        SESSION_CACHE["token"] = None
+        # Очищаем куки в браузере, чтобы при следующем заходе сессия была чистой
+        try:
+            await page.context.clear_cookies()
+            logger.warning(
+                "🔄 [ARMTEK] Сессия сброшена из-за таймаута. Попробуем зайти заново."
+            )
+        except Exception as e:
+            logger.error(f"Не удалось очистить куки: {e}")
 
 
 async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
@@ -68,7 +82,7 @@ async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
             # Это еще быстрее - выходим как только сервер ответил первыми байтами
             await page.goto(
                 "https://armtek.ru/search?text=BUSHING",
-                wait_until="commit",
+                wait_until="domcontentloaded",
                 timeout=15000,
             )
             try:
@@ -129,6 +143,7 @@ async def execute_api_chain(
                 return None, None
 
             search_data = await response.json()
+            # logger.debug(f"🔍 [ARMTEK] Response for {part}: {search_data}")
             items = search_data.get("data", {}).get("articlesData", [])
             if not items:
                 return None, None
@@ -163,23 +178,67 @@ async def execute_api_chain(
         return None, None
 
 
+# async def parse_weight_armtek(
+#     page: Page, part: str, logger
+# ) -> Tuple[Optional[str], Optional[str]]:
+#     # 1. Получаем общую сессию
+#     session = await get_http_session()
+
+#     # 2. Получаем токен (наш Lock сработает внутри)
+#     token = await get_or_refresh_token(page, logger)
+#     if not token:
+#         return None, None
+
+#     # 3. Выполняем цепочку через чистый HTTP
+#     weight, _ = await execute_api_chain(session, token, part, logger)
+
+#     if weight == "401":
+#         SESSION_CACHE["token"] = None
+#         token = await get_or_refresh_token(page, logger)
+#         weight, _ = await execute_api_chain(session, token, part, logger)
+
+#     return (weight, None) if weight not in ["NeedCaptcha", "401"] else (weight, weight)
+
+
 async def parse_weight_armtek(
     page: Page, part: str, logger
 ) -> Tuple[Optional[str], Optional[str]]:
-    # 1. Получаем общую сессию
-    session = await get_http_session()
+    max_attempts = 2
 
-    # 2. Получаем токен (наш Lock сработает внутри)
-    token = await get_or_refresh_token(page, logger)
-    if not token:
-        return None, None
+    for attempt in range(max_attempts):
+        try:
+            # ✅ Исправлено для Python 3.10: используем wait_for вместо asyncio.timeout
+            async def perform_request():
+                session = await get_http_session()
+                token = await get_or_refresh_token(page, logger)
 
-    # 3. Выполняем цепочку через чистый HTTP
-    weight, _ = await execute_api_chain(session, token, part, logger)
+                if not token:
+                    return None, None
 
-    if weight == "401":
-        SESSION_CACHE["token"] = None
-        token = await get_or_refresh_token(page, logger)
-        weight, _ = await execute_api_chain(session, token, part, logger)
+                weight, _ = await execute_api_chain(session, token, part, logger)
+                return weight
 
-    return (weight, None) if weight not in ["NeedCaptcha", "401"] else (weight, weight)
+            # Запускаем выполнение с таймаутом 40 секунд
+            weight = await asyncio.wait_for(perform_request(), timeout=40.0)
+
+            # Если сайт ответил, что сессия протухла (401)
+            if weight == "401":
+                SESSION_CACHE["token"] = None
+                continue  # Идем на следующую попытку
+
+            return (
+                (weight, None)
+                if weight not in ["NeedCaptcha", "401"]
+                else (weight, weight)
+            )
+
+        except (asyncio.TimeoutError, Exception) as e:
+            # Теперь ошибка "module 'asyncio' has no attribute 'timeout'" исчезнет
+            logger.error(f"⌛ [ARMTEK] Попытка {attempt+1} не удалась: {e}")
+            if attempt == 0:
+                await reset_armtek_session(page, logger)
+                await asyncio.sleep(2)
+            else:
+                return "Timeout", None
+
+    return None, None

@@ -28,6 +28,50 @@ from crawlee import Request
 import logging
 from crawlee.proxy_configuration import ProxyConfiguration
 
+
+from config import (
+    INPUT_FILE,
+    MAX_ROWS,
+    MAX_WORKERS,
+    INPUT_COL_BRAND,
+    INPUT_COL_ARTICLE,
+    ENABLE_NAME_PARSING,
+    ENABLE_WEIGHT_PARSING,
+    ENABLE_PRICE_PARSING,
+    AVTO_LOGIN,
+    AVTO_PASSWORD,
+    BAD_DETAIL_NAMES,
+    SELECTORS,
+    get_output_file,
+    reload_config,
+    LOG_LEVEL,
+    BATCH_SIZE,
+    PROXY_COUNT,
+    MAX_WORKERS_PROXY,
+    ARMTEK_PROXY,
+    STPARTS_PROXY,
+    NOTIFY_PROGRESS,
+)
+from utils import (
+    logger,
+    preprocess_dataframe,
+    consolidate_weights,
+    get_2captcha_proxy_pool,
+    clear_debug_folders_sync,
+)
+from captcha_manager import CaptchaManager
+
+# Импорт ТОЛЬКО парсеров (без навигации)
+from scraper_japarts_pure import parse_weight_japarts
+
+# from scraper_armtek_pure import parse_weight_armtek
+from armtek_pure_aiohtpp import parse_weight_armtek, reset_armtek_session
+
+
+from scraper_stparts_pure import parse_stparts_name, parse_stparts_price
+from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
+from price_adjuster import adjust_prices_and_save
+
 # UTF-8 setup
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
@@ -108,50 +152,6 @@ async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> Non
 
     # Применяем фильтр ко всем запросам
     await page.route("**/*", route_handler)
-
-
-from config import (
-    INPUT_FILE,
-    MAX_ROWS,
-    MAX_WORKERS,
-    INPUT_COL_BRAND,
-    INPUT_COL_ARTICLE,
-    ENABLE_NAME_PARSING,
-    ENABLE_WEIGHT_PARSING,
-    ENABLE_PRICE_PARSING,
-    AVTO_LOGIN,
-    AVTO_PASSWORD,
-    BAD_DETAIL_NAMES,
-    SELECTORS,
-    get_output_file,
-    reload_config,
-    LOG_LEVEL,
-    BATCH_SIZE,
-    PROXY_COUNT,
-    MAX_WORKERS_PROXY,
-    ARMTEK_PROXY,
-    STPARTS_PROXY,
-    NOTIFY_PROGRESS,
-)
-from utils import (
-    logger,
-    preprocess_dataframe,
-    consolidate_weights,
-    get_2captcha_proxy_pool,
-    clear_debug_folders_sync,
-)
-from captcha_manager import CaptchaManager
-
-# Импорт ТОЛЬКО парсеров (без навигации)
-from scraper_japarts_pure import parse_weight_japarts
-
-# from scraper_armtek_pure import parse_weight_armtek
-from armtek_pure_aiohtpp import parse_weight_armtek
-
-
-from scraper_stparts_pure import parse_stparts_name, parse_stparts_price
-from scraper_avtoformula_pure import parse_avtoformula_name, parse_avtoformula_price
-from price_adjuster import adjust_prices_and_save
 
 
 # ===================== URL ГЕНЕРАТОРЫ =====================
@@ -394,15 +394,36 @@ class ParserCrawler:
                 await self._save_result(idx, result)
 
             # 🔥 ПРОГРЕСС (обновляется после каждого запроса)
-            async with self.results_lock:
-                self.processed_count += 1
+            # async with self.results_lock:
+            #     self.processed_count += 1
 
-                # Лог + Telegram каждые NOTIFY_PROGRESS задач
-                if self.processed_count % (NOTIFY_PROGRESS * 2) == 0:
-                    logger.info(
-                        f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
-                    )
-                    await self._send_telegram_notification(self.processed_count)
+            #     # Лог + Telegram каждые NOTIFY_PROGRESS задач
+            #     if self.processed_count % (NOTIFY_PROGRESS * 2) == 0:
+            #         logger.info(
+            #             f"📊 Прогресс: {self.processed_count}/{self.total_tasks}"
+            #         )
+            #         await self._send_telegram_notification(self.processed_count)
+
+            # 🔥 ПРОГРЕСС (обновляется после каждого запроса)
+            async with self.results_lock:
+                # Добавляем индекс текущей строки в набор завершенных
+                self.completed_indices.add(idx)
+
+                # Реальное количество обработанных строк — это размер набора
+                actual_rows_processed = len(self.completed_indices)
+
+                # Уведомляем на основе реальных строк
+                if actual_rows_processed % NOTIFY_PROGRESS == 0:
+                    # Проверяем, не отправляли ли мы уже уведомление для этого числа
+                    if (
+                        not hasattr(self, "_last_notified_row")
+                        or self._last_notified_row != actual_rows_processed
+                    ):
+                        logger.info(
+                            f"📊 Прогресс: {actual_rows_processed}/{self.total_tasks} строк"
+                        )
+                        await self._send_telegram_notification(actual_rows_processed)
+                        self._last_notified_row = actual_rows_processed
 
         except Exception as e:
             logger.error(f"❌ [{idx}] {site}: {e}")
@@ -471,8 +492,17 @@ class ParserCrawler:
                             #     page, "armtek", numeric_only=False
                             # ):
                             #     continue  # Перепарсим после капчи
-                            await asyncio.sleep(180)
-                            continue  # Пробуем еще раз после паузы
+                            # await asyncio.sleep(180)
+                            # continue  # Пробуем еще раз после паузы
+
+                            logger.warning(
+                                f"⚠️ [ARMTEK] Block detected for {part}. Retrying later..."
+                            )
+
+                            await reset_armtek_session(page, logger)
+                            raise Exception(
+                                "RateLimit: Need pause"
+                            )  # Crawlee сделает retry позже
 
                     # ✅ Если дошли сюда = данные готовы
                     break
