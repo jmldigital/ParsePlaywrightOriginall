@@ -82,7 +82,7 @@ async def get_or_refresh_token(page: Page, logger) -> Optional[str]:
             # Это еще быстрее - выходим как только сервер ответил первыми байтами
             await page.goto(
                 "https://armtek.ru/search?text=BUSHING",
-                wait_until="domcontentloaded",
+                wait_until="commit",
                 timeout=15000,
             )
             try:
@@ -178,28 +178,6 @@ async def execute_api_chain(
         return None, None
 
 
-# async def parse_weight_armtek(
-#     page: Page, part: str, logger
-# ) -> Tuple[Optional[str], Optional[str]]:
-#     # 1. Получаем общую сессию
-#     session = await get_http_session()
-
-#     # 2. Получаем токен (наш Lock сработает внутри)
-#     token = await get_or_refresh_token(page, logger)
-#     if not token:
-#         return None, None
-
-#     # 3. Выполняем цепочку через чистый HTTP
-#     weight, _ = await execute_api_chain(session, token, part, logger)
-
-#     if weight == "401":
-#         SESSION_CACHE["token"] = None
-#         token = await get_or_refresh_token(page, logger)
-#         weight, _ = await execute_api_chain(session, token, part, logger)
-
-#     return (weight, None) if weight not in ["NeedCaptcha", "401"] else (weight, weight)
-
-
 async def parse_weight_armtek(
     page: Page, part: str, logger
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -237,7 +215,7 @@ async def parse_weight_armtek(
             logger.error(f"⌛ [ARMTEK] Попытка {attempt+1} не удалась: {e}")
             if attempt == 0:
                 await reset_armtek_session(page, logger)
-                await asyncio.sleep(2)
+                # await asyncio.sleep(2)
             else:
                 return "Timeout", None
 
