@@ -1,0 +1,46 @@
+docker logs -f price-parser-bot-crowly
+
+ 
+
+
+docker restart price-parser-bot-crowly
+
+docker stop price-parser-bot-crowly
+
+
+
+
+FROM mcr.microsoft.com/playwright/python:v1.34.0-jammy
+
+
+
+docker compose down -v
+docker compose build --no-cache
+docker compose up -d
+
+
+
+docker compose logs -f price-parser-bot-crowly | grep -E "(playwright|crawlee|Chrome)"
+
+
+
+docker logs price-parser-bot-crowly -f
+
+
+docker exec -it price-parser-bot-crowly pip install ImageHash
+
+
+
+docker load -i playwright_image.tar
+
+docker exec -it price-parser-bot-crowly pip install ImageHash==4.3.2
+
+
+
+
+
+
+
+
+
+

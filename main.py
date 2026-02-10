@@ -27,7 +27,7 @@ from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 from crawlee import Request
 import logging
 from crawlee.proxy_configuration import ProxyConfiguration
-
+from telegram import Bot
 
 from config import (
     INPUT_FILE,
@@ -50,7 +50,7 @@ from config import (
     MAX_WORKERS_PROXY,
     ARMTEK_PROXY,
     STPARTS_PROXY,
-    NOTIFY_PROGRESS,
+    SEND_TO_TELEGRAM,
 )
 from utils import (
     logger,
@@ -87,6 +87,24 @@ if os.name == "nt":
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 load_dotenv()
+
+
+async def send_telegram_file(self, file_path: str, caption: str | None = None):
+    """Твоя функция, адаптированная под self"""
+    if not SEND_TO_TELEGRAM:
+        return
+    try:
+        bot = Bot(token=self.telegram_bot_token)  # ← Используй self.telegram_bot_token
+        async with bot:
+            with open(file_path, "rb") as f:
+                await bot.send_document(
+                    chat_id=self.telegram_chat_id,  # ← self.telegram_chat_id
+                    document=f,
+                    caption=caption,
+                )
+        logger.info("✅ Финальный файл отправлен в Telegram")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки файла в Telegram: {e}")
 
 
 async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
@@ -775,6 +793,7 @@ class ParserCrawler:
 
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
+        await self.send_telegram_file(output_file, f"✅ {self.mode} завершены!")
 
     async def finalize_saved_file(self, input_file: str, batch_num: int):
         """Асинхронно финализирует уже сохранённый файл"""

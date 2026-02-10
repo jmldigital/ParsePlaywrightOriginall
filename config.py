@@ -16,14 +16,13 @@ LOG_LEVEL = "DEBUG"  # Измените на "DEBUG" чтобы видеть в�
 MAX_WORKERS = 30
 MAX_WORKERS_PROXY = 2
 MAX_ROWS = 35000
-BATCH_SIZE = 30
+BATCH_SIZE = 1000
 
 PROXY_COUNT = 5
 
 ARMTEK_PROXY = False
 STPARTS_PROXY = False
 
-NOTIFY_PROGRESS = 2000
 
 # === API и авторизация ===
 
