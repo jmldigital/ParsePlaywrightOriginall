@@ -1,0 +1,21 @@
+{
+  "unique_key": "avtoformula_price_1_22",
+  "url": "https://www.avtoformula.ru",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 5
+    },
+    "idx": 22,
+    "brand": "LI AUTO",
+    "part": "X0190000014",
+    "site": "avtoformula",
+    "task_type": "price"
+  },
+  "retry_count": 1,
+  "no_retry": false,
+  "loaded_url": "https://www.avtoformula.ru/",
+  "handled_at": null
+}

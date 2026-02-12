@@ -1,43 +1,34 @@
-Dockerfile
-# Dockerfile
-FROM python:3.11-slim
+# Используем официальный образ Playwright с Python 3.11
+FROM mcr.microsoft.com/playwright/python:v1.34.0-jammy
 
-# Установка системных зависимостей для Chrome
+# Установка дополнительных системных зависимостей (если нужны)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    curl \
     wget \
-    gnupg \
-    unzip \
-    libnss3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxss1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Добавляем Google Chrome repo
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /etc/apt/trusted.gpg.d/google.gpg && \
-    echo "deb http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-
-# Устанавливаем Google Chrome (headless)
-RUN apt-get update && \
-    apt-get install -y google-chrome-stable && \
-    rm -rf /var/lib/apt/lists/*
+# Установка uv для быстрой установки пакетов
+RUN pip install --no-cache-dir uv
 
 # Рабочая директория
 WORKDIR /app
 
-# Копируем requirements и устанавливаем зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Копируем файлы проекта
+COPY pyproject.toml .
+COPY . .
+
+# Устанавливаем зависимости через uv
+RUN uv pip install --system -r pyproject.toml
+
+# Создаём необходимые директории
+RUN mkdir -p output cache cookies logs screenshots input temp
+
+# Переменные окружения (опционально, можно задать в docker-compose.yml)
+ENV TZ=Europe/Moscow
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+ENV LC_ALL=C.UTF-8
 
 # Точка входа — bot.py
 CMD ["python", "bot.py"]

@@ -1,0 +1,21 @@
+{
+  "unique_key": "avtoformula_price_1_6",
+  "url": "https://www.avtoformula.ru",
+  "method": "GET",
+  "payload": null,
+  "headers": {},
+  "user_data": {
+    "__crawlee": {
+      "state": 4
+    },
+    "idx": 6,
+    "brand": "GEELY",
+    "part": "6600137689",
+    "site": "avtoformula",
+    "task_type": "price"
+  },
+  "retry_count": 0,
+  "no_retry": false,
+  "loaded_url": null,
+  "handled_at": "2026-02-12 07:09:19.774111+00:00"
+}

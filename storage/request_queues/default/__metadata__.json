@@ -1,0 +1,11 @@
+{
+  "id": "8Got7oWFuShhNqSMm",
+  "name": null,
+  "accessed_at": "2026-02-12 07:13:38.543276+00:00",
+  "created_at": "2026-02-12 07:09:03.847902+00:00",
+  "modified_at": "2026-02-12 07:13:38.543276+00:00",
+  "had_multiple_clients": false,
+  "handled_request_count": 17,
+  "pending_request_count": 11,
+  "total_request_count": 28
+}
