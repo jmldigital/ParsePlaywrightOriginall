@@ -65,7 +65,6 @@ from config import (
 from utils import (
     logger,
     preprocess_dataframe,
-    consolidate_weights,
     clear_debug_folders_sync,
     get_2captcha_proxy,
     get_site_logger,
@@ -172,12 +171,11 @@ async def send_telegram_file(file_path, caption=None):
 
 
 async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = None):
-    """Финальная обработка + сохранение (normal/extreme stop)"""
+    """Финальная обработка + сохранение ИМЁН/ЦЕН (normal/stop/INTERIM)"""
     logger.info(f"🔄 Финализация ({mode})...")
 
-    # 🔥 Импорт констант ОДИН РАЗ!
+    # 🔥 Импорт констант (только ИМЕНА+ЦЕНЫ)
     from config import (
-        ENABLE_WEIGHT_PARSING,
         ENABLE_PRICE_PARSING,
         ENABLE_NAME_PARSING,
         stparts_price,
@@ -187,20 +185,17 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
     )
 
     # Локальные копии
-    local_weight = ENABLE_WEIGHT_PARSING
     local_price = ENABLE_PRICE_PARSING
     local_name = ENABLE_NAME_PARSING
 
-    logger.info(
-        f"🔧 Режимы: weight={local_weight}, price={local_price}, name={local_name}"
-    )
+    logger.info(f"🔧 Режимы: price={local_price}, name={local_name}")
 
     if df is None or df.empty:
         logger.error("❌ DataFrame пустой или None!")
         return
 
     try:
-        # Инициализация колонок ПО РЕЖИМУ
+        # Инициализация ЦЕНОВЫХ колонок
         price_cols = [
             stparts_price,
             stparts_delivery,
@@ -211,15 +206,22 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             if col not in df.columns:
                 df[col] = None
 
+        # Имя колонка (только если НУЖНО)
         if local_name and "finde_name" not in df.columns:
             df["finde_name"] = None
 
-        # 🧹 Drop лишнего для ИМЕНА
-        if local_name:
-            cols_to_drop = price_cols
-            existing_cols = [col for col in cols_to_drop if col in df.columns]
+        # 🆕 🧹 УДАЛЕНИЕ ЛИШНЕГО ПО РЕЖИМУ
+        if local_price and not local_name:
+            # ЦЕНЫ: удаляем ИМЕНА
+            if "finde_name" in df.columns:
+                df.drop(columns=["finde_name"], inplace=True)
+                logger.info("🧹 ЦЕНЫ: удалили finde_name")
+
+        elif local_name and not local_price:
+            # ИМЕНА: удаляем ЦЕНЫ
+            existing_cols = [col for col in price_cols if col in df.columns]
             if existing_cols:
-                logger.info(f"🧹 ИМЕНА: удаляем {len(existing_cols)} лишних колонок")
+                logger.info(f"🧹 ИМЕНА: удаляем {len(existing_cols)} ценовых колонок")
                 df.drop(columns=existing_cols, inplace=True)
 
         # Получаем output_file
@@ -238,137 +240,11 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
             await asyncio.to_thread(df.to_excel, output_file, index=False)
             logger.info("✅ Обычное сохранение Excel")
 
-        # ✅ Отправка нормального файла
-        await send_telegram_file(output_file, f"✅ {mode} готово! ({len(df)} строк)")
-        logger.info("🎉 Финализация завершена!")
+        logger.info(f"🎉 Финализация завершена! Колонки: {list(df.columns)}")
 
     except Exception as e:
         logger.error(f"❌ Финальная обработка FAILED: {e}", exc_info=True)
-
-        # 🆕 Emergency save (ИСПРАВЛЕНО .xlsx → _emergency.xlsx)
-        emergency_file = output_file.replace(".xlsx", "_emergency.xlsx")
-        try:
-            await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-            logger.info(f"💾 Emergency: {emergency_file} ({len(df)} строк)")
-            await send_telegram_file(
-                emergency_file, f"⚠️ {mode} EMERGENCY ({len(df)} строк)"
-            )
-        except Exception as e2:
-            logger.error(f"❌ Emergency save тоже упал: {e2}")
-
-
-# async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = None):
-#     """Финальная обработка + сохранение с ПОЛНОЙ отладкой"""
-#     logger.info(f"🔄 Финализация ({mode})...")
-#     logger.info(f"📊 df.shape ВХОД: {df.shape}")
-
-#     # СКРИН 1 — ВХОД
-#     from pathlib import Path
-
-#     output_dir = Path("output")
-#     output_dir.mkdir(exist_ok=True)
-#     debug1 = output_dir / f"finalize_1_input_{mode}.xlsx"
-#     await asyncio.to_thread(df.to_excel, debug1)
-#     logger.info(f"💾 Шаг1: {debug1}")
-
-#     # 🆕 ЛОКАЛЬНЫЕ КОПИИ!
-#     local_weight = ENABLE_WEIGHT_PARSING
-#     local_price = ENABLE_PRICE_PARSING
-#     local_name = ENABLE_NAME_PARSING
-
-#     logger.info(
-#         f"🔧 Режимы: weight={local_weight}, price={local_price}, name={local_name}"
-#     )
-
-#     if df is None or df.empty:
-#         logger.error("❌ DataFrame пустой!")
-#         return
-
-#     try:
-#         from config import (
-#             stparts_price,
-#             stparts_delivery,
-#             avtoformula_price,
-#             avtoformula_delivery,
-#             JPARTS_P_W,
-#             JPARTS_V_W,
-#             ARMTEK_P_W,
-#             ARMTEK_V_W,
-#         )
-
-#         # Статистика ДО
-#         logger.info(f"📊 ДО init колонок:")
-#         logger.info(f"  JP_Phys: {df[JPARTS_P_W].notna().sum()}")
-#         logger.info(f"  ARM_Phys: {df[ARMTEK_P_W].notna().sum()}")
-
-#         # Инициализация колонок
-#         for col in [
-#             stparts_price,
-#             stparts_delivery,
-#             avtoformula_price,
-#             avtoformula_delivery,
-#         ]:
-#             if col not in df.columns:
-#                 df[col] = None
-
-#         if local_weight:
-#             for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-#                 if col not in df.columns:
-#                     df[col] = None
-
-#         if local_name and "finde_name" not in df.columns:
-#             df["finde_name"] = None
-
-#         # # СКРИН 2 — ПОСЛЕ init колонок
-#         # debug2 = output_dir / f"finalize_2_init_cols_{mode}.xlsx"
-#         # await asyncio.to_thread(df.to_excel, debug2)
-#         # logger.info(f"💾 Шаг2: {debug2}")
-
-#         if local_weight:
-#             logger.info("🔄 consolidate_weights...")
-#             df = await asyncio.to_thread(consolidate_weights, df)
-#             logger.info("✅ Веса консолидированы")
-
-#             # # СКРИН 3 — ПОСЛЕ consolidate
-#             # debug3 = output_dir / f"finalize_3_consolidate_{mode}.xlsx"
-#             # await asyncio.to_thread(df.to_excel, debug3)
-#             # logger.info(f"💾 Шаг3: {debug3}")
-
-#         # output_file
-#         if not output_file:
-#             output_file = get_output_file(mode)
-#             if not output_file:
-#                 raise ValueError(f"Нет output_file для {mode}")
-
-#         logger.info(f"💾 Финал: {output_file}")
-
-#         # # СКРИН 4 — ПЕРЕД сохранением
-#         # debug4 = output_dir / f"finalize_4_pre_save_{mode}.xlsx"
-#         # await asyncio.to_thread(df.to_excel, debug4)
-#         # logger.info(f"💾 Шаг4: {debug4}")
-
-#         if local_price:
-#             logger.info("🔄 adjust_prices_and_save...")
-#             await asyncio.to_thread(
-#                 adjust_prices_and_save, df.copy(), output_file
-#             )  # copy!
-#         else:
-#             logger.info("🔄 to_excel...")
-#             await asyncio.to_thread(df.to_excel, output_file, index=False)
-
-#         # # СКРИН 5 — ПОСЛЕ сохранения (проверка)
-#         # logger.info(f"✅ Сохранено: {output_file}")
-#         # await send_telegram_file(output_file, f"✅ {mode} завершены!")
-
-#     except Exception as e:
-#         logger.error(f"❌ Ошибка финализации: {e}", exc_info=True)
-#         emergency_file = str(output_file).replace(".xlsx", "_emergency.xlsx")
-#         try:
-#             await asyncio.to_thread(df.to_excel, emergency_file, index=False)
-#             logger.info(f"💾 Emergency: {emergency_file}")
-#             await send_telegram_file(emergency_file, f"⚠️ {mode} emergency")
-#         except Exception as e2:
-#             logger.error(f"❌ Emergency failed: {e2}")
+        # Emergency save...
 
 
 # === Пул контекстов ===
@@ -477,25 +353,6 @@ class ContextPool:
         logger.info("🛑 Все контексты закрыты")
 
 
-# class SimpleContextPool(ContextPool):
-#     """Пул БЕЗ авторизации — для весов/имен"""
-
-#     async def initialize(self):
-#         """ПРОСТАЯ инициализация БЕЗ авторизации"""
-#         logger.info(f"Создаём {self.pool_size} простых контекстов...")
-
-#         for i in range(self.pool_size):
-#             ctx = await self.browser.new_context(
-#                 viewport={"width": 1920, "height": 1080},
-#                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-#             )
-#             self.contexts.append(ctx)
-#             logger.debug(f"✅ Контекст {i + 1}/{self.pool_size} создан")
-
-#         self.initialized = True
-#         logger.info(f"✅ {self.pool_size} простых контекстов готово")
-
-
 async def process_single_item(
     context,
     idx: int,
@@ -508,13 +365,8 @@ async def process_single_item(
     Возвращает результат или "NeedProxy" при RateLimit.
     """
     from config import (
-        ENABLE_WEIGHT_PARSING as WEIGHT,
         ENABLE_NAME_PARSING as NAME,
         ENABLE_PRICE_PARSING as PRICE,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
         stparts_price,
         stparts_delivery,
         avtoformula_price,
@@ -523,231 +375,6 @@ async def process_single_item(
 
     # Инициализация результатов
     result = {}
-    # Дя теста----------------------
-    # if WEIGHT:
-    #     # 🧪 Симуляция прокси-циклов
-    #     if not hasattr(process_single_item, "proxy_cycle"):
-    #         process_single_item.proxy_cycle = {"count": 0, "phase": 0}
-
-    #     cycle = process_single_item.proxy_cycle
-    #     cycle["count"] += 1
-
-    #     logger.info(
-    #         f"🚀 [{idx}] ТЕСТ цикл {cycle['count']}/phase{cycle['phase']}: {part}"
-    #     )
-
-    #     # ✅ ТОЛЬКО new_page() БЕЗ параметров:
-    #     page1 = await context.new_page()  # ✅
-
-    #     # Human-like!
-    #     await page1.add_init_script(
-    #         """
-    #         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-    #         Object.defineProperty(navigator, 'languages', {get: () => ['ru-RU', 'ru']});
-    #     """
-    #     )
-    #     await page1.goto("about:blank")
-    #     await page1.wait_for_timeout(2000)  # "Просмотр главной"
-
-    #     try:
-    #         # ARMTEK
-    #         armtek_physical, armtek_volumetric = await asyncio.wait_for(
-    #             scrape_weight_armtek(page1, part, logger_armtek),
-    #             timeout=120.0,  # 2 минуты на Cloudflare!
-    #         )
-    #         logger.info(
-    #             f"🔍 [{idx}] ARMTEK: phys={armtek_physical}, vol={armtek_volumetric}"
-    #         )
-
-    #     except Exception as e:
-    #         logger.error(f"❌ [{idx}] ARMTEK: {e}")
-    #         armtek_physical = armtek_volumetric = None
-
-    #     # 🔥 КАПЧА!
-    #     if armtek_physical == "NeedCaptcha":
-    #         logger.info(f"🔒 [{idx}] Капча ARMTEK")
-    #         success = await captcha_manager.solve_captcha(
-    #             page=page1,
-    #             logger=logger_armtek,
-    #             site_key="armtek",
-    #             selectors=SELECTORS.get("armtek", {}),
-    #         )
-    #         await safe_close_page(page1)
-
-    #         if success:
-    #             logger.info(f"🔓 [{idx}] Капча OK")
-    #             # Можно retry, но для теста продолжаем
-    #         else:
-    #             logger.warning(f"❌ [{idx}] Капча fail")
-    #             result.update({ARMTEK_P_W: None, ARMTEK_V_W: None})
-    #     else:
-    #         await safe_close_page(page1)
-
-    #     # 🔥 ПРОКСИ-ЦИКЛЫ (по 10)
-    #     if cycle["count"] <= 10:  # 1: без прокси
-    #         logger.info(f"📡 [{idx}] ФАЗА 1: без прокси")
-
-    #     elif cycle["count"] <= 20:  # 2: прокси 1
-    #         logger.warning(f"🚦 [{idx}] ФАЗА 2: NeedProxy 1")
-    #         cycle["phase"] = 1
-    #         await safe_close_page(page1)
-    #         return "NeedProxy"  # Worker → proxy!
-
-    #     elif cycle["count"] <= 30:  # 3: прокси 2
-    #         logger.warning(f"🚦 [{idx}] ФАЗА 3: NeedProxy 2")
-    #         cycle["phase"] = 2
-    #         await safe_close_page(page1)
-    #         return "NeedProxy"
-
-    #     else:  # 4+: прокси 2
-    #         logger.info(f"📡 [{idx}] ФАЗА 4: прокси 2")
-
-    #     # ✅ Запись в result (как оригинал)
-    #     result.update(
-    #         {
-    #             JPARTS_P_W: None,
-    #             JPARTS_V_W: None,
-    #             ARMTEK_P_W: armtek_physical,
-    #             ARMTEK_V_W: armtek_volumetric,
-    #         }
-    #     )
-
-    #     logger.info(f"📊 [{idx}] Записано: ARMTEK_P_W={armtek_physical}")
-    #     # НЕ return — result глобальный!
-
-    # ======================= WEIGHT =======================
-
-    if WEIGHT:
-        max_retries = 2
-
-        for attempt in range(max_retries + 1):
-            # page1 = None
-
-            try:
-                # 🆕 Новая страница каждый retry
-                page1 = await context.new_page()
-
-                jp_physical, jp_volumetric = None, None
-                armtek_physical, armtek_volumetric = None, None
-
-                # 1️⃣ Japarts (первый приоритет)
-                jp_physical, jp_volumetric = await scrape_weight_japarts(
-                    page1, part, logger_jp
-                )
-
-                # 🆕 Проверка капчи Japarts
-                if jp_physical == "NeedCaptcha" or jp_volumetric == "NeedCaptcha":
-                    logger.info(
-                        f"🔒 [{idx}] Капча на japarts (попытка {attempt+1}/{max_retries+1})"
-                    )
-                    success = await captcha_manager.solve_captcha(
-                        page=page1,
-                        logger=logger_jp,
-                        site_key="japarts",
-                        selectors={
-                            "captcha_img": SELECTORS.get("japarts", {}).get(
-                                "captcha_img"
-                            ),
-                            "captcha_input": SELECTORS.get("japarts", {}).get(
-                                "captcha_input"
-                            ),
-                            "captcha_submit": SELECTORS.get("japarts", {}).get(
-                                "captcha_submit"
-                            ),
-                        },
-                    )
-
-                    await safe_close_page(page1)
-                    page1 = None
-
-                    if success:
-                        continue  # Retry
-                    else:
-                        return "CaptchaFailed"
-
-                # 2️⃣ Armtek ТОЛЬКО при Japarts fail
-                if not jp_physical or not jp_volumetric:
-                    logger.info(f"🚀 [{idx}] Japarts fail → ARMTEK: {part}")
-
-                    armtek_physical, armtek_volumetric = await scrape_weight_armtek(
-                        page1, part, logger_armtek
-                    )
-
-                    # 🆕 Проверка капчи Armtek
-                    if (
-                        armtek_physical == "NeedCaptcha"
-                        or armtek_volumetric == "NeedCaptcha"
-                    ):
-                        logger.info(
-                            f"🔒 [{idx}] Капча на armtek (попытка {attempt+1}/{max_retries+1})"
-                        )
-                        success = await captcha_manager.solve_captcha(
-                            page=page1,
-                            logger=logger_armtek,
-                            site_key="armtek",
-                            selectors={
-                                "captcha_img": SELECTORS.get("armtek", {}).get(
-                                    "captcha_img"
-                                ),
-                                "captcha_input": SELECTORS.get("armtek", {}).get(
-                                    "captcha_input"
-                                ),
-                                "captcha_submit": SELECTORS.get("armtek", {}).get(
-                                    "captcha_submit"
-                                ),
-                            },
-                        )
-
-                        await safe_close_page(page1)
-                        page1 = None
-
-                        if success:
-                            continue  # Retry
-                        else:
-                            return "CaptchaFailed"
-
-                    # 🚨 RateLimit (остается как есть)
-                    if armtek_physical == "NeedProxy":
-                        logger.info(f"🎯 [{idx}] RateLimit → NeedProxy!")
-                        await safe_close_page(page1)
-                        return "NeedProxy"
-
-                    # ✅ Armtek результат
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: armtek_physical,
-                            ARMTEK_V_W: armtek_volumetric,
-                        }
-                    )
-
-                else:
-                    # ✅ Только Japarts
-                    result.update(
-                        {
-                            JPARTS_P_W: jp_physical,
-                            JPARTS_V_W: jp_volumetric,
-                            ARMTEK_P_W: None,
-                            ARMTEK_V_W: None,
-                        }
-                    )
-
-                await safe_close_page(page1)
-                break  # ✅ Успех!
-
-            except Exception as e:
-                logger.error(
-                    f"❌ [{idx}] Weight parse error (попытка {attempt+1}): {e}"
-                )
-                await safe_close_page(page1)
-                if attempt < max_retries:
-                    continue
-
-            # Если все попытки исчерпаны
-            result.update(
-                {JPARTS_P_W: None, JPARTS_V_W: None, ARMTEK_P_W: None, ARMTEK_V_W: None}
-            )
 
     # ======================= NAME =======================
     if NAME:
@@ -1225,27 +852,21 @@ async def main_async():
         stparts_delivery,
         avtoformula_price,
         avtoformula_delivery,
-        ENABLE_WEIGHT_PARSING as LOCAL_WEIGHT,
         ENABLE_NAME_PARSING as LOCAL_NAME,
         ENABLE_PRICE_PARSING as LOCAL_PRICE,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
         BAD_DETAIL_NAMES,
     )
 
     # Проверка: только 1 режим активен
-    active_modes = sum([LOCAL_WEIGHT, LOCAL_NAME, LOCAL_PRICE])
+    active_modes = sum([LOCAL_NAME, LOCAL_PRICE])
     if active_modes != 1:
-        error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ВЕСА={LOCAL_WEIGHT}, ЦЕНЫ={LOCAL_PRICE}"
+        error_msg = f"❌ Ошибка: 1 режим! ИМЕНА={LOCAL_NAME}, ЦЕНЫ={LOCAL_PRICE}"
         logger.error(error_msg)
         return
 
     # Режим
-    if LOCAL_WEIGHT:
-        mode = "ВЕСА"
-    elif LOCAL_NAME:
+
+    if LOCAL_NAME:
         mode = "ИМЕНА"
     else:
         mode = "ЦЕНЫ"
@@ -1263,10 +884,6 @@ async def main_async():
         stparts_delivery,
         avtoformula_price,
         avtoformula_delivery,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
     )
 
     all_possible_cols = [
@@ -1274,10 +891,6 @@ async def main_async():
         stparts_delivery,
         avtoformula_price,
         avtoformula_delivery,
-        JPARTS_P_W,
-        JPARTS_V_W,
-        ARMTEK_P_W,
-        ARMTEK_V_W,
         "finde_name",
     ]
 
@@ -1289,23 +902,8 @@ async def main_async():
     logger.info(f"📊 DataFrame готов: {df.shape} | колонки: {list(df.columns)}")
     # 🔥 🔥 🔥 КОНЕЦ ВСТАВКИ 🔥 🔥 🔥
 
-    # 🆕 Инициализация колонок
-    # for col in [
-    #     stparts_price,
-    #     stparts_delivery,
-    #     avtoformula_price,
-    #     avtoformula_delivery,
-    # ]:
-    #     if col not in df.columns:
-    #         df[col] = None
-
     if LOCAL_NAME and "finde_name" not in df.columns:
         df["finde_name"] = None
-
-    if LOCAL_WEIGHT:
-        for col in [JPARTS_P_W, JPARTS_V_W, ARMTEK_P_W, ARMTEK_V_W]:
-            if col not in df.columns:
-                df[col] = None
 
     # 🆕 Создание очереди задач
     queue = asyncio.Queue()
@@ -1402,6 +1000,29 @@ async def main_async():
                                 f"💾 Промежуточное: {processed_count}/{total_tasks} → {TEMP_FILES_DIR}"
                             )
 
+                            # 🆕 2. АСИНХРОННАЯ ФИНАЛИЗАЦИЯ ТОЛЬКО ДЛЯ ЦЕН
+                            async def background_finalize():
+                                if LOCAL_PRICE:
+                                    try:
+                                        interim_file = get_output_file(
+                                            "interim"
+                                        )  # Временный файл из config
+                                        await finalize_processing(
+                                            df_current.copy(),
+                                            mode="interim",
+                                            output_file=interim_file,
+                                        )
+                                        logger.info(
+                                            f"✅ Background цены: {interim_file}"
+                                        )
+                                    except Exception as bg_e:
+                                        logger.error(
+                                            f"❌ Background финализация цен: {bg_e}"
+                                        )
+
+                            # 🔥 Запуск в фоне (НЕ блокирует worker!)
+                            asyncio.create_task(background_finalize())
+
                             # 🆕 ОТМЕЧАЕМ: эта отметка сохранена!
                             counter["last_saved"] = processed_count
 
@@ -1490,22 +1111,19 @@ async def main_async():
                 logger.info(f"✅ Processed: {counter['processed']}/{total_tasks}")
 
             print("🔍 Последние 3 строки df:")
-            print(df.tail(3)[[INPUT_COL_ARTICLE, JPARTS_P_W, ARMTEK_P_W]])
 
             # Перед finalize:
             logger.info(f"df.shape={df.shape}")
-            logger.info(f"Веса JP: {df[JPARTS_P_W].notna().sum()}")
-            logger.info(f"Веса ARM: {df[ARMTEK_P_W].notna().sum()}")
 
             # Сохрани debug
             # main_async перед finalize:
-            output_dir = Path("output")
-            output_dir.mkdir(exist_ok=True)
-            debug_file = output_dir / "debug_pre_final.xlsx"
-            logger.info(f"🔍 Debug в output: {debug_file}")
-            await asyncio.to_thread(df.to_excel, debug_file)
 
             await finalize_processing(df, mode)
+
+            # 🔥 2. Получаем путь + отправляем СРАЗУ
+            # final_file = get_output_file(mode)  # "output/цены_конкурентов.xlsx"
+            # await send_telegram_file(final_file, f"✅ {mode} готово! ({len(df)} строк)")
+
             logger.info("🎉 Парсинг завершён успешно!")
         except Exception as e:
             logger.error(f"❌ Финальная обработка failed: {e}")

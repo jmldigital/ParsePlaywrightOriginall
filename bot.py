@@ -182,7 +182,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Доступные команды:\n"
         "/mode_price - Режим: поиск цен и доставки\n"
         "/mode_name - Режим: поиск названий деталей\n\n"
-        "/mode_weight - Режим: поиск весов\n\n"
         "• `/stop` — 🛑 **Остановить парсер**\n\n"
         "📎 Для загрузки файла отправьте файл .xls/.xlsx"
     )

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 100
+TEMP_RAW = 20
 MAX_WORKERS = 2
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 
@@ -34,6 +34,7 @@ SEND_TO_TELEGRAM = True
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
 TEMP_FILES_DIR = "input/temp_file.xlsx"
+INTERIM_FILE = "input/output_interim.xlsx"
 # TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)  # Авто-создание при импорте!
 COOKIE_FILE = "output/avtoformula_cookies.json"
 STATE_FILE = "output/state.json"
