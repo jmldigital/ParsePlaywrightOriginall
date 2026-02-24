@@ -39,8 +39,23 @@ docker exec -it price-parser-bot-crowly pip install ImageHash==4.3.2
 
 
 
+pVy6hr9NwX4XsgMX
+
+
+npx supabase db dump --db-url "postgresql://postgres:pVy6hr9NwX4XsgMX@db.irjkppabtcmhrxvtkkyy.supabase.co:5432/postgres" --role-only --file roles.sql
 
 
 
+supabase db dump --db-url "postgresql://postgres:pVy6hr9NwX4XsgMX@db.irjkppabtcmhrxvtkkyy.supabase.co:5432/postgres" --role-only --data-only=false --exclude-schemas=graphql,storage --file roles.sql
+
+
+pg_dump "postgresql://postgres:pVy6hr9NwX4XsgMX@db.irjkppabtcmhrxvtkkyy.supabase.co:5432/postgres" `
+  --format=custom `
+  --no-owner `
+  --no-privileges `
+  --verbose `
+  --file=supabase_dump.dump
+
+pg_dump "postgresql://postgres:pVy6hr9NwX4XsgMX@db.irjkppabtcmhrxvtkkyy.supabase.co:5432/postgres" --format=custom --no-owner --no-privileges --verbose --file=supabase_dump.dump
 
 

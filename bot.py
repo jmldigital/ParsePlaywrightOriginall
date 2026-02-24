@@ -11,7 +11,8 @@ from telegram.ext import (
     ContextTypes,
 )
 import glob  # ← ДОБАВЬ ЭТУ СТРОКУ
-
+from config import get_output_file  # Импорт функции
+from pathlib import Path
 from dotenv import load_dotenv
 import subprocess
 import signal
@@ -180,8 +181,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки прайс-листов автозапчастей.\n\n"
         "📋 Доступные команды:\n"
-        "/mode_price - Режим: поиск цен и доставки\n"
-        "/mode_name - Режим: поиск названий деталей\n\n"
         "/mode_weight - Режим: поиск весов\n\n"
         "• `/stop` — 🛑 **Остановить парсер**\n\n"
         "📎 Для загрузки файла отправьте файл .xls/.xlsx"
@@ -196,16 +195,6 @@ import signal
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global parse_task
-
-    # 🆕 ОТЛАДКА - добавь эти 4 строки
-    # await update.message.reply_text(f"🔍 DEBUG: parse_task={parse_task}")
-    # if parse_task:
-    #     await update.message.reply_text(
-    #         f"🔍 DEBUG: PID={parse_task.pid}, poll={parse_task.poll()}"
-    #     )
-    # await update.message.reply_text(
-    #     f"🔍 DEBUG: глобальная parse_task={globals().get('parse_task')}"
-    # )
 
     if not parse_task or parse_task.poll() is not None:
         await update.message.reply_text("ℹ️ **Парсер не запущен**")
@@ -223,11 +212,32 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("🛑 SIGTERM sent (Linux/Mac)")
 
     try:
+
         parse_task.wait(timeout=60)  # 1 минута достаточно
         logger.info("✅ Graceful stop completed")
         await update.message.reply_text(
             "🛑 **Graceful stop завершён! Финальный файл отправлен** ✅"
         )
+        # 🆕 ОТПРАВЛЯЕМ batch_finalize.xlsx
+        batch_file = Path("output/batch_finalize.xlsx")
+
+        if batch_file.exists():
+            try:
+                with open(batch_file, "rb") as f:
+                    await update.message.reply_document(
+                        document=f, caption="✅ **Финальный файл batch_finalize.xlsx**"
+                    )
+                logger.info("📤 batch_finalize.xlsx отправлен!")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки: {e}")
+                await update.message.reply_text(
+                    "💾 **Файл готов**: output/batch_finalize.xlsx"
+                )
+        else:
+            await update.message.reply_text(
+                "❌ **Файл не найден**: output/batch_finalize.xlsx"
+            )
+
     except subprocess.TimeoutExpired:
         logger.warning("⚠️ Timeout — kill")
         parse_task.kill()

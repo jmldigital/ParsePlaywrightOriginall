@@ -5,9 +5,11 @@ services:
     build: .
     container_name: price-parser-bot-crowly
     
-    # ⚡ Важно для Playwright: общая память
     ipc: host
     shm_size: '4gb'
+    cpus: '2'                    # ← CPU лимит
+    mem_limit: 3G                  # ← RAM лимит  
+    mem_reservation: 2G            # ← Минимальный резерв
     
     volumes:
       - .:/app
@@ -33,7 +35,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 3G
+          cpus: '1.5'
         reservations:
           memory: 2G
 
