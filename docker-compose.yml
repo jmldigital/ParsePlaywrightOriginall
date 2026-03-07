@@ -7,8 +7,9 @@ services:
     
     ipc: host
     shm_size: '4gb'
-    cpus: '2'                    # ← CPU лимит
-    mem_limit: 3G                  # ← RAM лимит  
+    cpus: 2                    # ← CPU лимит
+    mem_limit: 6G   
+    memswap_limit: 6G               # ← Добавли, чтобы отключить соп (Все тольок в RAM) 
     mem_reservation: 2G            # ← Минимальный резерв
     
     volumes:
@@ -31,14 +32,6 @@ services:
       - HEADLESS=true
       # В образе mcr...v1.34.0 браузеры лежат здесь
       - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
-    deploy:
-      resources:
-        limits:
-          memory: 3G
-          cpus: '1.5'
-        reservations:
-          memory: 2G
 
     logging:
       driver: json-file

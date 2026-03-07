@@ -51,6 +51,26 @@ INPUT_DIR.mkdir(exist_ok=True)
 # from pathlib import Path
 
 
+def get_parser_script() -> str:
+    """Выбор скрипта с ОТЛАДОЧНЫМИ логами"""
+    load_dotenv(override=True)  # ← ПЕРЕЗАГРУЗКА!
+
+    enable_price = os.getenv("ENABLE_PRICE_PARSING", "False").lower() == "true"
+    enable_weight = os.getenv("ENABLE_WEIGHT_PARSING", "False").lower() == "true"
+
+    logger.info(f"🔍 .env: PRICE={enable_price} | WEIGHT={enable_weight}")
+
+    if enable_weight:
+        logger.info("📄 ✅ ВЫБРАН: main.py (ВЕСА)")
+        return "main.py"
+    elif enable_price:
+        logger.info("📄 ✅ ВЫБРАН: main-yambo.py (ЯМБО)")
+        return "main-yambo.py"
+    else:
+        logger.warning("⚠️ Нет режимов — main.py по умолчанию")
+        return "main.py"
+
+
 async def monitor_parser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Фоновый мониторинг парсера"""
     global parse_task
@@ -129,50 +149,34 @@ def set_env_variable(key: str, value: str):
 
 
 async def mode_price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключить на режим поиска цен"""
+    """Режим Yambo (цены)"""
     try:
-        set_env_variable("ENABLE_NAME_PARSING", "False")
-        set_env_variable("ENABLE_WEIGHT_PARSING", "False")
         set_env_variable("ENABLE_PRICE_PARSING", "True")
-        await update.message.reply_text(
-            "✅ Режим переключён: **Поиск цен и доставки**\n"
-            "Изменения вступят в силу при следующем запуске парсера.",
-            parse_mode="Markdown",
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при переключении режима: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-
-async def mode_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключить на режим поиска имён"""
-    try:
-        set_env_variable("ENABLE_NAME_PARSING", "True")
         set_env_variable("ENABLE_WEIGHT_PARSING", "False")
-        set_env_variable("ENABLE_PRICE_PARSING", "False")
+
         await update.message.reply_text(
-            "✅ Режим переключён: **Поиск названий деталей**\n"
-            "Изменения вступят в силу при следующем запуске парсера.",
+            "✅ **Режим Yambo (поиск цен)**\n"
+            "📄 Запустится: `main-yambo.py`\n\n"
+            "Изменения вступят в силу при следующем запуске.",
             parse_mode="Markdown",
         )
     except Exception as e:
-        logger.error(f"Ошибка при переключении режима: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
 async def mode_weight_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Переключить на режим поиска весов"""
+    """Режим поиска весов"""
     try:
         set_env_variable("ENABLE_WEIGHT_PARSING", "True")
-        set_env_variable("ENABLE_NAME_PARSING", "False")  # отключаем поиск имён
         set_env_variable("ENABLE_PRICE_PARSING", "False")
+
         await update.message.reply_text(
-            "✅ Режим переключён: **Поиск весов деталей**\n"
-            "Изменения вступят в силу при следующем запуске парсера.",
+            "✅ **Режим весов**\n"
+            "📄 Запустится: `main.py`\n\n"
+            "Изменения вступят в силу при следующем запуске.",
             parse_mode="Markdown",
         )
     except Exception as e:
-        logger.error(f"Ошибка при переключении режима: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
@@ -181,6 +185,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки прайс-листов автозапчастей.\n\n"
         "📋 Доступные команды:\n"
+        "/mode_yambo - Режим: поиска цен для yambo\n\n"
         "/mode_weight - Режим: поиск весов\n\n"
         "• `/stop` — 🛑 **Остановить парсер**\n\n"
         "📎 Для загрузки файла отправьте файл .xls/.xlsx"
@@ -224,8 +229,11 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if batch_file.exists():
             try:
                 with open(batch_file, "rb") as f:
-                    await update.message.reply_document(
-                        document=f, caption="✅ **Финальный файл batch_finalize.xlsx**"
+                    await context.bot.send_document(
+                        chat_id=update.effective_chat.id,
+                        document=f,
+                        caption="✅ **Финальный файл batch_finalize.xlsx**",
+                        timeout=120,  # ✅ Работает!
                     )
                 logger.info("📤 batch_finalize.xlsx отправлен!")
             except Exception as e:
@@ -233,6 +241,7 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     "💾 **Файл готов**: output/batch_finalize.xlsx"
                 )
+
         else:
             await update.message.reply_text(
                 "❌ **Файл не найден**: output/batch_finalize.xlsx"
@@ -252,7 +261,8 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик загрузки документов с повторными попытками и увеличенным таймаутом"""
+    """Обработчик загрузки документов"""
+
     try:
         document = update.message.document
         file_name = document.file_name.lower()
@@ -265,7 +275,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("⏳ Загружаю файл...")
 
-        # === Попытка получить файл с увеличенным таймаутом ===
+        # Получение файла с повторными попытками
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
@@ -291,29 +301,30 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await file.download_to_drive(target_file)
         logger.info(f"✅ Файл сохранён: {target_file}")
 
-        # await update.message.reply_text("✅ Файл загружен!\n🚀 Запускаю парсер...")
+        # 🔥 НОВОЕ: выбор скрипта по режиму
+        parser_script = get_parser_script()
+        mode_name = "Yambo (цены)" if "main-yambo.py" in parser_script else "Вес"
 
-        # 🆕 Запуск парсера как отменяемую задачу
         global parse_task
-
         parse_task = await asyncio.to_thread(
             lambda: subprocess.Popen(
-                [sys.executable, "main.py"],
+                [sys.executable, parser_script],  # ← ДИНАМИЧЕСКИЙ скрипт!
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
         )
 
-        logger.info(f"🚀 ПАРСЕР ЗАПУЩЕН (PID: {parse_task.pid})")
+        logger.info(f"🚀 ПАРСЕР ЗАПУЩЕН: {parser_script} (PID: {parse_task.pid})")
 
-        # 🆕 ФОНОВАЯ задача мониторинга вместо блокировки!
+        # Фоновая задача мониторинга
         asyncio.create_task(monitor_parser(update, context))
 
-        # ✅ Бот сразу отвечает - НЕ БЛОКИРУЕТСЯ
         await update.message.reply_text(
-            "✅ Парсер запущен в фоне!\n"
+            f"✅ **{mode_name}** парсер запущен в фоне!\n"
             f"📊 PID: `{parse_task.pid}`\n"
-            "🛑 `/stop` для остановки"
+            f"📄 Скрипт: `{parser_script}`\n"
+            "🛑 `/stop` для остановки",
+            parse_mode="Markdown",
         )
 
     except Exception as e:
@@ -336,8 +347,7 @@ def main():
     # Регистрируем обработчики
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("mode_weight", mode_weight_command))
-    application.add_handler(CommandHandler("mode_price", mode_price_command))
-    application.add_handler(CommandHandler("mode_name", mode_name_command))
+    application.add_handler(CommandHandler("mode_yambo", mode_price_command))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(CommandHandler("stop", stop_command))
     application.add_handler(

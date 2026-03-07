@@ -3,119 +3,129 @@ Japarts парсер - с заполнением формы поиска
 """
 
 import re
-import asyncio
 from typing import Tuple, Optional
 from playwright.async_api import Page
 from config import SELECTORS
+import asyncio
 
+# # Компилируем regex на уровне модуля — один раз при импорте
+# _RE_PHYSICAL = re.compile(r"Вес[:\s]*([\d.,]+)\s*кг", re.IGNORECASE)
+# _RE_VOLUMETRIC = re.compile(r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", re.IGNORECASE)
+# _NOT_FOUND_TEXT = "Записей по вашему запросу не найдено"
+
+# #  Все работает, н оиногда ерроры по first elemetn
 
 # async def parse_weight_japarts(
 #     page: Page, part: str, logger
 # ) -> Tuple[Optional[str], Optional[str]]:
-#     """
-#     🔥 JAPARTS: заполнение формы + парсинг веса
-#     Crawlee открыл главную страницу, ЗДЕСЬ делаем поиск!
-#     """
 #     try:
-#         # 🔥 1. ЗАПОЛНЯЕМ ФОРМУ ПОИСКА (твой старый код!)
-#         search_input = page.locator(SELECTORS["japarts"]["search_input"]).first
-#         await search_input.wait_for(state="visible", timeout=5000)
+#         weight_sel = SELECTORS["japarts"]["weight_row"]
+#         input_sel = SELECTORS["japarts"]["search_input"]
+
+#         search_input = page.locator(input_sel).first
+#         await search_input.wait_for(state="visible", timeout=3000)
+
 #         await search_input.fill(part)
+#         await search_input.press("Enter")
 
-#         search_button = page.locator(SELECTORS["japarts"]["search_button"]).first
-#         await search_button.click()
+#         # or_() — правильный способ ждать один из двух локаторов в Playwright
+#         weight_loc = page.locator(weight_sel)
+#         not_found_loc = page.locator("table[bgcolor='red'] td")
 
-#         # 2. Ждём результатов
-#         await page.wait_for_timeout(3000)
+#         result_loc = weight_loc.or_(not_found_loc).first
 
-#         # 3. Проверка: нет результатов?
-#         content = await page.content()
-#         if "Записей по вашему запросу не найдено" in content:
-#             # logger.info(f"Jparts - ❌ Не найдено: {part}")
+#         try:
+#             await result_loc.wait_for(state="attached", timeout=7000)
+#         except Exception as e:
+#             logger.debug(f"⏱️ Japarts timeout waiting for result {part}: {e}")
 #             return None, None
 
-#         # 4. Парсинг веса (твой старый код)
-#         weight_loc = page.locator(SELECTORS["japarts"]["weight_row"]).first
-#         weight_text = await weight_loc.text_content(timeout=5000)
+#         first_text = await result_loc.inner_text()
+#         if _NOT_FOUND_TEXT in first_text:
+#             return None, None
+
+#         weight_text = await weight_loc.first.inner_text(timeout=5000)
 
 #         if not weight_text or "Нет веса" in weight_text:
-#             # logger.warning(f"⚠️ Вес не найден: {part}")
 #             return None, None
 
-#         # 5. Регулярки
-#         p_match = re.search(r"Вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE)
-#         v_match = re.search(
-#             r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE
-#         )
+#         p_match = _RE_PHYSICAL.search(weight_text)
+#         v_match = _RE_VOLUMETRIC.search(weight_text)
 
 #         physical = p_match.group(1).replace(",", ".") if p_match else None
 #         volumetric = v_match.group(1).replace(",", ".") if v_match else None
 
-#         # logger.info(f"🎯 Вес: {physical}/{volumetric} ({part})")
 #         return physical, volumetric
 
 #     except Exception as e:
-#         logger.error(f" ❌ aparts error {part}: {e}")
-
-#         # EmptyPage проверка
-#         content = await page.content()
-#         if len(content.strip()) < 100:
-#             logger.warning(f"📭 EmptyPage: {part}")
-#             return "EmptyPage", "EmptyPage"
-
-
+#         logger.error(f"❌ Japarts error {part}: {e}")
 #         return None, None
+
+_RE_PHYSICAL = re.compile(r"Вес[:\s]*([\d.,]+)\s*кг", re.IGNORECASE)
+_RE_VOLUMETRIC = re.compile(r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", re.IGNORECASE)
+_NOT_FOUND_TEXT = "Записей по вашему запросу не найдено"
+
+
+def _extract_weights(text: str) -> Tuple[Optional[str], Optional[str]]:
+    p_match = _RE_PHYSICAL.search(text)
+    v_match = _RE_VOLUMETRIC.search(text)
+    physical = p_match.group(1).replace(",", ".") if p_match else None
+    volumetric = v_match.group(1).replace(",", ".") if v_match else None
+    return physical, volumetric
+
+
 async def parse_weight_japarts(
     page: Page, part: str, logger
 ) -> Tuple[Optional[str], Optional[str]]:
     try:
-        # 1. Быстрый доступ к инпуту
-        search_input = page.locator(SELECTORS["japarts"]["search_input"]).first
+        weight_sel = SELECTORS["japarts"]["weight_row"]
+        input_sel = SELECTORS["japarts"]["search_input"]
 
-        # Ждем только появления инпута (макс 3 сек)
+        # Таймаут 1: ждём поле ввода
+        search_input = page.locator(input_sel).first
         await search_input.wait_for(state="visible", timeout=3000)
         await search_input.fill(part)
-
-        # 2. Вместо клика жмем Enter — это быстрее и надежнее
         await search_input.press("Enter")
 
-        # 3. УМНОЕ ОЖИДАНИЕ (вместо фиксированных 3 секунд)
-        # Ждем либо строку с весом, либо сообщение, что ничего не найдено
+        # Таймаут 2: ждём появления любого результата (вес или "не найдено")
+        weight_loc = page.locator(weight_sel)
+        not_found_loc = page.locator("table[bgcolor='red'] td")
+
         try:
-            await asyncio.wait_for(
-                page.locator(
-                    f"{SELECTORS['japarts']['weight_row']}, :has-text('Записей по вашему запросу не найдено')"
-                ).first.wait_for(state="attached"),
-                timeout=7.0,  # Общий таймаут на поиск
+            await weight_loc.or_(not_found_loc).first.wait_for(
+                state="attached", timeout=7000
             )
-        except asyncio.TimeoutError:
+        except Exception as e:
+            logger.debug(f"⏱️ Japarts timeout waiting for result {part}: {e}")
             return None, None
 
-        # 4. Проверка контента
-        content = await page.content()
-        if "Записей по вашему запросу не найдено" in content:
+        # Дальше — синхронная логика, без await
+        # Проверяем "не найдено" через уже загруженный DOM
+        not_found_els = await not_found_loc.all()
+        for el in not_found_els:
+            if _NOT_FOUND_TEXT in await el.inner_text():
+                return None, None
+
+        # Собираем все строки с весом
+        weight_els = await weight_loc.all()
+        if not weight_els:
             return None, None
 
-        # 5. Извлечение текста веса
-        weight_loc = page.locator(SELECTORS["japarts"]["weight_row"]).first
-        if await weight_loc.count() == 0:
-            return None, None
+        texts = [await el.inner_text() for el in weight_els]
 
-        weight_text = await weight_loc.text_content()
+        # Приоритет 1: строки с обоими весами
+        for text in texts:
+            physical, volumetric = _extract_weights(text)
+            if physical and volumetric:
+                return physical, volumetric
 
-        if not weight_text or "Нет веса" in weight_text:
-            return None, None
+        # Приоритет 2: строки хотя бы с одним весом
+        for text in texts:
+            physical, volumetric = _extract_weights(text)
+            if physical or volumetric:
+                return physical, volumetric
 
-        # 6. Регулярки (без изменений)
-        p_match = re.search(r"Вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE)
-        v_match = re.search(
-            r"объемный[:\s]*вес[:\s]*([\d.,]+)\s*кг", weight_text, re.IGNORECASE
-        )
-
-        physical = p_match.group(1).replace(",", ".") if p_match else None
-        volumetric = v_match.group(1).replace(",", ".") if v_match else None
-
-        return physical, volumetric
+        return None, None
 
     except Exception as e:
         logger.error(f"❌ Japarts error {part}: {e}")
