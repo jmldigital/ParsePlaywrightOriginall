@@ -286,6 +286,9 @@ from playwright.async_api import Page
 from twocaptcha import TwoCaptcha
 
 
+solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+
 # корокая функция без лишнего
 async def solve_captcha_universal(
     page: Page,
@@ -303,7 +306,20 @@ async def solve_captcha_universal(
     """
 
     # Инициализируем solver внутри функции
-    solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+    # 🆗 DEBUG — ПЕРВАЯ СТРОЧКА!
+    logger.info(
+        f"🔍 DEBUG solve_captcha_universal: site_key='{site_key}' type={type(site_key)}"
+    )
+    # 🆗 adeo — ПРЯМО ПЕРЕД captcha_img!
+    # if site_key == "adeo":
+    #     logger.info("🔒 [adeo] → reCAPTCHA v2")
+    #     return await solve_adeo_recaptcha_v2(page, logger)
+
+    # Проверяем наличие селекторов ПЕРЕД locator()
+    if not selectors.get("captcha_img"):
+        logger.warning(f"[{site_key}] Нет селекторов")
+        return False
 
     captcha_img = page.locator(selectors["captcha_img"])
 
@@ -381,6 +397,44 @@ async def solve_captcha_universal(
 
     logger.error(f"[{site_key}] Исчерпаны попытки ({max_attempts})")
     return False
+
+
+# async def solve_adeo_recaptcha_v2(page, logger) -> bool:
+#     try:
+#         logger.info("🔒 [adeo] 2captcha решает reCAPTCHA...")
+
+#         from twocaptcha import TwoCaptcha
+
+#         solver = TwoCaptcha(API_KEY_2CAPTCHA)
+
+#         # 🆕 ТВОЙ sitekey из iframe!
+#         sitekey = "6Ld0qCkTAAAAABsB8vqojZWYD9o_KLZvt6xF3x-l"
+
+#         loop = asyncio.get_running_loop()
+#         result = await loop.run_in_executor(
+#             None, lambda: solver.recaptcha(sitekey=sitekey, url="https://adeo.pro")
+#         )
+
+#         recaptcha_token = result["code"]
+#         logger.info(f"✅ [adeo] reCAPTCHA решена: {recaptcha_token[:50]}...")
+
+#         # Вставляем токен
+#         await page.evaluate(
+#             f"""
+#             document.getElementById('g-recaptcha-response').innerHTML = '{recaptcha_token}';
+#             document.getElementById('g-recaptcha-response').value = '{recaptcha_token}';
+
+#             // Callback для adeo JS
+#             if (window.___grecaptcha_cfg?.clients[0]?.aa?.l?.callback) {{
+#                 window.___grecaptcha_cfg.clients[0].aa.l.callback('{recaptcha_token}');
+#             }}
+#         """
+#         )
+
+#         return True
+#     except Exception as e:
+#         logger.error(f"❌ [adeo] 2captcha: {e}")
+#         return False
 
 
 async def _save_debug_screenshot(

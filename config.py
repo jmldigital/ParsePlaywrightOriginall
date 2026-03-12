@@ -9,7 +9,7 @@ load_dotenv()
 
 
 TEMP_RAW = 20
-MAX_WORKERS = 2
+MAX_WORKERS = 1
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 
 
@@ -29,7 +29,7 @@ PROXY_PASSWORD = "u038f310456a605c1"
 # === Telegram ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8364237483AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-4688651319"))
-SEND_TO_TELEGRAM = True
+SEND_TO_TELEGRAM = False
 
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
@@ -63,6 +63,9 @@ stparts_price = "stparts_price"
 stparts_delivery = "stparts_delivery"
 avtoformula_price = "avtoformula_price"
 avtoformula_delivery = "avtoformula_delivery"
+adeo_price = "adeo_price"
+adeo_delivery = "adeo_delivery"
+
 corrected_price = "corrected_price"
 
 
@@ -147,7 +150,15 @@ SELECTORS = {
             "span.font__body2",  # Основной
         ],
     },
+    "adeo": {
+        "captcha_img": "",  # reCAPTCHA v2 не имеет img
+        "captcha_input": "",  # Не нужен
+        "captcha_submit": ".g-recaptcha, iframe[src*='recaptcha']",
+        # Для reCAPTCHA v2 используем sitekey напрямую
+    },
 }
+
+
 BAD_DETAIL_NAMES = {
     "деталь",
     "автозапчасть",

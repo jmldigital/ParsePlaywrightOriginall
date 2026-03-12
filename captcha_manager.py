@@ -15,7 +15,14 @@ class CaptchaManager:
     async def solve_captcha(self, page, logger, site_key: str, selectors: dict) -> bool:
         """
         Очередь на капчу: максимум 1 решение одновременно!
+
+
         """
+
+        logger.info(
+            f"🚀 CaptchaManager.solve_captcha НАЧИНАЕТСЯ: site_key='{site_key}'"
+        )
+
         async with self._semaphore:  # 🆕 БЛОКИРУЕМ ВСЕХ КРОМЕ 1‑ГО!
             logger.info(f"🔒 [{site_key}] Капча очередь: мой черёд!")
 

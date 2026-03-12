@@ -35,17 +35,11 @@ os.environ["PYTHONIOENCODING"] = "utf-8"
 print("🟢 Глобальный UTF-8: 🚀 Тест прошел!")
 
 
-from scraper_japarts import scrape_weight_japarts
-from scraper_armtek import scrape_weight_armtek
-
 load_dotenv()
 from config import BAD_DETAIL_NAMES
 
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from config import (
-    ENABLE_NAME_PARSING,
-    ENABLE_WEIGHT_PARSING,
-    ENABLE_PRICE_PARSING,
     COOKIE_FILE,
     AVTO_LOGIN,
     AVTO_PASSWORD,
@@ -76,6 +70,7 @@ import requests
 # Импортируем асинхронные скрапперы
 from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
 from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
+from scraper_adeo import scrape_adeo
 from auth import ensure_logged_in
 
 
@@ -98,6 +93,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 
 logger_avto = get_site_logger("avtoformula")
+logger_adeo = get_site_logger("adeo")
 logger_st = get_site_logger("stparts")
 logger_jp = get_site_logger("japarts")
 logger_armtek = get_site_logger("armtek")
@@ -468,97 +464,123 @@ async def process_single_item(
     if PRICE:
         max_retries = 2
 
+        SITES = {
+            "stparts": {"scrape_func": scrape_stparts_async, "logger": logger_st},
+            "avtoformula": {
+                "scrape_func": scrape_avtoformula_pw,
+                "logger": logger_avto,
+            },
+            "adeo": {"scrape_func": scrape_adeo, "logger": logger_adeo},
+        }
+
+        CAPTCHA_SITES = ["stparts", "avtoformula"]  # adeo решает капчу сам
+
         for attempt in range(max_retries + 1):
-            page1 = None
-            page2 = None
-
+            pages = {}
             try:
-                # 🆕 свежие страницы каждый retry из контекста
-                page1 = await context.new_page()  # Stparts
-                page2 = await context.new_page()  # Avtoformula
+                # Создаем страницы
+                for site_name in SITES:
+                    pages[site_name] = await context.new_page()
 
-                result_st, result_avto = await asyncio.gather(
-                    scrape_stparts_async(page1, brand, part, logger_st),
-                    scrape_avtoformula_pw(page2, brand, part, logger_avto),
-                    return_exceptions=True,
-                )
+                results_dict = {}
 
-                # Капча
-                if result_st == "NeedCaptcha" or result_avto == "NeedCaptcha":
-                    site_to_solve = (
-                        "stparts" if result_st == "NeedCaptcha" else "avtoformula"
-                    )
-                    logger_to_use = (
-                        logger_st if site_to_solve == "stparts" else logger_avto
-                    )
-                    page_to_solve = page1 if site_to_solve == "stparts" else page2
-
+                # Сбор результатов со всех сайтов
+                for site_name, site_config in SITES.items():
                     logger.info(
-                        f"🔒 [{idx}] Капча на {site_to_solve} (попытка {attempt+1}/{max_retries+1})"
+                        f"🔍 Запускаем {site_name} (попытка {attempt+1}/{max_retries+1})..."
                     )
 
-                    success = await captcha_manager.solve_captcha(
-                        page=page_to_solve,
-                        logger=logger_to_use,
-                        site_key=site_to_solve,
-                        selectors={
-                            "captcha_img": SELECTORS[site_to_solve]["captcha_img"],
-                            "captcha_input": SELECTORS[site_to_solve]["captcha_input"],
-                            "captcha_submit": SELECTORS[site_to_solve][
-                                "captcha_submit"
-                            ],
-                        },
+                    result = await site_config["scrape_func"](
+                        pages[site_name], brand, part, site_config["logger"]
                     )
+                    results_dict[site_name] = result
 
-                    await safe_close_page(page1)
-                    await safe_close_page(page2)
-                    page1 = page2 = None
+                # 🔥 ОБРАБОТКА КАПЧИ - универсальная для всех сайтов кроме adeo
+                captcha_found = False
+                for site_name in CAPTCHA_SITES:
+                    if results_dict.get(site_name) == "NeedCaptcha":
+                        captcha_found = True
+                        logger.info(
+                            f"🔒 [{idx}] Капча на {site_name} (попытка {attempt+1}/{max_retries+1})"
+                        )
 
-                    if success:
-                        continue  # retry с новыми страницами из того же контекста
-                    else:
-                        return "CaptchaFailed"
+                        # Решаем капчу
+                        success = await captcha_manager.solve_captcha(
+                            page=pages[site_name],
+                            logger=SITES[site_name]["logger"],
+                            site_key=site_name,
+                            selectors={
+                                "captcha_img": SELECTORS[site_name]["captcha_img"],
+                                "captcha_input": SELECTORS[site_name]["captcha_input"],
+                                "captcha_submit": SELECTORS[site_name][
+                                    "captcha_submit"
+                                ],
+                            },
+                        )
 
-                # Разлогин
-                if (
-                    isinstance(result_avto, Exception)
-                    and "зарегистрируйтесь" in str(result_avto).lower()
-                ):
-                    await safe_close_page(page1)
-                    await safe_close_page(page2)
-                    return "ReauthNeeded"
+                        # Закрываем страницу с капчей
+                        await safe_close_page(pages[site_name])
+                        pages[site_name] = None
+
+                        if success:
+                            # Перезапускаем ТОЛЬКО этот сайт с капчей
+                            logger.info(
+                                f"🔓 Капча решена на {site_name}, перезапуск..."
+                            )
+                            result = await SITES[site_name]["scrape_func"](
+                                await context.new_page(),
+                                brand,
+                                part,
+                                SITES[site_name]["logger"],
+                            )
+                            results_dict[site_name] = result
+                        else:
+                            logger.error(f"❌ Не удалось решить капчу на {site_name}")
+                            results_dict[site_name] = None
 
                 # Нормализация результатов
-                price_st, delivery_st = (
-                    result_st
-                    if result_st and result_st != "NeedCaptcha"
-                    else (None, None)
-                )
-                price_avto, delivery_avto = (
-                    result_avto
-                    if result_avto and result_avto != "NeedCaptcha"
-                    else (None, None)
-                )
+                normalized_results = {}
+                all_failed = True
 
-                await safe_close_page(page1)
-                await safe_close_page(page2)
+                for site_name, result in results_dict.items():
+                    if result and result != (None, None) and result != "NeedCaptcha":
+                        price, delivery = result
+                        normalized_results[f"{site_name}_price"] = price
+                        normalized_results[f"{site_name}_delivery"] = delivery
+                        if price is not None:
+                            all_failed = False
+                    else:
+                        normalized_results[f"{site_name}_price"] = None
+                        normalized_results[f"{site_name}_delivery"] = None
 
-                return idx, {
-                    stparts_price: price_st,
-                    stparts_delivery: delivery_st,
-                    avtoformula_price: price_avto,
-                    avtoformula_delivery: delivery_avto,
-                }
+                # Закрываем оставшиеся страницы
+                for site_name, page in pages.items():
+                    if page is not None:
+                        await safe_close_page(page)
+                pages = {}
+
+                # Если все сайты вернули None — повторяем попытку
+                if all_failed and attempt < max_retries:
+                    logger.warning(
+                        f"[{idx}] Все сайты вернули None, retry {attempt+1}..."
+                    )
+                    continue
+
+                return idx, normalized_results
 
             except Exception as e:
                 logger.error(f"[{idx}] PRICE ошибка попытка {attempt+1}: {e}")
-                await safe_close_page(page1)
-                await safe_close_page(page2)
+                for p in pages.values():
+                    if p is not None:
+                        await safe_close_page(p)
+                pages = {}
                 if attempt < max_retries:
                     continue
-                return None
 
-    return result  # Общий return в конце
+        logger.error(f"[{idx}] Все попытки исчерпаны")
+        return idx, {f"{s}_price": None for s in SITES} | {
+            f"{s}_delivery": None for s in SITES
+        }
 
 
 async def worker(
