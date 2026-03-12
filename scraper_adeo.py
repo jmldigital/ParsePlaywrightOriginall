@@ -155,7 +155,7 @@ async def scrape_adeo(page: Page, brand: str, part: str, logger):
                 body = await response.text()
             except:
                 body = ""
-            logger.info(f"[adeo] 📡 {status} len={len(body)}")
+            # logger.info(f"[adeo] 📡 {status} len={len(body)}")
             if status == 200 and not got_result.is_set():
                 result_data["status"] = status
                 result_data["body"] = body

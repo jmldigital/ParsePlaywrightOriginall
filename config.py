@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)  # ✅ Локальный логгер
 load_dotenv()
 
 
-TEMP_RAW = 20
-MAX_WORKERS = 1
+TEMP_RAW = 50
+MAX_WORKERS = 2
 DELAY_EXIST = False  # ✅ Задержка перед тасками
 
 
@@ -65,6 +65,8 @@ avtoformula_price = "avtoformula_price"
 avtoformula_delivery = "avtoformula_delivery"
 adeo_price = "adeo_price"
 adeo_delivery = "adeo_delivery"
+emex_delivery = "emex_delivery"
+emex_price = "emex_price"
 
 corrected_price = "corrected_price"
 
@@ -155,6 +157,11 @@ SELECTORS = {
         "captcha_input": "",  # Не нужен
         "captcha_submit": ".g-recaptcha, iframe[src*='recaptcha']",
         # Для reCAPTCHA v2 используем sitekey напрямую
+    },
+    "emex": {
+        "captcha_img": "",  # Пока пусто
+        "captcha_input": "",
+        "captcha_submit": "",
     },
 }
 

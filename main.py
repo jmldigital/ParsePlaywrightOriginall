@@ -71,6 +71,7 @@ import requests
 from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
 from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
 from scraper_adeo import scrape_adeo
+from scrape_emex import scrape_emex
 from auth import ensure_logged_in
 
 
@@ -97,6 +98,7 @@ logger_adeo = get_site_logger("adeo")
 logger_st = get_site_logger("stparts")
 logger_jp = get_site_logger("japarts")
 logger_armtek = get_site_logger("armtek")
+logger_emex = get_site_logger("emex")
 
 stop_parsing = multiprocessing.Event()
 stop_parsing.clear()
@@ -471,9 +473,15 @@ async def process_single_item(
                 "logger": logger_avto,
             },
             "adeo": {"scrape_func": scrape_adeo, "logger": logger_adeo},
+            "emex": {"scrape_func": scrape_emex, "logger": logger_emex},
         }
 
-        CAPTCHA_SITES = ["stparts", "avtoformula", "adeo"]  # adeo решает капчу сам
+        CAPTCHA_SITES = [
+            "stparts",
+            "avtoformula",
+            "adeo",
+            "emex",
+        ]  # adeo решает капчу сам
 
         for attempt in range(max_retries + 1):
             pages = {}
