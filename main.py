@@ -473,7 +473,7 @@ async def process_single_item(
             "adeo": {"scrape_func": scrape_adeo, "logger": logger_adeo},
         }
 
-        CAPTCHA_SITES = ["stparts", "avtoformula"]  # adeo решает капчу сам
+        CAPTCHA_SITES = ["stparts", "avtoformula", "adeo"]  # adeo решает капчу сам
 
         for attempt in range(max_retries + 1):
             pages = {}
