@@ -103,7 +103,7 @@ logger_emex = get_site_logger("emex")
 stop_parsing = multiprocessing.Event()
 stop_parsing.clear()
 
-sites = ["avtoformula", "stparts", "japarts", "armtek"]
+sites = ["avtoformula", "stparts", "japarts", "armtek", "emex"]
 
 INPUT_DIR = Path("input")
 

@@ -3,9 +3,9 @@
 Асинхронный парсер stparts.ru через Playwright
 С поддержкой капчи, fallback-поиска и приоритета "в наличии"
 """
-import datetime
+from datetime import datetime
 import re
-import base64
+import uuid
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 from twocaptcha import TwoCaptcha
 from config import SELECTORS, API_KEY_2CAPTCHA
@@ -21,28 +21,73 @@ BASE_URL = "https://stparts.ru"
 WAIT_TIMEOUT = 8000  # миллисекунд (8 секунд)
 
 
-async def wait_for_results_or_no_results_async(page: Page) -> str:
-    """Ожидает появления результатов или блока 'нет результатов'"""
-    try:
-        await page.wait_for_function(
-            """
-            (selector) => document.querySelector(selector) ||
-                  document.querySelector('div.fr-alert.fr-alert-warning.alert-noResults')
-            """,
-            arg=SELECTORS["stparts"]["results_table"],
-            timeout=WAIT_TIMEOUT,
-        )
+# async def wait_for_results_or_no_results_async(page: Page) -> str:
+#     """Ожидает появления результатов или блока 'нет результатов'"""
+#     try:
+#         await page.wait_for_function(
+#             """
+#             (selector) => document.querySelector(selector) ||
+#                   document.querySelector('div.fr-alert.fr-alert-warning.alert-noResults')
+#             """,
+#             arg=SELECTORS["stparts"]["results_table"],
+#             timeout=WAIT_TIMEOUT,
+#         )
 
-        if await page.locator(
-            "div.fr-alert.fr-alert-warning.alert-noResults"
-        ).is_visible():
-            logger.info("🚫 На странице указан блок 'нет результатов'")
+#         if await page.locator(
+#             "div.fr-alert.fr-alert-warning.alert-noResults"
+#         ).is_visible():
+#             logger.info("🚫 На странице указан блок 'нет результатов'")
+#             return "no_results"
+
+#         return "has_results"
+#     except PlaywrightTimeout:
+#         logger.warning("⚠️ Истёк таймаут ожидания появления результатов")
+#         return "timeout"
+
+
+async def wait_for_results_or_no_results_async(
+    page: Page, brand: str = "", part: str = ""
+) -> str:
+    """Ожидает результаты с логами и скриншотами + параметры brand/part"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    request_id = str(uuid.uuid4())[:6]
+
+    try:
+        logger.info(f"🔍 [{request_id}] Проверка {brand}/{part}")
+
+        # 1. Ждём ТАБЛИЦУ РЕЗУЛЬТАТОВ (3 сек)
+        table = page.locator(SELECTORS["stparts"]["results_table"])
+        if await table.is_visible(timeout=3000):
+            rows = table.locator(SELECTORS["stparts"]["result_row"])
+            count = await rows.count()
+            if count > 0:
+                logger.info(
+                    f"✅ [{request_id}] НАЙДЕНО {count} строк для {brand}/{part}"
+                )
+                return "has_results"
+
+        # 2. Скриншот для дебага
+        screenshot_path = f"screenshots/no_results_{part}_{timestamp}_{request_id}.png"
+        # await page.screenshot(path=screenshot_path, full_page=True)
+        logger.info(f"📸 Скриншот: {screenshot_path}")
+
+        # 3. Проверяем "нет результатов" (1 сек)
+        no_results = page.locator("div.fr-alert.fr-alert-warning.alert-noResults")
+        if await no_results.is_visible(timeout=1000):
+            text = await no_results.text_content() or "пусто"
+            logger.info(
+                f"🚫 [{request_id}] 'Нет результатов' для {brand}/{part}: {text.strip()}"
+            )
             return "no_results"
 
-        return "has_results"
-    except PlaywrightTimeout:
-        logger.warning("⚠️ Истёк таймаут ожидания появления результатов")
-        return "timeout"
+        logger.warning(f"⚠️ [{request_id}] Неопределённо для {brand}/{part}")
+        return "unclear"
+
+    except Exception as e:
+        screenshot_path = f"screenshots/error_{part}_{timestamp}_{request_id}.png"
+        await page.screenshot(path=screenshot_path, full_page=True)
+        logger.error(f"❌ [{request_id}] Ошибка для {brand}/{part}: {e}")
+        return "error"
 
 
 async def scrape_stparts_async(
@@ -50,7 +95,18 @@ async def scrape_stparts_async(
 ) -> tuple:
     """Асинхронный парсер stparts.ru с передачей логгера."""
     try:
-        url = f"{BASE_URL}/search/{brand}/{part}"
+        # url = f"{BASE_URL}/search/{brand}/{part}"
+
+        def get_first_brand(brand: str) -> str:
+            """Берёт первое слово до пробела, дефиса, слеша и т.д."""
+            match = re.match(r"^[A-ZА-Я0-9]+", brand, re.IGNORECASE)
+            return match.group(0) if match else brand.split()[0] if brand else "unknown"
+
+        # В scrape_stparts_async:
+        first_brand = get_first_brand(brand)
+        url = f"{BASE_URL}/search/{first_brand}/{part}"
+        logger.info(f"🔗 [{first_brand}] {url} (из '{brand}')")
+
         await page.goto(url)
         # logger.info(f"Загружена страница: {url}")
 
@@ -58,7 +114,7 @@ async def scrape_stparts_async(
             logger.warning("Обнаружена капча на stparts.ru")
             return "NeedCaptcha"  # 🆕 ФЛАГ!
 
-        status = await wait_for_results_or_no_results_async(page)
+        status = await wait_for_results_or_no_results_async(page, brand, part)
         if status != "has_results":
             return None, None
 
@@ -85,8 +141,14 @@ async def scrape_stparts_async(
                     logger.error(f"Ошибка получения brand_in_row для строки {i}: {e}")
                     continue
 
-                if not brand_matches(brand, brand_in_row):
+                match_result = brand_matches(brand, brand_in_row)
+
+                if not match_result:
+                    logger.info(f"❌ ПРОПУСК: '{brand}' ≠ '{brand_in_row}'")
                     continue
+
+                logger.info(f"✅ МАТЧ БРЕНДА: '{brand}' → '{brand_in_row}'")
+
                 try:
                     delivery_min = (
                         await row.locator(
@@ -132,7 +194,7 @@ async def scrape_stparts_async(
         logger.error(f"Ошибка парсинга стартов для {brand} / {part}: {e}")
         # Можно сделать скриншот для диагностики (опционально)
         await page.screenshot(
-            path=f"screenshots/error_{brand}_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            path=f"screenshots/error_{brand}_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         )
         return None, None
 
@@ -148,7 +210,7 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
             logger.warning("Обнаружена капча при фоллбеке stparts.ru (fallback)")
             return "NeedCaptcha"  # 🆕 ФЛАГ!
 
-        status = await wait_for_results_or_no_results_async(page)
+        status = await wait_for_results_or_no_results_async(page, brand, part)
         if status != "has_results":
             return None, None
 
@@ -171,8 +233,12 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
                     or ""
                 ).strip()
 
-                if not brand_matches(brand, brand_in_row):
+                match_result = brand_matches(brand, brand_in_row)
+                if not match_result:
+                    logger.info(f"❌ ПРОПУСК: '{brand}' ≠ '{brand_in_row}'")
                     continue
+
+                logger.info(f"✅ МАТЧ БРЕНДА: '{brand}' → '{brand_in_row}'")
 
                 delivery_min = (
                     await row.locator(SELECTORS["stparts"]["delivery"]).text_content()
@@ -314,6 +380,6 @@ async def scrape_stparts_name_async(
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга названия детали для {part}: {e}")
         await page.screenshot(
-            path=f"screenshots/error_name_stparts_{part}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            path=f"screenshots/error_name_stparts_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
         )
         return None

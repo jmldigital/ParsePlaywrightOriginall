@@ -522,16 +522,42 @@ def normalize_brand(brand_str):
     return re.sub(r"[^a-z0-9]", "", str(brand_str).lower())
 
 
-def brand_matches(search_brand, result_brand):
+# def brand_matches(search_brand, result_brand):
+#     if not search_brand or not result_brand:
+#         return False
+#     norm_search = normalize_brand(search_brand)
+#     norm_result = normalize_brand(result_brand)
+
+#     if norm_search == norm_result:
+#         return True
+#     if norm_search in norm_result:
+#         return True
+#     return False
+
+
+def brand_matches(search_brand: str, result_brand: str) -> bool:
+    """ЭКСТРЕННЫЙ ФИКС для Hyundai-KIA"""
     if not search_brand or not result_brand:
         return False
-    norm_search = normalize_brand(search_brand)
-    norm_result = normalize_brand(result_brand)
 
-    if norm_search == norm_result:
+    # ✅ 1. Приводим к нижнему регистру
+    s1 = search_brand.lower().strip()
+    s2 = result_brand.lower().strip()
+
+    # ✅ 2. Простое пересечение слов (включая дефисы)
+    words1 = set(re.split(r"[\s\-/_,]", s1))  # Разбиваем по пробелу, дефису, слешу
+    words2 = set(re.split(r"[\s\-/_,]", s2))
+
+    common = words1 & words2
+    logger.info(
+        f"🔎 DEBUG: '{search_brand}' words={words1} × '{result_brand}' words={words2} → {common}"
+    )
+
+    # ✅ 3. Минимум 1 слово + логика для HYUNDAI/KIA
+    if len(common) >= 1:
+        logger.info(f"✅ МАТЧ! Общие слова: {common}")
         return True
-    if norm_search in norm_result:
-        return True
+
     return False
 
 
