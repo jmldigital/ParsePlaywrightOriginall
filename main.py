@@ -56,6 +56,7 @@ from config import (
     DELAY_EXIST,
 )
 
+
 from utils import (
     logger,
     preprocess_dataframe,
@@ -63,7 +64,7 @@ from utils import (
     get_2captcha_proxy,
     get_site_logger,
 )
-from state_manager import load_state, save_state
+
 from price_adjuster import adjust_prices_and_save
 import requests
 
@@ -103,11 +104,12 @@ logger_emex = get_site_logger("emex")
 stop_parsing = multiprocessing.Event()
 stop_parsing.clear()
 
-sites = ["avtoformula", "stparts", "japarts", "armtek", "emex"]
+sites = ["avtoformula", "stparts", "japarts", "armtek"]
 
 INPUT_DIR = Path("input")
 
 stop_files = ["STOP", "STOP.flag", "AIL_STOP"]
+
 
 for name in stop_files:
     path = INPUT_DIR / name
@@ -870,7 +872,7 @@ async def main_async():
     reload_config()
     # TEMP_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 🆕 ЛОКАЛЬНЫЕ КОПИИ — работают ВЕЗДЕ!
+    # 🆕 ЛОКАЛЬНЫЕ КОПИИ
     from config import (
         INPUT_FILE,
         MAX_ROWS,
@@ -908,7 +910,6 @@ async def main_async():
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
 
-    # 🔥 🔥 🔥 ВСТАВЬ ЗДЕСЬ 🔥 🔥 🔥
     from config import (
         stparts_price,
         stparts_delivery,
@@ -930,7 +931,6 @@ async def main_async():
             logger.info(f"✅ Создана колонка: {col}")
 
     logger.info(f"📊 DataFrame готов: {df.shape} | колонки: {list(df.columns)}")
-    # 🔥 🔥 🔥 КОНЕЦ ВСТАВКИ 🔥 🔥 🔥
 
     if LOCAL_NAME and "finde_name" not in df.columns:
         df["finde_name"] = None
@@ -959,7 +959,6 @@ async def main_async():
     counter = {"processed": 0}
     counter_lock = asyncio.Lock()
 
-    # 🔥 🆕 ИСПРАВЛЕННЫЙ БЛОК: try-finally вместо async with
     playwright = None
     normal_browser = None
     proxy_browser = None
@@ -1009,7 +1008,7 @@ async def main_async():
                 for i in range(MAX_WORKERS)
             ]
 
-            # 🔥 ОСНОВНОЙ ЦИКЛ с промежуточным сохранением КАЖДЫЕ 10 строк!
+            # 🔥 ОСНОВНОЙ ЦИКЛ с промежуточным сохранением КАЖДЫЕ TEMP_RAW строк!
             while True:
                 async with counter_lock:
                     processed_count = counter["processed"]
@@ -1085,7 +1084,6 @@ async def main_async():
             # for _ in range(len(workers)):
             #     await queue.put(None)
 
-            # ✅ ДОБАВИТЬ:
             logger.info("⏳ Буфер записи df...")
             await asyncio.sleep(8)
 
