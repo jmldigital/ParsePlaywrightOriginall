@@ -59,6 +59,7 @@ from config import (
     SEND_TO_TELEGRAM,
 )
 from utils import (
+    setup_root_logging,
     logger,
     preprocess_dataframe,
     consolidate_weights,
@@ -83,21 +84,65 @@ load_dotenv()
 
 
 async def send_telegram_file(file_path: str, caption: str | None = None):
-    """Твоя функция, адаптированная под self"""
+    """📎 Отправка файла с retry + timeout + проверка"""
     if not SEND_TO_TELEGRAM:
         return
-    try:
-        bot = Bot(token=os.getenv("BOT_TOKEN"))  # ← Используй self.telegram_bot_token
-        async with bot:
-            with open(file_path, "rb") as f:
-                await bot.send_document(
-                    chat_id=os.getenv("ADMIN_CHAT_ID"),  # ← self.telegram_chat_id
-                    document=f,
-                    caption=caption,
-                )
-        logger.info("✅ Финальный файл отправлен в Telegram")
-    except Exception as e:
-        logger.info(f"❌ Ошибка отправки файла в Telegram: {e}")
+
+    # ✅ ПРОВЕРКА ФАЙЛА (критично!)
+    if not os.path.exists(file_path):
+        logger.error(f"❌ Файл НЕ НАЙДЕН: {file_path}")
+        return
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            bot = Bot(token=os.getenv("BOT_TOKEN"))
+            async with bot:
+                with open(file_path, "rb") as f:
+                    await bot.send_document(
+                        chat_id=os.getenv("ADMIN_CHAT_ID"),
+                        document=f,
+                        caption=caption,
+                        # ✅ Таймауты для send_document
+                        read_timeout=120,
+                        write_timeout=120,
+                        connect_timeout=30,
+                    )
+            logger.info("✅ Финальный файл отправлен в Telegram")
+            return  # Успех!
+
+        except asyncio.TimeoutError:
+            logger.warning(f"⏰ Таймаут (попытка {attempt+1}/{max_retries})")
+        except Exception as e:
+            logger.error(f"❌ Ошибка (попытка {attempt+1}): {e}")
+
+        if attempt < max_retries - 1:
+            wait_time = 2**attempt
+            logger.info(f"⏳ Ждем {wait_time}с перед повтором...")
+            await asyncio.sleep(wait_time)
+
+    logger.error("❌ Не удалось отправить после 3 попыток")
+
+
+async def send_telegram_link(output_file: str, caption: str = None):
+    """🔗 Отправка ССЫЛКИ вместо файла"""
+    if not SEND_TO_TELEGRAM:
+        return
+
+    filename = os.path.basename(output_file)
+    public_url = f"http://pricess.avpvl.ru/{filename}"
+
+    message = f"{caption or ''}\n🔗 <a href='{public_url}'>📊 Скачать {filename}</a>"
+
+    bot = Bot(token=os.getenv("BOT_TOKEN"))
+    async with bot:
+        await bot.send_message(
+            chat_id=os.getenv("ADMIN_CHAT_ID"),
+            text=message,
+            parse_mode="HTML",
+            disable_web_page_preview=False,  # Превью файла
+        )
+    logger.info(f"✅ Ссылка отправлена: {public_url}")
 
 
 async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
@@ -502,6 +547,10 @@ class ParserCrawler:
 
     async def _send_telegram_notification(self, message: str):
         """Отправка уведомления в Telegram"""
+
+        if not SEND_TO_TELEGRAM:  # ← ЭТОГО НЕТ, надо добавить
+            return
+
         if not self.telegram_chat_id or not self.telegram_bot_token:
             return
 
@@ -532,35 +581,38 @@ class ParserCrawler:
         )
         logger.info(f"CURRENT MODE: {self.mode}")
 
-        proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=PROXY_COUNT)
+        # proxy_list = await asyncio.to_thread(get_2captcha_proxy_pool, count=PROXY_COUNT)
+        proxy_list = []
 
         self.proxy_crawler = None
         logger.info("🌐 Загрузка прокси для Armtek...")
         if proxy_list:
-            self.proxy_crawler = PlaywrightCrawler(
-                request_handler=self.request_handler,
-                proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
-                use_session_pool=False,
-                max_request_retries=3,
-                concurrency_settings=ConcurrencySettings(
-                    max_concurrency=ARMTEK_WORKERS,
-                    desired_concurrency=ARMTEK_WORKERS,
-                    min_concurrency=2,
-                ),
-                browser_new_context_options={
-                    "ignore_https_errors": True,
-                    "args": [
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-accelerated-2d-canvas",
-                        "--no-first-run",
-                        "--no-zygote",
-                        "--disable-gpu",
-                    ],
-                },
-                headless=True,
-            )
+            # self.proxy_crawler = PlaywrightCrawler(
+            #     request_handler=self.request_handler,
+            #     proxy_configuration=ProxyConfiguration(proxy_urls=proxy_list),
+            #     use_session_pool=False,
+            #     max_request_retries=3,
+            #     concurrency_settings=ConcurrencySettings(
+            #         max_concurrency=ARMTEK_WORKERS,
+            #         desired_concurrency=ARMTEK_WORKERS,
+            #         min_concurrency=2,
+            #     ),
+            #     browser_new_context_options={
+            #         "ignore_https_errors": True,
+            #         "args": [
+            #             "--no-sandbox",
+            #             "--disable-setuid-sandbox",
+            #             "--disable-dev-shm-usage",
+            #             "--disable-accelerated-2d-canvas",
+            #             "--no-first-run",
+            #             "--no-zygote",
+            #             "--disable-gpu",
+            #         ],
+            #     },
+            #     headless=True,
+            # )
+            self.proxy_crawler = None
+            logger.info("🚫 Proxy отключены (работаем напрямую)")
             # 2. Добавляем хук ПОСЛЕ создания
             self.proxy_crawler._pre_navigation_hooks.append(block_media_requests)
             # proxy_crawler = None  # ← ДОБАВИТЬ!
@@ -573,7 +625,10 @@ class ParserCrawler:
         self.jparts_crawler = PlaywrightCrawler(
             request_handler=self.request_handler,
             max_request_retries=3,
-            use_session_pool=True,  # ✅ Сохранение сессии для Avtoformula
+            use_session_pool=True,
+            request_handler_timeout=timedelta(
+                seconds=90
+            ),  # ✅ Сохранение сессии для Avtoformula
             session_pool=SessionPool(
                 create_session_settings={
                     "blocked_status_codes": [403, 407],  # без 429
@@ -606,6 +661,7 @@ class ParserCrawler:
         self.armtek_crawler = PlaywrightCrawler(
             request_handler=self.request_handler,
             max_request_retries=3,
+            request_handler_timeout=timedelta(seconds=90),
             use_session_pool=True,  # ✅ Сохранение сессии для Avtoformula
             session_pool=SessionPool(
                 create_session_settings={
@@ -673,7 +729,7 @@ class ParserCrawler:
             rows_processed = batch_end
             logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
             # Telegram каждые N батчей (например, каждые 5 батчей = 2500 строк)
-            if batch_num % 2 == 0:
+            if batch_num % 2 == 0 and SEND_TO_TELEGRAM:
                 message = f"📊 Парсер: обработано <b>{rows_processed}</b> строк из {total_rows} ({self.mode})"
                 await self._send_telegram_notification(message)
 
@@ -707,7 +763,10 @@ class ParserCrawler:
 
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
-        await send_telegram_file(output_file, f"✅ {self.mode} завершены!")
+
+        if SEND_TO_TELEGRAM:
+            await send_telegram_file(output_file, f"✅ {self.mode} завершены!")
+            await send_telegram_link(output_file, f"✅ {self.mode} завершены!")
 
     async def finalize_saved_file(self, input_file: str, batch_num: int):
         """Асинхронно финализирует уже сохранённый файл"""
@@ -831,4 +890,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    setup_root_logging()
     asyncio.run(main())

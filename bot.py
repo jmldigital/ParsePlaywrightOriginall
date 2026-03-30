@@ -20,6 +20,7 @@ import asyncio
 from telegram import Bot
 import telegram
 import sys
+import aiohttp
 
 from config import INPUT_FILE
 
@@ -260,9 +261,40 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parse_task = None
 
 
+import ssl
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    # text = update.message.text.lower().strip()
+
+    await update.message.reply_text("ℹ️ Используйте /start для списка команд")
+
+
+async def safe_get_file(bot, file_id, max_retries=5, initial_delay=2.0):
+    """
+    Берёт файл с Telegram, с повторными попытками при TimedOut
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            file = await bot.get_file(
+                file_id,
+                read_timeout=180.0,
+            )
+            return file
+        except telegram.error.TimedOut:
+            if attempt == max_retries:
+                raise
+            delay = initial_delay * attempt
+            logger.warning(
+                f"🔁 get_file attempt {attempt} timed out, "
+                f"retrying in {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик загрузки документов"""
-
     try:
         document = update.message.document
         file_name = document.file_name.lower()
@@ -275,40 +307,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("⏳ Загружаю файл...")
 
-        # Получение файла с повторными попытками
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            try:
-                file = await context.bot.get_file(
-                    document.file_id,
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30,
-                    pool_timeout=30,
-                )
-                logger.info(f"✅ Файл получен (попытка {attempt})")
-                break
-            except telegram.error.TimedOut as e:
-                logger.warning(f"❌ Таймаут при попытке {attempt}/{max_retries}: {e}")
-                if attempt == max_retries:
-                    await update.message.reply_text(
-                        "❌ Не удалось загрузить файл: таймаут соединения."
-                    )
-                    return
-                await asyncio.sleep(3 * attempt)
+        # Получаем файл и скачиваем через Telegram‑API
+        # file = await context.bot.get_file(document.file_id)
+        # await file.download_to_drive(INPUT_FILE)
 
-        target_file = INPUT_FILE
-        await file.download_to_drive(target_file)
-        logger.info(f"✅ Файл сохранён: {target_file}")
+        file = await safe_get_file(context.bot, document.file_id)
+        await file.download_to_drive(INPUT_FILE)
 
-        # 🔥 НОВОЕ: выбор скрипта по режиму
+        logger.info(f"✅ Файл сохранён: {INPUT_FILE}")
+
+        # Выбор скрипта по режиму
         parser_script = get_parser_script()
         mode_name = "Yambo (цены)" if "main-yambo.py" in parser_script else "Вес"
 
         global parse_task
         parse_task = await asyncio.to_thread(
             lambda: subprocess.Popen(
-                [sys.executable, parser_script],  # ← ДИНАМИЧЕСКИЙ скрипт!
+                [sys.executable, parser_script],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -316,7 +331,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         logger.info(f"🚀 ПАРСЕР ЗАПУЩЕН: {parser_script} (PID: {parse_task.pid})")
 
-        # Фоновая задача мониторинга
         asyncio.create_task(monitor_parser(update, context))
 
         await update.message.reply_text(
@@ -332,19 +346,66 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений"""
-    # text = update.message.text.lower().strip()
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик любых исключений в боте"""
+    logger.error("❗️ Ошибка в боте", exc_info=context.error)
+    # Если хочешь — можно отправить админу сообщение
+    await context.bot.send_message(
+        chat_id=ADMIN_CHAT_ID, text=f"🚨 Ошибка: {context.error}"
+    )
 
-    await update.message.reply_text("ℹ️ Используйте /start для списка команд")
+
+# def main():
+#     """Запуск бота"""
+#     logger.info("🤖 Запуск Telegram бота...")
+#     application = Application.builder().token(BOT_TOKEN).build()
+
+#     # Регистрируем обработчики
+#     application.add_handler(CommandHandler("start", start_command))
+#     application.add_handler(CommandHandler("mode_weight", mode_weight_command))
+#     application.add_handler(CommandHandler("mode_yambo", mode_price_command))
+#     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+#     application.add_handler(CommandHandler("stop", stop_command))
+#     application.add_handler(
+#         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+#     )
+
+#     logger.info("✅ Бот запущен и готов к работе")
+#     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def main():
     """Запуск бота"""
-    logger.info("🤖 Запуск Telegram бота...")
-    application = Application.builder().token(BOT_TOKEN).build()
+    from telegram.request import HTTPXRequest
 
-    # Регистрируем обработчики
+    logger.info("🤖 Запуск Telegram бота...")
+
+    proxy = os.getenv("TELEGRAM_PROXY")  # socks5://user:pass@host:port
+
+    request = HTTPXRequest(
+        proxy=proxy,
+        connect_timeout=30.0,
+        read_timeout=180.0,
+        write_timeout=60.0,
+        pool_timeout=30.0,
+    )
+
+    get_updates_request = HTTPXRequest(
+        proxy=proxy,
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .get_updates_request(get_updates_request)
+        .build()
+    )
+
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("mode_weight", mode_weight_command))
     application.add_handler(CommandHandler("mode_yambo", mode_price_command))
@@ -353,6 +414,7 @@ def main():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
     )
+    # application.add_error_handler(error_handler)
 
     logger.info("✅ Бот запущен и готов к работе")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

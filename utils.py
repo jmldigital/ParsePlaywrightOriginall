@@ -30,6 +30,7 @@ from typing import List
 
 # Файлы
 LOG_FILE = "logs/parser.log"
+MAIN_LOG_FILE = "logs/main.log"
 COUNTER_FILE = "logs/run_counter.json"
 
 # Глобальный логгер (инициализируется один раз)
@@ -63,451 +64,6 @@ from twocaptcha import TwoCaptcha
 
 
 # utils.py - обновлённый solve_captcha_universal
-
-
-# async def solve_captcha_universal(
-#     page: Page,
-#     logger,
-#     site_key: str,
-#     selectors: dict,
-#     max_attempts: int = 3,
-#     scale_factor: int = 3,
-#     check_changed: bool = True,
-#     wait_after_submit_ms: int = 2000,
-# ) -> bool:
-#     """
-#     Универсальное решение капчи: гонка + сравнение хэшей
-#     """
-#     import imagehash
-
-#     solver = TwoCaptcha(API_KEY_2CAPTCHA)
-#     captcha_img = page.locator(selectors["captcha_img"])
-
-#     if not await captcha_img.is_visible():
-#         logger.info(f"[{site_key}] Капча не найдена")
-#         return False
-
-#     CAPTCHA_KEYS = {
-#         "captcha_img",
-#         "captcha_input",
-#         "captcha_submit",
-#         "captcha",
-#         "cloudflare",
-#         "rate_limit",
-#         "login_field",
-#         "password_field",
-#         "login_button",
-#         "search_input",
-#         "search_button",
-#         "search_form",
-#         "article_field",
-#         "smode_select",
-#     }
-
-#     for attempt in range(1, max_attempts + 1):
-#         logger.info(f"[{site_key}] Попытка {attempt}/{max_attempts}")
-
-#         try:
-#             # 🔥 СОХРАНЯЕМ СКРИНШОТ КАПЧИ ДО РЕШЕНИЯ (для сравнения)
-#             img_bytes_before = await captcha_img.screenshot()
-#             img_before = Image.open(io.BytesIO(img_bytes_before))
-
-#             # 1. Получаем скриншот для 2Captcha
-#             img_bytes = await captcha_img.screenshot()
-#             img = Image.open(io.BytesIO(img_bytes))
-
-#             # 2. Масштабируем
-#             if scale_factor > 1:
-#                 new_size = (img.width * scale_factor, img.height * scale_factor)
-#                 img = img.resize(new_size, Image.BICUBIC)
-#                 logger.info(f"[{site_key}] Увеличено до {img.size}")
-
-#             # 3. Конвертируем в base64
-#             buf = io.BytesIO()
-#             img.save(buf, format="PNG")
-#             captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-#             # 4. Отправляем в 2Captcha
-#             logger.info(f"[{site_key}] Отправка в 2Captcha...")
-#             result = await asyncio.wait_for(
-#                 asyncio.to_thread(solver.normal, captcha_base64), timeout=90.0
-#             )
-
-#             captcha_text = result.get("code", "").upper().strip()
-
-#             if not captcha_text:
-#                 logger.warning(f"[{site_key}] Пустой ответ от 2Captcha")
-#                 await asyncio.sleep(3)
-#                 continue
-
-#             logger.info(f"[{site_key}] Распознано: '{captcha_text}'")
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "sent")
-
-#             # 5. Вводим капчу
-#             input_el = page.locator(selectors["captcha_input"])
-#             await input_el.clear()
-#             await input_el.fill(captcha_text)
-#             logger.info(f"[{site_key}] Введено: '{captcha_text}'")
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "input")
-
-#             # 6. Отправляем форму
-#             submit_button = page.locator(selectors["captcha_submit"])
-#             if await submit_button.is_visible():
-#                 await submit_button.click()
-#                 logger.info(f"[{site_key}] Submit нажат")
-
-#             # 🔥 ЖДЁМ обновления страницы
-#             await page.wait_for_timeout(wait_after_submit_ms)
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "press")
-
-#             # 🔥 ДВОЙНАЯ ПРОВЕРКА: hash + гонка
-
-#             # 1️⃣ ПРОВЕРЯЕМ: ИЗМЕНИЛАСЬ ЛИ КАПЧА? (для avtoformula, stparts)
-#             captcha_changed = False
-#             try:
-#                 img_bytes_after = await captcha_img.screenshot()
-#                 img_after = Image.open(io.BytesIO(img_bytes_after))
-
-#                 hash_before = imagehash.average_hash(img_before)
-#                 hash_after = imagehash.average_hash(img_after)
-#                 diff = hash_before - hash_after
-
-#                 logger.info(f"[{site_key}] Hash diff: {diff}")
-
-#                 if diff > 5:
-#                     captcha_changed = True
-#                     logger.info(f"[{site_key}] ✅ Капча ИЗМЕНИЛАСЬ → код принят")
-#                     await _save_full_page_screenshot(
-#                         page, site_key, captcha_text, "success"
-#                     )
-#                     return True
-
-#             except Exception as e:
-#                 # Капча исчезла → успех
-#                 logger.info(f"[{site_key}] ✅ Капча исчезла: {e}")
-#                 await _save_full_page_screenshot(
-#                     page, site_key, captcha_text, "success"
-#                 )
-#                 return True
-
-#             # 2️⃣ ЕСЛИ КАПЧА НЕ ИЗМЕНИЛАСЬ → ПРОВЕРЯЕМ ГОНКУ (для stparts и др.)
-#             if not captcha_changed:
-#                 logger.info(f"[{site_key}] Капча не изменилась, проверяем гонку...")
-
-#                 # Собираем селекторы
-#                 success_selectors = {}
-#                 fail_selectors = {}
-
-#                 for key, selector in selectors.items():
-#                     if isinstance(selector, (list, tuple)) or not selector:
-#                         continue
-
-#                     if any(captcha_key in key for captcha_key in CAPTCHA_KEYS):
-#                         fail_selectors[key] = selector
-#                     else:
-#                         success_selectors[key] = selector
-
-#                 logger.info(f"[{site_key}] Success: {list(success_selectors.keys())}")
-#                 logger.info(f"[{site_key}] Fail: {list(fail_selectors.keys())}")
-
-#                 # Создаём задачи
-#                 all_selectors = {**success_selectors, **fail_selectors}
-#                 tasks = {}
-
-#                 for name, sel in all_selectors.items():
-#                     try:
-#                         tasks[name] = asyncio.create_task(
-#                             page.wait_for_selector(sel, state="visible", timeout=3000)
-#                         )
-#                     except Exception as e:
-#                         logger.warning(
-#                             f"[{site_key}] Не удалось создать задачу для {name}: {e}"
-#                         )
-
-#                 if tasks:
-#                     # Ждём ПЕРВЫЙ результат
-#                     done, pending = await asyncio.wait(
-#                         tasks.values(), return_when=asyncio.FIRST_COMPLETED
-#                     )
-
-#                     for task in pending:
-#                         task.cancel()
-
-#                     first_task = list(done)[0]
-#                     first_name = [k for k, v in tasks.items() if v == first_task][0]
-
-#                     if first_name in success_selectors:
-#                         logger.info(f"[{site_key}] ✅ УСПЕХ: появился '{first_name}'")
-#                         await _save_full_page_screenshot(
-#                             page, site_key, captcha_text, "success"
-#                         )
-#                         return True
-#                     else:
-#                         logger.warning(
-#                             f"[{site_key}] ❌ НЕВЕРНАЯ КАПЧА: снова '{first_name}'"
-#                         )
-#                         await _save_full_page_screenshot(
-#                             page, site_key, captcha_text, "failed"
-#                         )
-#                         await asyncio.sleep(3)
-#                 else:
-#                     logger.warning(
-#                         f"[{site_key}] ❌ Нет валидных селекторов, капча не прошла"
-#                     )
-#                     await _save_full_page_screenshot(
-#                         page, site_key, captcha_text, "failed"
-#                     )
-#                     await asyncio.sleep(3)
-
-#         except asyncio.TimeoutError:
-#             logger.error(f"[{site_key}] Таймаут 2Captcha")
-#             await asyncio.sleep(5)
-#         except Exception as e:
-#             logger.error(f"[{site_key}] Ошибка: {e}")
-#             await asyncio.sleep(5)
-
-#     logger.error(f"[{site_key}] Исчерпаны попытки ({max_attempts})")
-#     return False
-
-
-# async def solve_captcha_universal(
-#     page: Page,
-#     logger,
-#     site_key: str,
-#     selectors: dict,
-#     max_attempts: int = 3,
-#     scale_factor: int = 3,
-#     numeric_only=True,
-#     wait_after_submit_ms: int = 2000,
-# ) -> bool:
-#     """
-#     Универсальное решение капчи: гонка + сравнение хэшей
-#     """
-#     import imagehash
-
-#     solver = TwoCaptcha(API_KEY_2CAPTCHA)
-#     captcha_img = page.locator(selectors["captcha_img"])
-
-#     if not await captcha_img.is_visible():
-#         logger.info(f"[{site_key}] Капча не найдена")
-#         return False
-
-#     CAPTCHA_KEYS = {
-#         "captcha_img",
-#         "captcha_input",
-#         "captcha_submit",
-#         "captcha",
-#         "cloudflare",
-#         "rate_limit",
-#         "login_field",
-#         "password_field",
-#         "login_button",
-#         "search_input",
-#         "search_button",
-#         "search_form",
-#         "article_field",
-#         "smode_select",
-#     }
-
-#     for attempt in range(1, max_attempts + 1):
-#         logger.info(f"[{site_key}] Попытка {attempt}/{max_attempts}")
-
-#         try:
-#             # 🔥 СОХРАНЯЕМ СКРИНШОТ КАПЧИ ДО РЕШЕНИЯ (для сравнения)
-#             img_bytes_before = await captcha_img.screenshot()
-#             img_before = Image.open(io.BytesIO(img_bytes_before))
-
-#             # 1. Получаем скриншот для 2Captcha
-#             img_bytes = await captcha_img.screenshot()
-#             img = Image.open(io.BytesIO(img_bytes))
-
-#             # 2. Масштабируем
-#             if scale_factor > 1:
-#                 new_size = (img.width * scale_factor, img.height * scale_factor)
-#                 img = img.resize(new_size, Image.BICUBIC)
-#                 logger.info(f"[{site_key}] Увеличено до {img.size}")
-
-#             # 3. Конвертируем в base64
-#             buf = io.BytesIO()
-#             img.save(buf, format="PNG")
-#             captcha_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-
-#             # 4. Отправляем в 2Captcha
-#             logger.info(f"[{site_key}] Отправка в 2Captcha...")
-
-#             # 🔥 Параметры для ЦИФРОВЫХ капч (stparts)
-#             extra_params = {}
-#             if numeric_only:
-#                 extra_params = {
-#                     "numeric": 1,  # ✅ Только цифры
-#                     "minLen": 4,  # Длина 4-8 символов
-#                     "maxLen": 4,
-#                     "phrase": 0,  # Одно слово
-#                 }
-#                 logger.info(f"[{site_key}] РЕЖИМ ЦИФРОВЫХ КАПЧ")
-
-#             result = await asyncio.wait_for(
-#                 asyncio.to_thread(
-#                     solver.normal,
-#                     captcha_base64,
-#                     **extra_params,  # 🔥 Передаём параметры!
-#                 ),
-#                 timeout=60.0,  # Цифры быстрее → меньше таймаут
-#             )
-
-#             captcha_text = result.get("code", "").upper().strip()
-
-#             if not captcha_text:
-#                 logger.warning(f"[{site_key}] Пустой ответ от 2Captcha")
-#                 await asyncio.sleep(3)
-#                 continue
-
-#             logger.info(f"[{site_key}] Распознано: '{captcha_text}'")
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "sent")
-
-#             # 5. Вводим капчу
-#             input_el = page.locator(selectors["captcha_input"])
-#             await input_el.clear()
-#             await input_el.fill(captcha_text)
-#             logger.info(f"[{site_key}] Введено: '{captcha_text}'")
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "input")
-
-#             # 6. Отправляем форму
-#             submit_button = page.locator(selectors["captcha_submit"])
-#             if await submit_button.is_visible():
-#                 await submit_button.click()
-#                 logger.info(f"[{site_key}] Submit нажат")
-
-#             # 🔥 ЖДЁМ обновления страницы
-#             await page.wait_for_timeout(wait_after_submit_ms)
-#             await _save_full_page_screenshot(page, site_key, captcha_text, "press")
-
-#             # 🔥 ПРЯМАЯ ПРОВЕРКА: исчезла ли капча?
-#             captcha_gone = False
-
-#             # 1. Быстрая проверка visibility (0.1-1с)
-#             try:
-#                 is_vis = await captcha_img.is_visible(timeout=1000)
-#                 logger.info(f"[{site_key}] 🛑 Капча visible после submit: {is_vis}")
-#                 if not is_vis:
-#                     logger.info(f"[{site_key}] ✅ УСПЕХ! Капча НЕ visible")
-#                     await _save_full_page_screenshot(page, site_key, captcha_text, "success")
-#                     return True
-#             except:
-#                 pass  # Visible или ошибка → дальше
-
-#             # 2. Ждём hidden/detached (универсально)
-#             try:
-#                 await captcha_img.wait_for(state="hidden", timeout=2000)
-#                 logger.info(f"[{site_key}] ✅ Капча hidden/detached УСПЕХ!")
-#                 await _save_full_page_screenshot(page, site_key, captcha_text, "success")
-#                 return True
-#             except:
-#                 logger.info(f"[{site_key}] Капча всё ещё видна, проверяем hash...")
-#                 captcha_gone = False
-
-#             # 🔥 ДВОЙНАЯ ПРОВЕРКА: hash + гонка
-
-#             # 1️⃣ ПРОВЕРЯЕМ: ИЗМЕНИЛАСЬ ЛИ КАПЧА? (для avtoformula, stparts)
-#             # 🔥 ЕСЛИ НЕ ИСЧЕЗЛА — ПРОВЕРЯЕМ hash + гонку (регенерация)
-#             if not captcha_gone:
-#                 # Ваш старый блок hash-сравнения (1️⃣)
-#                 captcha_changed = False
-#                 try:
-#                     img_bytes_after = await captcha_img.screenshot()
-#                     img_after = Image.open(io.BytesIO(img_bytes_after))
-#                     hash_before = imagehash.average_hash(img_before)
-#                     hash_after = imagehash.average_hash(img_after)
-#                     diff = hash_before - hash_after
-#                     logger.info(f"[{site_key}] Hash diff: {diff}")
-#                     if diff > 5:
-#                         captcha_changed = True
-#                         logger.info(f"[{site_key}] ✅ Капча ИЗМЕНИЛАСЬ → код принят")
-#                         await _save_full_page_screenshot(page, site_key, captcha_text, "success")
-#                         return True
-#                 except Exception as e:
-#                     logger.info(f"[{site_key}] ✅ Капча исчезла (hash): {e}")
-#                     await _save_full_page_screenshot(page, site_key, captcha_text, "success")
-#                     return True
-
-#             # 2️⃣ ЕСЛИ КАПЧА НЕ ИЗМЕНИЛАСЬ → ПРОВЕРЯЕМ ГОНКУ (для stparts и др.)
-#             if not captcha_changed:
-#                 logger.info(f"[{site_key}] Капча не изменилась, проверяем гонку...")
-
-#                 # Собираем селекторы
-#                 success_selectors = {}
-#                 fail_selectors = {}
-
-#                 for key, selector in selectors.items():
-#                     if isinstance(selector, (list, tuple)) or not selector:
-#                         continue
-
-#                     if any(captcha_key in key for captcha_key in CAPTCHA_KEYS):
-#                         fail_selectors[key] = selector
-#                     else:
-#                         success_selectors[key] = selector
-
-#                 logger.info(f"[{site_key}] Success: {list(success_selectors.keys())}")
-#                 logger.info(f"[{site_key}] Fail: {list(fail_selectors.keys())}")
-
-#                 # Создаём задачи
-#                 all_selectors = {**success_selectors, **fail_selectors}
-#                 tasks = {}
-
-#                 for name, sel in all_selectors.items():
-#                     try:
-#                         tasks[name] = asyncio.create_task(
-#                             page.wait_for_selector(sel, state="visible", timeout=3000)
-#                         )
-#                     except Exception as e:
-#                         logger.warning(
-#                             f"[{site_key}] Не удалось создать задачу для {name}: {e}"
-#                         )
-
-#                 if tasks:
-#                     # Ждём ПЕРВЫЙ результат
-#                     done, pending = await asyncio.wait(
-#                         tasks.values(), return_when=asyncio.FIRST_COMPLETED
-#                     )
-
-#                     for task in pending:
-#                         task.cancel()
-
-#                     first_task = list(done)[0]
-#                     first_name = [k for k, v in tasks.items() if v == first_task][0]
-
-#                     if first_name in success_selectors:
-#                         logger.info(f"[{site_key}] ✅ УСПЕХ: появился '{first_name}'")
-#                         await _save_full_page_screenshot(
-#                             page, site_key, captcha_text, "success"
-#                         )
-#                         return True
-#                     else:
-#                         logger.warning(
-#                             f"[{site_key}] ❌ НЕВЕРНАЯ КАПЧА: снова '{first_name}'"
-#                         )
-#                         await _save_full_page_screenshot(
-#                             page, site_key, captcha_text, "failed"
-#                         )
-#                         await asyncio.sleep(3)
-#                 else:
-#                     logger.warning(
-#                         f"[{site_key}] ❌ Нет валидных селекторов, капча не прошла"
-#                     )
-#                     await _save_full_page_screenshot(
-#                         page, site_key, captcha_text, "failed"
-#                     )
-#                     await asyncio.sleep(3)
-
-#         except asyncio.TimeoutError:
-#             logger.error(f"[{site_key}] Таймаут 2Captcha")
-#             await asyncio.sleep(5)
-#         except Exception as e:
-#             logger.error(f"[{site_key}] Ошибка: {e}")
-#             await asyncio.sleep(5)
-
-#     logger.error(f"[{site_key}] Исчерпаны попытки ({max_attempts})")
-#     return False
 
 
 async def solve_captcha_universal(
@@ -863,11 +419,77 @@ def setup_logger():
     return _logger
 
 
+# def get_logger():
+#     """Возвращает глобальный логгер (ленивая инициализация)"""
+#     global _logger
+#     if _logger is None:
+#         _logger = setup_logger()
+#     return _logger
+
+
+def setup_root_logging():
+    """Глобальный системный лог: все логгеры (root + библиотеки) → logs/main.log"""
+
+    os.makedirs("logs", exist_ok=True)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+
+    # Чистим старые хендлеры, чтобы не было дублирования при повторных запусках
+    root_logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        "%(asctime)s - [%(name)s] %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # Каждый запуск перезаписываем main.log
+    fh_main = logging.FileHandler(MAIN_LOG_FILE, mode="w", encoding="utf-8")
+    fh_main.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+    fh_main.setFormatter(formatter)
+
+    root_logger.addHandler(fh_main)
+
+
 def get_logger():
-    """Возвращает глобальный логгер (ленивая инициализация)"""
     global _logger
-    if _logger is None:
-        _logger = setup_logger()
+    if _logger is not None:
+        return _logger
+
+    os.makedirs("logs", exist_ok=True)
+
+    logger = logging.getLogger("parser")
+    logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+    logger.propagate = False  # чтобы не дублировать в root, если не нужно
+
+    # Чистим старые хендлеры при повторных импортах
+    logger.handlers.clear()
+
+    # Формат
+    formatter = logging.Formatter(
+        "%(asctime)s - [%(name)s] %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # 1) Основной файл (parser.log) — как раньше, append
+    fh_parser = logging.FileHandler(LOG_FILE, mode="w", encoding="utf-8")
+    fh_parser.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+    fh_parser.setFormatter(formatter)
+    logger.addHandler(fh_parser)
+
+    # 2) Новый основной лог main.log — перезаписываем при каждом запуске
+    fh_main = logging.FileHandler(MAIN_LOG_FILE, mode="w", encoding="utf-8")
+    fh_main.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+    fh_main.setFormatter(formatter)
+    logger.addHandler(fh_main)
+
+    # 3) Опционально: вывод в консоль (можно убрать, если мешает в Windows)
+    sh = logging.StreamHandler()
+    sh.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
+    sh.setFormatter(formatter)
+    logger.addHandler(sh)
+
+    _logger = logger
     return _logger
 
 
@@ -1160,107 +782,6 @@ import time
 from typing import Dict
 
 
-# def get_2captcha_proxy() -> Dict[str, str]:
-#     """
-#     Запрашивает у 2Captcha whitelist прокси
-#     Возвращает конфиг в формате Playwright/Crawlee
-
-#     Returns:
-#         {"server": "http://username:password@IP:PORT"}
-#     """
-#     from config import (
-#         API_KEY_2CAPTCHA,
-#         PROXY_COUNTRY,
-#         PROXY_PROTOCOL,
-#         PROXY_CONNECTIONS,
-#         PROXY_IP,
-#         PROXY_USERNAME,
-#         PROXY_PASSWORD,
-#     )
-
-#     # Запрос к 2Captcha API
-#     base_url = "https://api.rucaptcha.com/proxy/generate_white_list_connections"
-#     params = {
-#         "key": API_KEY_2CAPTCHA,
-#         "country": PROXY_COUNTRY,
-#         "protocol": PROXY_PROTOCOL,
-#         "connection_count": str(PROXY_CONNECTIONS),
-#     }
-#     if PROXY_IP:
-#         params["ip"] = PROXY_IP
-
-#     resp = requests.get(base_url, params=params, timeout=30)
-#     resp.raise_for_status()
-
-#     payload = resp.json()
-#     if payload.get("status") != "OK":
-#         raise RuntimeError(f"2Captcha proxy error: {payload}")
-
-#     ip_list = payload.get("data", [])
-#     if not ip_list:
-#         raise RuntimeError("2Captcha вернул пустой список прокси")
-
-#     # Выбираем случайный IP:PORT
-#     chosen_ip_port = random.choice(ip_list)
-#     print(f"🎲 Выбран прокси: {chosen_ip_port}")
-
-#     # ⏳ Ждём активации (КРИТИЧНО!)
-#     time.sleep(15)
-
-#     # 🔥 Формат для Playwright/Crawlee
-#     proxy_string = f"http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{chosen_ip_port}"
-
-#     return {
-#         "server": proxy_string,  # http://username:password@IP:PORT
-#     }
-
-
-# def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
-#     """
-#     Получение пула прокси от 2Captcha API
-#     Возвращает список в формате ["http://ip:port", ...]
-#     """
-
-#     # Автоматическое определение IP
-#     try:
-#         my_ip_response = requests.get("https://api.ipify.org?format=json", timeout=5)
-#         MY_IP = my_ip_response.json()["ip"]
-#         logger.info(f"🌍 Ваш IP: {MY_IP}")
-#     except:
-#         MY_IP = "152.53.136.84"  # Fallback
-#         logger.warning(f"⚠️ Не удалось определить IP, использую fallback: {MY_IP}")
-
-#     url = (
-#         f"https://api.rucaptcha.com/proxy/generate_white_list_connections"
-#         f"?key={API_KEY_2CAPTCHA}"
-#         f"&country=ru"
-#         f"&protocol=http"
-#         f"&connection_count={count}"
-#         f"&ip={MY_IP}"
-#     )
-
-#     try:
-#         logger.info(f"🌐 Запрос {count} прокси от 2Captcha...")
-#         response = requests.get(url, timeout=15)
-#         data = response.json()
-
-#         if data.get("status") == "OK":
-#             proxies = data.get("data", [])
-#             # Добавляем протокол http://
-#             proxy_urls = [f"http://{proxy}" for proxy in proxies]
-#             logger.info(f"✅ Получено {len(proxy_urls)} прокси")
-#             for i, p in enumerate(proxy_urls, 1):
-#                 logger.info(f"   Прокси #{i}: {p}")
-#             return proxy_urls
-#         else:
-#             logger.error(f"❌ Ошибка 2Captcha API: {data}")
-#             return []
-
-#     except Exception as e:
-#         logger.error(f"❌ Не удалось получить прокси: {e}")
-#         return []
-
-
 def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
     """
     1. Пробует 2Captcha → ТОЧНО count прокси
@@ -1268,108 +789,10 @@ def get_2captcha_proxy_pool(count: int = 5) -> List[str]:
     3. Если ошибка/пусто → 20 РАБОЧИХ резервных
     """
 
-    # 🔥 РЕЗЕРВНЫЙ СПИСОК (20 шт)
+    # 🔥 РЕЗЕРВНЫЙ СПИСОК
     FALLBACK_PROXIES = [
         "http://118.193.59.92:11341",
         "http://118.193.59.92:11336",
-        "http://118.193.59.165:11156",
-        "http://118.193.59.17:11149",
-        "http://107.150.117.248:11483",
-        "http://118.193.59.92:11352",
-        "http://107.150.117.248:11475",
-        "http://118.193.59.17:11145",
-        "http://118.193.59.17:11135",
-        "http://118.193.59.165:11151",
-        "http://118.193.59.92:11345",
-        "http://107.150.117.248:11480",
-        "http://118.193.59.87:11251",
-        "http://118.193.59.92:11350",
-        "http://118.193.59.87:11252",
-        "http://118.193.59.87:11248",
-        "http://118.193.59.165:11146",
-        "http://118.193.59.17:11148",
-        "http://107.150.117.248:11471",
-        "http://118.193.59.17:11141",
-        "http://107.150.117.248:11478",
-        "http://118.193.59.92:11347",
-        "http://118.193.59.165:11152",
-        "http://118.193.59.165:11143",
-        "http://107.150.117.248:11476",
-        "http://107.150.117.248:11487",
-        "http://118.193.59.87:11246",
-        "http://118.193.59.165:11145",
-        "http://118.193.59.17:11152",
-        "http://118.193.59.165:11147",
-        "http://118.193.59.17:11146",
-        "http://118.193.59.92:11348",
-        "http://118.193.59.87:11256",
-        "http://118.193.59.87:11241",
-        "http://118.193.59.165:11155",
-        "http://118.193.59.92:11339",
-        "http://118.193.59.165:11150",
-        "http://118.193.59.92:11351",
-        "http://118.193.59.165:11142",
-        "http://118.193.59.92:11337",
-        "http://118.193.59.87:11238",
-        "http://107.150.117.248:11469",
-        "http://118.193.59.17:11138",
-        "http://118.193.59.92:11335",
-        "http://118.193.59.87:11249",
-        "http://107.150.117.248:11479",
-        "http://118.193.59.87:11254",
-        "http://118.193.59.92:11354",
-        "http://107.150.117.248:11474",
-        "http://118.193.59.17:11133",
-        "http://118.193.59.87:11245",
-        "http://107.150.117.248:11468",
-        "http://118.193.59.87:11243",
-        "http://118.193.59.17:11136",
-        "http://118.193.59.165:11149",
-        "http://118.193.59.87:11255",
-        "http://118.193.59.165:11153",
-        "http://107.150.117.248:11477",
-        "http://118.193.59.92:11342",
-        "http://118.193.59.165:11148",
-        "http://118.193.59.92:11343",
-        "http://118.193.59.165:11158",
-        "http://118.193.59.17:11151",
-        "http://118.193.59.92:11346",
-        "http://118.193.59.165:11157",
-        "http://118.193.59.17:11143",
-        "http://107.150.117.248:11470",
-        "http://107.150.117.248:11485",
-        "http://118.193.59.87:11242",
-        "http://118.193.59.87:11244",
-        "http://118.193.59.17:11150",
-        "http://118.193.59.92:11349",
-        "http://118.193.59.17:11137",
-        "http://118.193.59.87:11239",
-        "http://118.193.59.165:11159",
-        "http://118.193.59.92:11340",
-        "http://118.193.59.17:11134",
-        "http://107.150.117.248:11481",
-        "http://118.193.59.165:11144",
-        "http://118.193.59.92:11338",
-        "http://118.193.59.87:11240",
-        "http://118.193.59.87:11253",
-        "http://118.193.59.92:11353",
-        "http://118.193.59.87:11247",
-        "http://118.193.59.165:11140",
-        "http://118.193.59.17:11140",
-        "http://107.150.117.248:11473",
-        "http://118.193.59.17:11147",
-        "http://107.150.117.248:11484",
-        "http://118.193.59.17:11142",
-        "http://118.193.59.87:11257",
-        "http://118.193.59.92:11344",
-        "http://118.193.59.165:11141",
-        "http://118.193.59.165:11154",
-        "http://107.150.117.248:11472",
-        "http://118.193.59.17:11139",
-        "http://107.150.117.248:11482",
-        "http://118.193.59.17:11144",
-        "http://107.150.117.248:11486",
-        "http://118.193.59.87:11250",
     ]
 
     # Автоматическое определение IP (без изменений)

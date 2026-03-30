@@ -25,6 +25,86 @@ from datetime import datetime, timedelta, timezone
 
 from yumbo_parse_price import yumbo_parse_price
 
+
+# 🔥 ФИКС - ДОБАВЬТЕ ЭТО:
+import warnings
+
+warnings.filterwarnings("ignore", message="urllib3.*doesn't match")
+warnings.filterwarnings("ignore", message="chardet.*doesn't match")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+import traceback
+
+
+async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
+    """
+    Блокирует тяжелые медиа-файлы (картинки, шрифты, видео),
+    но ПРОПУСКАЕТ всё, что связано с капчами из ваших селекторов.
+
+    Аргументы:
+    - context: контекст PlaywrightCrawler
+    - *args: для совместимости с будущими версиями Crawlee
+    """
+    page = context.page
+
+    # 🔥 Белый список ключевых слов в URL.
+    # Если URL содержит любое из этих слов, ресурс БУДЕТ загружен.
+    whitelist_keywords = [
+        # === Общие и внешние капчи ===
+        "captcha",  # Для stparts и общих случаев
+        "recaptcha",  # Google ReCaptcha
+        "grecaptcha",  # Google ReCaptcha API
+        "hcaptcha",  # hCaptcha
+        "turnstile",  # Cloudflare
+        "challenge",  # Cloudflare / Protection
+        "verify",  # Часто используется в URL проверок
+        # === Avtoformula (из селектора img[src*="/_phplib/check/img.php"]) ===
+        "img.php",
+        "_phplib",
+        # === Armtek (из селектора img[src*='blob']) ===
+        "blob",
+        # === Дополнительно (иконки иногда нужны для UI капчи) ===
+        "svg",
+        "icon",
+    ]
+
+    async def route_handler(route):
+        req = route.request
+        url = req.url.lower()
+        resource_type = req.resource_type
+
+        # 1. Если это тяжелый ресурс (картинка, медиа, шрифт)
+        if resource_type in ("image", "media", "font"):
+
+            # Проверяем, есть ли в URL "разрешенные" слова
+            is_whitelisted = any(keyword in url for keyword in whitelist_keywords)
+
+            if is_whitelisted:
+                # ✅ Это капча или важный элемент -> ГРУЗИМ
+                await route.continue_()
+            else:
+                # ❌ Это реклама, фото товара или баннер -> БЛОКИРУЕМ
+                await route.abort()
+
+        # 2. Скрипты, HTML, JSON (XHR/Fetch), CSS -> ВСЕГДА ГРУЗИМ
+        # (CSS нужен, чтобы капча не "поехала" версткой, скрипты нужны для логики)
+        else:
+            await route.continue_()
+
+    # Применяем фильтр ко всем запросам
+    await page.route("**/*", route_handler)
+
+
+def safe_excepthook(type, value, tb):
+    try:
+        traceback.print_exception(type, value, tb)
+    except:
+        print(f"CRASH: {type.__name__}: {value}")
+
+
+sys.excepthook = safe_excepthook
+
+
 # 🔥 Глобальный MSK для ВСЕХ логгеров
 msk_tz = timezone(timedelta(hours=3))
 
@@ -65,57 +145,6 @@ if os.name == "nt":
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 load_dotenv()
-
-
-async def send_telegram_file(file_path: str, caption: str | None = None):
-    """Отправка файла в Telegram"""
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        bot = Bot(token=os.getenv("BOT_TOKEN"))
-        async with bot:
-            with open(file_path, "rb") as f:
-                await bot.send_document(
-                    chat_id=os.getenv("ADMIN_CHAT_ID"),
-                    document=f,
-                    caption=caption,
-                )
-        logger.info("✅ Финальный файл отправлен в Telegram")
-    except Exception as e:
-        logger.info(f"❌ Ошибка отправки файла в Telegram: {e}")
-
-
-async def block_media_requests(context: PlaywrightCrawlingContext, *args) -> None:
-    """Блокирует тяжелые медиа-файлы"""
-    page = context.page
-
-    whitelist_keywords = [
-        "captcha",
-        "recaptcha",
-        "grecaptcha",
-        "hcaptcha",
-        "turnstile",
-        "challenge",
-        "verify",
-        "svg",
-        "icon",
-    ]
-
-    async def route_handler(route):
-        req = route.request
-        url = req.url.lower()
-        resource_type = req.resource_type
-
-        if resource_type in ("image", "media", "font"):
-            is_whitelisted = any(keyword in url for keyword in whitelist_keywords)
-            if is_whitelisted:
-                await route.continue_()
-            else:
-                await route.abort()
-        else:
-            await route.continue_()
-
-    await page.route("**/*", route_handler)
 
 
 # ===================== URL ГЕНЕРАТОР =====================
@@ -318,7 +347,7 @@ class ParserCrawler:
             logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
 
             # Telegram уведомление
-            if batch_num % 2 == 0:
+            if batch_num % 2 == 0 and SEND_TO_TELEGRAM:
                 message = f"📊 Yumbo парсер: обработано <b>{batch_end}</b> строк из {total_rows}"
                 await self._send_telegram_notification(message)
 
@@ -377,7 +406,8 @@ class ParserCrawler:
 
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
-        await send_telegram_file(output_file, "✅ Yumbo цены завершены!")
+        # await send_telegram_file(output_file, "✅ Yumbo цены завершены!")
+        # await send_telegram_link(output_file, f"✅ {self.mode} завершены!")
 
 
 async def main():
