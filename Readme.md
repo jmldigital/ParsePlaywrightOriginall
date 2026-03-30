@@ -8,9 +8,7 @@
 * ⚡ Асинхронного выполнения (Crawlee + Playwright)
 
 ❗ Telegram отключён (`SEND_TO_TELEGRAM = False`)
-Поэтмоу парсер запускается вручную внутри Docker-контейнера.
-Предварительно загружаем файл "наличие.xlsx" на сервер в папку /home/ParsBotCrawly/input/
-Названия обязательныех колонок: 1 - номер, 3 - Бренд (для поиска или цен ямбо нужен только номер(1) и бренд(3))
+Парсер запускается вручную внутри Docker-контейнера.
 ---
 
 
@@ -148,17 +146,15 @@ app/
 ├── main-yambo.py           # цены (Yumbo)
 ├── config.py               # конфиг
 ├── utils.py                # утилиты
-├── scraper_japarts_pure.py
-├── yumbo_parse_price.py
-├── armtek_pure_aiohtpp.py
-├── price_adjuster.py
-├── captcha_manager.py
-├── state_manager.py
-├── cache_manager.py
-├── input/
-├── output/
-├── logs/
-└── storage/
+├── scraper_japarts_pure.py  # пасрер https://www.japarts.ru/
+├── yumbo_parse_price.py   # пасрер https://yumbo-jp.com/
+├── armtek_pure_aiohtpp.py # пасрер https://yumbo-jp.com/
+├── price_adjuster.py      # пасрер https://armtek.ru/
+├── captcha_manager.py    # Менеджер капчи
+├── input/                # Сюда грузим наличие.xlsx
+├── output/               # Отсюда забираем веса_деталей.xlsx/цены_конкурентов.xlsx
+├── logs/                 # Основной лог - main.log
+└── storage/              # уже не помню зачем, скорее всег осейчас не нужен
 ```
 
 ---
@@ -286,8 +282,9 @@ config.py
 BATCH_SIZE = 500 (сохраняем промежуточно каждые BATCH_SIZE строк, файл batch_finalize.xlsx)
 MAX_ROWS = 35000
 
-ENABLE_PRICE_PARSING = True
-ENABLE_WEIGHT_PARSING = False
+ENABLE_PRICE_PARSING = True 
+ENABLE_WEIGHT_PARSING = False 
+# Раньше менялось хендлером в тг и работало автоматически, теперь в этом смысла нет, если надо искать цены на ямбо надо переключить  ENABLE_PRICE_PARSING = True либо ENABLE_WEIGHT_PARSING = True после этог запуск нужного. Не успел еще разнести функциаонал польностью отдельно.
 ```
 
 ---
@@ -323,7 +320,7 @@ input/STOP.flag
 
 ## ❌ Капча
 
-* решается через 2Captcha (не участвует, краули оперезапускает сесиию сам)
+* решается через 2Captcha (не участвует, если 429, краули оперезапускает сесиию с новым токеном сам)
 
 ## ❌ Нет данных
 
@@ -337,6 +334,10 @@ input/STOP.flag
 * batch processing
 * async crawling
 * session reuse
+
+Скорость зависит от кол-ва воркеров и задается в config.py
+ARMTEK_WORKERS = 15 воркеры для армтек - больше, так как прасим через api (браузер нужен только для валидного токена один раз, для каждой сессии - если отдает 429)
+JPARTS_WORKERS = 5 - 5 контекстов, 5 вкладок - не больше, RAM забивается
 
 ---
 
@@ -360,13 +361,7 @@ input/STOP.flag
 
 
 
-# ✅ Файлы парсера
-scraper_japarts_pure.py (ищет веса на jparts.ru)
-armtek_pure_aiohtpp.py (ищет веса на armtek.ru) Есть апи, можн осразу фетчить запросом, но в начале полуаем токен, для валидации 
 
-Скорость зависит от кол-ва воркеров и задается в config.py
-ARMTEK_WORKERS = 15 воркеры для армтек - больше, так как прасим через api (браузер нужен только для валидного токена один раз, для каждой сессии - если отдает 429)
-JPARTS_WORKERS = 5 - 5 контекстов, 5 вкладок, RAM забивается
 
 
 
