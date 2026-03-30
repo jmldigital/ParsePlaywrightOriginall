@@ -44,7 +44,7 @@ PROXY_PASSWORD = "u038f310456a605c1"
 # === Telegram ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8364237483AAERd9UAqQO_EAPt62AepFSojT41v9Vmw3s")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "-4688651319"))
-SEND_TO_TELEGRAM = True
+SEND_TO_TELEGRAM = False
 
 # === Файлы ===
 INPUT_FILE = "input/наличие.xlsx"
