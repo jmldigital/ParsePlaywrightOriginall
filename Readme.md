@@ -7,8 +7,10 @@
 * 📦 Батч-обработки (до десятков тысяч строк)
 * ⚡ Асинхронного выполнения (Crawlee + Playwright)
 
-❗ Telegram отключён (`SEND_TO_TELEGRAM = False`)
-Парсер запускается вручную внутри Docker-контейнера.
+❗ Запуск 
+Кладем файл наличие.xlsx в ParseBotCrowly/input
+и рестартим контенер
+docker restart price-parser-bot-crowly
 ---
 
 
@@ -194,13 +196,19 @@ output/
 ## 💰 Цены
 
 ```
-docker exec -it price-parser-bot-crowly /app/.venv/bin/python /app/main-yambo.py
+.env
+ENABLE_WEIGHT_PARSING=False
+ENABLE_PRICE_PARSING=True
+docker restart price-parser-bot-crowly
 ```
 
 ## ⚖️ Веса
 
 ```
-docker exec -it price-parser-bot-crowly /app/.venv/bin/python /app/main.py
+.env
+ENABLE_WEIGHT_PARSING=True
+ENABLE_PRICE_PARSING=False
+docker restart price-parser-bot-crowly
 ```
 
 ---
