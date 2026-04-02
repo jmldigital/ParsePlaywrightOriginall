@@ -20,7 +20,6 @@ from crawlee import Request, ConcurrencySettings
 from crawlee.crawlers import PlaywrightCrawler, PlaywrightCrawlingContext
 from crawlee import Request
 import logging
-from telegram import Bot
 from datetime import datetime, timedelta, timezone
 
 from yumbo_parse_price import yumbo_parse_price
@@ -167,9 +166,6 @@ class ParserCrawler:
         self.processed_count = 0
         self.total_tasks = 0
 
-        self.telegram_chat_id = os.getenv("ADMIN_CHAT_ID")
-        self.telegram_bot_token = os.getenv("BOT_TOKEN")
-
         # 🔥 Глобальная пауза при RateLimit
         self.rate_limit_pause = False
         self.pause_event = asyncio.Event()
@@ -262,20 +258,6 @@ class ParserCrawler:
                 if pd.notna(val):
                     self.df.at[idx, col] = val
 
-    async def _send_telegram_notification(self, message: str):
-        """Отправка уведомления в Telegram"""
-        if not self.telegram_chat_id or not self.telegram_bot_token:
-            return
-        try:
-            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
-            async with aiohttp.ClientSession() as session:
-                await session.post(
-                    url, json={"chat_id": self.telegram_chat_id, "text": message}
-                )
-            logger.info(f"📱 Telegram: {message}")
-        except Exception as e:
-            logger.error(f"❌ Telegram error: {e}")
-
     async def _failed_handler(self, context):
         """Логирует фатальные ошибки"""
         req = context.request
@@ -346,11 +328,6 @@ class ParserCrawler:
             await asyncio.to_thread(self.df.to_excel, output_file, index=False)
             logger.info(f"💾 Батч #{batch_num} сохранён ({batch_end} строк)")
 
-            # Telegram уведомление
-            if batch_num % 2 == 0 and SEND_TO_TELEGRAM:
-                message = f"📊 Yumbo парсер: обработано <b>{batch_end}</b> строк из {total_rows}"
-                await self._send_telegram_notification(message)
-
             await self.finalize_saved_file(output_file, batch_num)
 
         # Финальная статистика
@@ -406,8 +383,6 @@ class ParserCrawler:
 
         logger.info(f"✅ Сохранено: {output_file}")
         logger.info(f"📊 Обработано: {self.processed_count}/{self.total_tasks}")
-        # await send_telegram_file(output_file, "✅ Yumbo цены завершены!")
-        # await send_telegram_link(output_file, f"✅ {self.mode} завершены!")
 
 
 async def main():

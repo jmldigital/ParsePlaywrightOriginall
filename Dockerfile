@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN /app/.venv/bin/pip install ImageHash==4.3.2 browserforge==1.0.0
+# RUN /app/.venv/bin/pip install ImageHash==4.3.2 browserforge==1.0.0
 
 # 1. Копируем конфиг
 COPY pyproject.toml uv.lock* ./
@@ -37,4 +37,4 @@ RUN mkdir -p output cache cookies logs input temp \
     && chmod -R 777 output cache cookies logs input temp
 
 # 🔥 ИСПРАВЛЕННАЯ СТРОКА ЗАПУСКА:
-CMD ["/app/.venv/bin/python", "bot.py"]
+CMD ["/app/.venv/bin/python", "main.py"]
