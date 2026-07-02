@@ -70,6 +70,56 @@ from twocaptcha import TwoCaptcha
 solver = TwoCaptcha(API_KEY_2CAPTCHA)
 
 
+async def _get_captcha_image_bytes(
+    captcha_img, page: Page, logger, site_key: str
+) -> bytes:
+    """
+    Получает изображение капчи.
+    Сначала пробуем screenshot (для Chromium), fallback — src с куками страницы.
+    """
+    # 1. Сначала пробуем screenshot — для Chromium это самый надёжный способ
+    try:
+        return await captcha_img.screenshot()
+    except Exception as e:
+        logger.info(f"[{site_key}] Screenshot недоступен: {e}")
+
+    # 2. Fallback: получаем по src (для Obscura или если screenshot заблокирован)
+    try:
+        src = await captcha_img.get_attribute("src")
+        if src:
+            logger.info(f"[{site_key}] Captcha src найден: {src[:80]}")
+            if src.startswith("data:image"):
+                # data:image/png;base64,...
+                parts = src.split(",", 1)
+                if len(parts) == 2:
+                    return base64.b64decode(parts[1])
+            else:
+                import requests
+                from urllib.parse import urljoin
+
+                # Относительный URL → абсолютный
+                if src.startswith("/") or not src.startswith("http"):
+                    src = urljoin(page.url, src)
+
+                # Берём куки из Playwright-контекста, чтобы сессия совпадала
+                cookies = await page.context.cookies()
+                session = requests.Session()
+                for c in cookies:
+                    session.cookies.set(c["name"], c["value"], domain=c.get("domain"))
+
+                resp = session.get(src, timeout=15)
+                resp.raise_for_status()
+                logger.info(
+                    f"[{site_key}] Captcha downloaded: {len(resp.content)} bytes, "
+                    f"content-type: {resp.headers.get('content-type', 'unknown')}"
+                )
+                return resp.content
+    except Exception as e:
+        logger.debug(f"[{site_key}] Не удалось получить captcha по src: {e}")
+
+    raise RuntimeError(f"[{site_key}] Не удалось получить изображение капчи")
+
+
 # корокая функция без лишнего
 async def solve_captcha_universal(
     page: Page,
@@ -112,8 +162,10 @@ async def solve_captcha_universal(
         logger.info(f"[{site_key}] Попытка {attempt}/{max_attempts}")
 
         try:
-            # 1. Получаем скриншот капчи
-            img_bytes = await captcha_img.screenshot()
+            # 1. Получаем изображение капчи (src или screenshot)
+            img_bytes = await _get_captcha_image_bytes(
+                captcha_img, page, logger, site_key
+            )
             img = Image.open(io.BytesIO(img_bytes))
 
             # 2. Масштабируем если нужно
@@ -130,7 +182,7 @@ async def solve_captcha_universal(
             # 4. Отправляем в 2Captcha
             logger.info(f"[{site_key}] Отправка в 2Captcha...")
             result = await asyncio.wait_for(
-                asyncio.to_thread(solver.normal, captcha_base64), timeout=90.0
+                asyncio.to_thread(solver.normal, captcha_base64), timeout=60.0
             )
 
             captcha_text = result.get("code", "").upper().strip()
@@ -675,7 +727,11 @@ async def save_debug_info(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     screenshot_path = f"debug_{site}/{reason}_{part}_{timestamp}.png"
-    await page.screenshot(path=screenshot_path)
+    try:
+        await page.screenshot(path=screenshot_path)
+    except Exception as e:
+        logger.debug(f"📸 Скриншот недоступен: {e}")
+        screenshot_path = None
 
     html_path = f"debug_{site}/{reason}_{part}_{timestamp}.html"
     html_content = await page.content()

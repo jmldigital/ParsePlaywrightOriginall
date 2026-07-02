@@ -17,6 +17,14 @@ from utils import get_site_logger, solve_captcha_universal
 logger = get_site_logger("stparts")
 
 
+async def _safe_screenshot(page: Page, path: str, logger: logging.Logger) -> None:
+    """Делает скриншот, игнорируя ошибки (Obscura не поддерживает скриншоты)."""
+    try:
+        await page.screenshot(path=path, full_page=True)
+    except Exception as e:
+        logger.debug(f"📸 Скриншот недоступен ({path}): {e}")
+
+
 BASE_URL = "https://stparts.ru"
 WAIT_TIMEOUT = 8000  # миллисекунд (8 секунд)
 
@@ -85,7 +93,7 @@ async def wait_for_results_or_no_results_async(
 
     except Exception as e:
         screenshot_path = f"screenshots/error_{part}_{timestamp}_{request_id}.png"
-        await page.screenshot(path=screenshot_path, full_page=True)
+        await _safe_screenshot(page, screenshot_path, logger)
         logger.error(f"❌ [{request_id}] Ошибка для {brand}/{part}: {e}")
         return "error"
 
@@ -107,7 +115,7 @@ async def scrape_stparts_async(
         url = f"{BASE_URL}/search/{first_brand}/{part}"
         logger.info(f"🔗 [{first_brand}] {url} (из '{brand}')")
 
-        await page.goto(url)
+        await page.goto(url, timeout=30000)
         # logger.info(f"Загружена страница: {url}")
 
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
@@ -190,11 +198,13 @@ async def scrape_stparts_async(
     except PlaywrightTimeout:
         logger.warning(f"⏰ Таймаут при загрузке результатов для {brand} / {part}")
         return await fallback_search_async(page, brand, part)
-    except Exception as e:
-        logger.error(f"Ошибка парсинга стартов для {brand} / {part}: {e}")
+    except Exception:
+        logger.exception(f"Ошибка парсинга стартов для {brand} / {part}")
         # Можно сделать скриншот для диагностики (опционально)
-        await page.screenshot(
-            path=f"screenshots/error_{brand}_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        await _safe_screenshot(
+            page,
+            f"screenshots/error_{brand}_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+            logger,
         )
         return None, None
 
@@ -203,7 +213,7 @@ async def fallback_search_async(page: Page, brand: str, part: str) -> tuple:
     """Fallback-поиск только по номеру детали"""
     try:
         fallback_url = f"{BASE_URL}/search?pcode={part}"
-        await page.goto(fallback_url)
+        await page.goto(fallback_url, timeout=30000)
         logger.info(f"Fallback: загружена страница без бренда: {fallback_url}")
 
         if await page.locator(SELECTORS["stparts"]["captcha_img"]).is_visible():
@@ -379,7 +389,9 @@ async def scrape_stparts_name_async(
         return None
     except Exception as e:
         logger.error(f"❌ Ошибка парсинга названия детали для {part}: {e}")
-        await page.screenshot(
-            path=f"screenshots/error_name_stparts_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        await _safe_screenshot(
+            page,
+            f"screenshots/error_name_stparts_{part}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+            logger,
         )
         return None

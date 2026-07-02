@@ -30,5 +30,5 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
 ENV LC_ALL=C.UTF-8
 
-# Точка входа — bot.py
-CMD ["python", "bot.py"]
+# Точка входа — main.py (без Telegram-бота)
+CMD ["python", "main.py"]

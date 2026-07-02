@@ -1,19 +1,17 @@
 # main.py
 """
 Асинхронный парсер с Playwright.
-- Общие куки для avtoformula
+- Парсинг только stparts.ru
 - Автоматический re-login при разлогине
 - Разделённые логи по сайтам
 """
 import random
-from telegram import Bot
 import asyncio
 import sys  # 🆕 №1 — ПЕРВЫЙ!
 import io  # 🆕 №2
 import os  # 🆕 №3
 import pandas as pd
 import signal
-import math
 import multiprocessing
 from pathlib import Path
 from tqdm.asyncio import tqdm
@@ -43,9 +41,6 @@ from config import (
     COOKIE_FILE,
     AVTO_LOGIN,
     AVTO_PASSWORD,
-    BOT_TOKEN,
-    ADMIN_CHAT_ID,
-    SEND_TO_TELEGRAM,
     TASK_TIMEOUT,
     PROXY_TIMOUT,
     get_output_file,
@@ -66,13 +61,12 @@ from utils import (
 )
 
 from price_adjuster import adjust_prices_and_save
-import requests
 
 # Импортируем асинхронные скрапперы
-from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
+# from scraper_avtoformula import scrape_avtoformula_pw, scrape_avtoformula_name_async
+# from scraper_adeo import scrape_adeo
+# from scrape_emex import scrape_emex
 from scraper_stparts import scrape_stparts_async, scrape_stparts_name_async
-from scraper_adeo import scrape_adeo
-from scrape_emex import scrape_emex
 from auth import ensure_logged_in
 
 
@@ -94,17 +88,12 @@ LOG_DIR.mkdir(exist_ok=True)
 # === Разделение логов ===
 
 
-logger_avto = get_site_logger("avtoformula")
-logger_adeo = get_site_logger("adeo")
 logger_st = get_site_logger("stparts")
-logger_jp = get_site_logger("japarts")
-logger_armtek = get_site_logger("armtek")
-logger_emex = get_site_logger("emex")
 
 stop_parsing = multiprocessing.Event()
 stop_parsing.clear()
 
-sites = ["avtoformula", "stparts", "japarts", "armtek"]
+sites = ["stparts"]
 
 INPUT_DIR = Path("input")
 
@@ -129,47 +118,6 @@ def setup_event_loop_policy():
         print("Не Windows — политика событийного цикла не меняется")
 
 
-def send_telegram_process(msg):
-    """Отправка прогресса в Telegram"""
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(
-            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"🕐 Прогресс:\n{msg}"}
-        )
-    except Exception as e:
-        logger.error("Ошибка отправки прогресса в Telegram: %s", e)
-
-
-# === Telegram ===
-def send_telegram_error(msg):
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(
-            url, data={"chat_id": ADMIN_CHAT_ID, "text": f"❌ Parser Error:\n{msg}"}
-        )
-    except Exception as e:
-        logger.error("Ошибка Telegram: %s", e)
-
-
-async def send_telegram_file(file_path, caption=None):
-    if not SEND_TO_TELEGRAM:
-        return
-    try:
-        bot = Bot(token=BOT_TOKEN)
-        async with bot:
-            with open(file_path, "rb") as f:  # ← теперь файл закрывается
-                await bot.send_document(
-                    chat_id=ADMIN_CHAT_ID, document=f, caption=caption
-                )
-        logger.info("Файл отправлен в Telegram")
-    except Exception as e:
-        logger.error("Ошибка отправки в Telegram: %s", e)
-
-
 async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = None):
     """Финальная обработка + сохранение ИМЁН/ЦЕН (normal/stop/INTERIM)"""
     logger.info(f"🔄 Финализация ({mode})...")
@@ -180,8 +128,6 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
         ENABLE_NAME_PARSING,
         stparts_price,
         stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
     )
 
     # Локальные копии
@@ -199,8 +145,6 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
         price_cols = [
             stparts_price,
             stparts_delivery,
-            avtoformula_price,
-            avtoformula_delivery,
         ]
         for col in price_cols:
             if col not in df.columns:
@@ -251,7 +195,7 @@ async def finalize_processing(df: pd.DataFrame, mode: str, output_file: str = No
 class ContextPool:
 
     def __init__(
-        self, browser: Browser, pool_size: int = 5, auth_avtoformula: bool = True
+        self, browser: Browser, pool_size: int = 5, auth_avtoformula: bool = False
     ):
         self.browser = browser
         self.pool_size = pool_size
@@ -369,8 +313,6 @@ async def process_single_item(
         ENABLE_PRICE_PARSING as PRICE,
         stparts_price,
         stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
     )
 
     # Инициализация результатов
@@ -412,42 +354,6 @@ async def process_single_item(
                     else:
                         return "CaptchaFailed"
 
-                # Если имя плохое → avtoformula
-                if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
-                    if detail_name:
-                        logger.info(f"⚠️ [{idx}] stparts '{detail_name}' → avtoformula")
-
-                    detail_name = await scrape_avtoformula_name_async(
-                        page1, part, logger_avto
-                    )
-
-                    if detail_name == "NeedCaptcha":
-                        logger.info(
-                            f"🔒 [{idx}] Капча на avtoformula (попытка {attempt+1}/{max_retries+1})"
-                        )
-                        success = await captcha_manager.solve_captcha(
-                            page=page1,
-                            logger=logger_avto,
-                            site_key="avtoformula",
-                            selectors={
-                                "captcha_img": SELECTORS["avtoformula"]["captcha_img"],
-                                "captcha_input": SELECTORS["avtoformula"][
-                                    "captcha_input"
-                                ],
-                                "captcha_submit": SELECTORS["avtoformula"][
-                                    "captcha_submit"
-                                ],
-                            },
-                        )
-
-                        await safe_close_page(page1)
-                        page1 = None
-
-                        if success:
-                            continue
-                        else:
-                            return "CaptchaFailed"
-
                 if not detail_name or detail_name.lower().strip() in BAD_DETAIL_NAMES:
                     detail_name = "Detail"
                     logger.info(f"❌ [{idx}] Название не найдено: {part}")
@@ -470,20 +376,11 @@ async def process_single_item(
 
         SITES = {
             "stparts": {"scrape_func": scrape_stparts_async, "logger": logger_st},
-            "avtoformula": {
-                "scrape_func": scrape_avtoformula_pw,
-                "logger": logger_avto,
-            },
-            "adeo": {"scrape_func": scrape_adeo, "logger": logger_adeo},
-            "emex": {"scrape_func": scrape_emex, "logger": logger_emex},
         }
 
         CAPTCHA_SITES = [
             "stparts",
-            "avtoformula",
-            "adeo",
-            "emex",
-        ]  # adeo решает капчу сам
+        ]
 
         for attempt in range(max_retries + 1):
             pages = {}
@@ -505,7 +402,7 @@ async def process_single_item(
                     )
                     results_dict[site_name] = result
 
-                # 🔥 ОБРАБОТКА КАПЧИ - универсальная для всех сайтов кроме adeo
+                # 🔥 ОБРАБОТКА КАПЧИ - только для stparts.ru
                 captcha_found = False
                 for site_name in CAPTCHA_SITES:
                     if results_dict.get(site_name) == "NeedCaptcha":
@@ -602,8 +499,6 @@ async def worker(
     df: pd.DataFrame,
     pbar,
     total_tasks: int,
-    progress_checkpoints: set,
-    sent_progress: set,
     counter: dict,
     counter_lock: asyncio.Lock,
 ):
@@ -811,7 +706,7 @@ async def worker(
                             if pd.notna(val):
                                 df.at[real_idx, col] = val
 
-            # прогресс в телеграм
+            # прогресс
             async with counter_lock:
                 counter["processed"] += 1
                 processed_count = counter["processed"]
@@ -819,17 +714,6 @@ async def worker(
                 logger.debug(
                     f"📊 Progress: {processed_count}/{total_tasks}, df.shape={df.shape}"
                 )
-
-                # Telegram прогресс (без изменений)
-                if (
-                    processed_count in progress_checkpoints
-                    and processed_count not in sent_progress
-                ):
-                    percent = int(processed_count / total_tasks * 100)
-                    send_telegram_process(
-                        f"Прогресс: {percent}% ({processed_count}/{total_tasks})"
-                    )
-                    sent_progress.add(processed_count)
 
         except asyncio.CancelledError:
             logger.info(f"👷 Worker-{worker_id}: Cancelled")
@@ -882,8 +766,6 @@ async def main_async():
         get_output_file,
         stparts_price,
         stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
         ENABLE_NAME_PARSING as LOCAL_NAME,
         ENABLE_PRICE_PARSING as LOCAL_PRICE,
         BAD_DETAIL_NAMES,
@@ -910,18 +792,9 @@ async def main_async():
     df = pd.read_excel(INPUT_FILE)
     df = preprocess_dataframe(df)
 
-    from config import (
-        stparts_price,
-        stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
-    )
-
     all_possible_cols = [
         stparts_price,
         stparts_delivery,
-        avtoformula_price,
-        avtoformula_delivery,
         "finde_name",
     ]
 
@@ -948,14 +821,6 @@ async def main_async():
 
     logger.info(f"📋 Задач в очереди: {total_tasks}")
 
-    # 🆕 Контрольные точки прогресса
-    progress_checkpoints = {
-        math.ceil(total_tasks * 0.25),
-        math.ceil(total_tasks * 0.50),
-        math.ceil(total_tasks * 0.75),
-        total_tasks,
-    }
-    sent_progress = set()
     counter = {"processed": 0}
     counter_lock = asyncio.Lock()
 
@@ -979,11 +844,11 @@ async def main_async():
             proxy={"server": "http://per-context"},
         )
 
-        # ContextPool
+        # ContextPool (авторизация на avtoformula больше не нужна)
         pool = ContextPool(
             normal_browser,
             pool_size=MAX_WORKERS,
-            auth_avtoformula=LOCAL_NAME or LOCAL_PRICE,
+            auth_avtoformula=False,
         )
         await pool.initialize()
 
@@ -999,8 +864,6 @@ async def main_async():
                         df,
                         pbar,
                         total_tasks,
-                        progress_checkpoints,
-                        sent_progress,
                         counter,
                         counter_lock,
                     )
@@ -1147,10 +1010,6 @@ async def main_async():
             # main_async перед finalize:
 
             await finalize_processing(df, mode)
-
-            # 🔥 2. Получаем путь + отправляем СРАЗУ
-            # final_file = get_output_file(mode)  # "output/цены_конкурентов.xlsx"
-            # await send_telegram_file(final_file, f"✅ {mode} готово! ({len(df)} строк)")
 
             logger.info("🎉 Парсинг завершён успешно!")
         except Exception as e:

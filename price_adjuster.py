@@ -10,14 +10,8 @@ from openpyxl.utils.dataframe import dataframe_to_rows
 from config import (
     corrected_price,
     stparts_price,
-    avtoformula_price,
-    adeo_price,  # 🆕 adeo_price
     stparts_delivery,
-    avtoformula_delivery,
-    adeo_delivery,  # 🆕 adeo_delivery
     input_price,
-    emex_price,
-    emex_delivery,
     INPUT_COL_ARTICLE,
     INPUT_COL_BRAND,
 )
@@ -46,9 +40,6 @@ def adjust_prices_and_save(df, output_file):
     # 🆕 Словарь конкурентов для удобства
     COMPETITORS = {
         "stparts": (stparts_price, stparts_delivery),
-        "avtoformula": (avtoformula_price, avtoformula_delivery),
-        "adeo": (adeo_price, adeo_delivery),
-        "emex": (emex_price, emex_delivery),
     }
 
     for idx, row in df.iterrows():
