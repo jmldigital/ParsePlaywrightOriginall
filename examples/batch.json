@@ -1,0 +1,8 @@
+{
+  "batch_id": "client-batch-001",
+  "max_delivery_days": 2,
+  "parts": [
+    {"id": "position-001", "oem": "234344Fft44", "brand": "toyota"},
+    {"id": "position-002", "oem": "2343443423", "brand": "AMG"}
+  ]
+}

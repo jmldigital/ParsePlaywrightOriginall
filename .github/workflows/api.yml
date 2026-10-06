@@ -1,0 +1,19 @@
+name: Price API
+on:
+  push:
+    branches: [codex/stparts-price-api]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.0"
+      - run: uv sync --frozen --python 3.12
+      - run: uv run ruff check price_api tests
+      - run: uv run pytest -q
+      - run: docker build -t stparts-price-api:test .
+      - run: docker run --rm -i --network none stparts-price-api:test python - < tests/browser_smoke.py
+      - run: docker run --rm -i --network none stparts-price-api:test python - < tests/runtime_smoke.py

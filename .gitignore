@@ -66,3 +66,17 @@ desktop.ini
 # === Docker ===
 #.dockerenv
 #docker-compose.override.yml
+# Price API local state
+.venv/
+data/
+.pytest_cache/
+.ruff_cache/
+.env
+!.env.example
+
+.tools/
+.uv-cache/
+.python/
+
+.test-temp/
+.browser-cache/
