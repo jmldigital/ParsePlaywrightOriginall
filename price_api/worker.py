@@ -1,9 +1,10 @@
 import asyncio
 import logging
+import time
 
 from .models import ItemError, SearchResult
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("uvicorn.error.price_api.worker")
 
 
 async def database_call(function, *args):
@@ -43,6 +44,16 @@ class Runner:
             if item is None:
                 await asyncio.sleep(0.1)
                 continue
+            started = time.monotonic()
+            log.info(
+                "parse_start job=%s ordinal=%s id=%r brand=%r oem=%r limit_days=%s",
+                item["job_id"],
+                item["ordinal"],
+                item["client_id"],
+                item["brand"],
+                item["oem"],
+                item["max_days"],
+            )
             try:
                 async with asyncio.timeout(self.settings.item_timeout_seconds):
                     result = await self.scraper.search(
@@ -70,6 +81,18 @@ class Runner:
             # Database failures must stop this worker, not silently lose a result.
             # Health becomes unhealthy; restart recovers the running item.
             await database_call(self.store.finish, item, result)
+            log.info(
+                "parse_done job=%s ordinal=%s id=%r status=%s price=%s "
+                "delivery_days=%s error=%s elapsed_seconds=%.2f",
+                item["job_id"],
+                item["ordinal"],
+                item["client_id"],
+                result.status,
+                result.price,
+                result.delivery_days,
+                result.error.code if result.error else None,
+                time.monotonic() - started,
+            )
 
     async def cleaner(self):
         while True:

@@ -40,13 +40,13 @@ def delivery_days(text):
     value = text.strip().casefold()
     if value in {"в наличии", "сегодня", "наличие"}:
         return 0
-    # A range uses its upper bound. Unknown dates/hours are never interpreted as days.
+    # A range uses its earliest day, as required by the price-selection contract. Unknown dates/hours are never interpreted as days.
     match = re.fullmatch(
         r"(\d+)(?:\s*[-–—]\s*(\d+))?(?:\s*(?:д|дн|дня|дней|день)\.?)?", value
     )
     if not match:
         return None
-    return int(match.group(2) or match.group(1))
+    return int(match.group(1))
 
 
 def price_value(text):
@@ -167,7 +167,14 @@ class StpartsScraper:
     async def read_page(self, page, url):
         response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if response is not None and response.status >= 400:
-            raise SourceError("SOURCE_HTTP_ERROR", "Source returned an HTTP error")
+            # The source may return its automatic browser-check page with HTTP 403.
+            checking = await page.get_by_text(
+                "Мы проверяем ваш браузер", exact=False
+            ).is_visible()
+            if response.status != 403 or not checking:
+                raise SourceError(
+                    "SOURCE_HTTP_ERROR", f"Source returned HTTP {response.status}"
+                )
         await page.locator(
             f"{TABLE} {ROW}:visible, {NO_RESULTS}:visible, {CAPTCHA}:visible"
         ).first.wait_for(state="visible", timeout=15000)
@@ -182,7 +189,8 @@ class StpartsScraper:
         # Read a single DOM snapshot, avoiding hundreds of separate browser calls.
         rows = await page.locator(f"{TABLE} {ROW}").evaluate_all("""rows => rows.map(row => ({
             brand: row.querySelector('td.resultBrand')?.textContent?.trim() ?? '',
-            delivery: row.querySelector('td.resultDeadline')?.textContent?.trim() ?? '',
+            delivery: (row.querySelector('td.resultDeadline .resultDeadlineBlock .info')
+                ?? row.querySelector('td.resultDeadline'))?.textContent?.trim() ?? '',
             price: row.querySelector('td.resultPrice')?.textContent?.trim() ?? ''
         }))""")
         if not rows:
