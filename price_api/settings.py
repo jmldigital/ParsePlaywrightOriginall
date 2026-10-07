@@ -16,3 +16,5 @@ class Settings(BaseSettings):
     captcha_api_key: SecretStr = SecretStr("")
     stparts_storage_state: Path | None = None
     headless: bool = True
+    diagnostics_enabled: bool = True
+    diagnostics_max_samples: int = Field(default=20, ge=1, le=200)
