@@ -44,6 +44,7 @@ sync обновляет индекс после изменений. Индекс
 - tests/test_api.py, test_store.py, test_stparts.py: автоматические проверки API, БД и правил выбора.
 - tests/browser_smoke.py: браузерные сценарии с имитацией страниц и ответов внешнего сервиса.
 - tests/runtime_smoke.py: проверка работы сервиса.
+- tests/live_captcha_check.py: реальная проверка капчи на нескольких позициях (`python tests/live_captcha_check.py [N] [batch.json]`).
 - deploy/nginx-price-api.conf: обратный прокси к API.
 
 ## Контракт API
@@ -193,6 +194,88 @@ ITEM_TIMEOUT_SECONDS по умолчанию 180. Превышение стан�
 - Существующий Django на порту 1337 относится к другому проекту; не изменять его при работе над этим API.
 
 На момент последней остановки локальный контейнер был остановлен. Это историческая запись: проверять фактический статус перед работой. Не запускать контейнер только ради чтения кода — это может автоматически возобновить оставшуюся очередь.
+
+## Журнал правки модуля капчи 2026-10-07: что сделано и какие были ошибки
+
+Раздел для следующего агента: здесь зафиксировано, какие файлы и функции изменены, какие ошибки были допущены по ходу работы, как они проявлялись и чем закрыты. Изменения закоммичены как `1245a75` и запушены в `origin/codex/stparts-price-api`.
+
+### Что сделано в коде
+
+price_api/stparts.py:
+
+- Константы состояний: `RESULTS`, `CAPTCHA`, `CAPTCHA_PANEL`, `CAPTCHA_INPUT`, `CAPTCHA_SUBMIT`, `CAPTCHA_RELOAD`, `CAPTCHA_STATE` (видимые панель/поле/картинка), `RECAPTCHA_FORM`, `RECAPTCHA_FRAME`, `RECAPTCHA` (видимый виджет), `RECAPTCHA_PRESENT` (форма или виджет есть в DOM), `BROWSER_CHECK`, `BLOCKED`, `BLOCKED_HOST`.
+- `captcha_key()` — отказ `CAPTCHA_REQUIRED` без ключа и предупреждение `captcha_key_length_unexpected` при длине ≠ 32.
+- `captcha_endpoint()`, `captcha_deadline()`, `before()` — адрес провайдера из настроек и единый бюджет времени на все попытки.
+- `provider_solution()` — один поток провайдера: POST `in.php`, опрос `res.php` через POST, `CAPCHA_NOT_READY` = ждать, `ERROR_NO_SLOT_AVAILABLE` = повтор, прочие `ERROR_*` = отказ, по дедлайну `CAPTCHA_TIMEOUT`.
+- `recaptcha_sitekey()` — ожидание виджета до `CAPTCHA_WAIT_SECONDS`; sitekey из `data-sitekey` или из `k=` в src anchor-iframe; устойчиво к перезагрузке страницы и к `PlaywrightError`.
+- `submit_recaptcha_token()` — нативный setter для `g-recaptcha-response`, события `input`/`change`, затем submit формы (кнопка, иначе `requestSubmit`).
+- `recaptcha_present()`, `image_captcha_present()`, `captcha_present()`, `results_present()` — раздельные проверки состояний вместо одной проверки видимости.
+- `blocked()` — распознавание страницы «Access Restricted» по тексту или по хосту `nodacdn.net`.
+- `wait_for_results()`, `wait_for_captcha_image()` — ожидание результатов и реальной загрузки картинки (`complete` и `naturalWidth > 0`).
+- `solve_captcha()` — картинка методом `base64`, до `CAPTCHA_MAX_ATTEMPTS` попыток, обновление кода через `a.captchaReload`, сохранение сессии при успехе.
+- `solve_recaptcha()` — `userrecaptcha` с `googlekey`, `pageurl`, `userAgent`; повтор при отказе источника в пределах бюджета; сохранение сессии; если вместо капчи отрисовались результаты — `captcha_not_required` без оплаты.
+- `store_source_state()`, `adopt_source_state()` — сохранение пройденной сессии и её переиспользование ожидающим воркером (`captcha_session_reused`).
+- `captcha_lock` — одновременно решается одна капча (повторяет ограничение из Parse -old/captcha_manager.py).
+- `_read_page(page, url, state_version)` — карта состояний, ожидание состояния, цикл обработки капч, коды `SOURCE_BLOCKED`, `SOURCE_CONNECTION_ERROR`, `SOURCE_HTTP_ERROR`.
+- `read_page()` и `search()` — передача версии сессии в контекст позиции.
+- `log_provider_error()` — в журнал попадает только код вида `ERROR_*`, не ответ провайдера.
+
+price_api/settings.py и .env.example: `CAPTCHA_API_URL` (по умолчанию `https://rucaptcha.com`), `CAPTCHA_MAX_ATTEMPTS`, `CAPTCHA_SOLVE_TIMEOUT_SECONDS`, `CAPTCHA_POLL_INTERVAL_SECONDS`, `CAPTCHA_WAIT_SECONDS`.
+
+tests/browser_smoke.py: 16 сценариев с имитацией — прежние 10 плюс `recaptchaRetry` (повтор после отказа источника), `pendingCaptcha` (картинка без src → `CAPTCHA_FORMAT`), `recaptchaLate` (виджет появился позже), `recaptchaPending` (виджета нет → `CAPTCHA_FORMAT`), `reset` (сброс соединения → `SOURCE_CONNECTION_ERROR`), `blocked` (страница ограничения → `SOURCE_BLOCKED`).
+
+tests/live_captcha_check.py: новый запуск реальной проверки на нескольких позициях.
+
+Readme.md: описание метода, новых кодов и результатов прогона. AGENTS.md: этот раздел и обновлённые разделы о капче.
+
+### Ошибки, которые были допущены и как закрыты
+
+1. `ERROR_WRONG_USER_KEY` при рабочем балансе RuCaptcha. Причина: в контейнерном `.env` ключ был 49 символов при ожидаемых 32; код при этом ходил на 2captcha.com. Локальный 32-символьный ключ проходит баланс на `rucaptcha.com`, `2captcha.com` и `api.rucaptcha.com`. Исправление: адрес провайдера — настройка `CAPTCHA_API_URL` (по умолчанию RuCaptcha), предупреждение о длине ключа, метод `userrecaptcha` по официальной документации.
+2. 96 × `SOURCE_HTTP_ERROR` в первом реальном прогоне 200 позиций. Причина: при HTTP 403 источник отдаёт форму лимита раньше, чем Google отрисует виджет; проверка видимости капчи не срабатывала, и код сразу поднимал ошибку. Исправление: наличие формы (`RECAPTCHA_PRESENT`) проверяется отдельно от видимости виджета, sitekey ожидается, а при появлении результатов капча не решается вовсе. Это был дефект кода, а не блокировка источником.
+3. `PlaywrightError: Unexpected token "="` — `text=Access Restricted` нельзя подмешивать в общий CSS-список селекторов. Исправление: страница ограничения проверяется отдельным методом `blocked()` до и после ожидания состояния.
+4. Ключ провайдера попадал в журнал: httpx логирует полный URL, а `res.php` вызывался GET с `key` в query (в логе 16 вхождений ключа). Исправление: `res.php` через POST, ключ только в теле; в live-скрипте логгер `httpx` приглушён до WARNING.
+5. Сценарий «картинка не загрузилась» давал `SOURCE_HTTP_ERROR` вместо `CAPTCHA_FORMAT`: пустой `div#captcha` без содержимого не считается видимым. Исправление: мок приведён к реальной странице (панель со ссылкой и полем), а признаком капчи стали панель и поле, а не только `img.captchaImg`.
+6. Второй воркер, дождавшись лока, платил за ту же капчу повторно. Исправление: `adopt_source_state()` — под локом сравнивается версия сессии, свежие cookies применяются к контексту и страница перезагружается; в прогоне это дало 10 переиспользований из 23 обнаружений.
+7. Скрипт наблюдения падал с `KeyError: 'items'` — в ответе `/jobs/{id}/results` поле называется `parts`; кроме того он считал задание завершённым при `status != "running"`, а сразу после POST статус `queued`. Исправление: `DONE = {completed, failed}`, повторный запуск переиспользует `job.json` вместо новой отправки.
+8. Обрезка строк в `api.log`: `uvicorn ... 2>&1 | Tee-Object` в PowerShell режет длинные строки, из-за чего `parse_done ... error=...` терял код ошибки. Для точных кодов брать `diagnostics/*.json` и `results.json` либо писать stderr напрямую в файл.
+9. `HEADLESS=true` → Chromium получает «Access Restricted» вместо капчи; headed-Chromium ту же проверку проходит. Исправление: для реальных прогонов обязателен `HEADLESS=false` (в Docker уже задан).
+10. `SOURCE_ERROR` с трейсбеком `Page.goto: net::ERR_CONNECTION_RESET` на втором URL — необработанное исключение Playwright. Исправление: код `SOURCE_CONNECTION_ERROR` без трейсбека; такие отказы источника остаются в статистике как реальные ошибки.
+11. Ошибки окружения этого сеанса: Docker Desktop не запущен, поэтому API поднимали `uvicorn` с отдельной БД (`data/local-200b`), чтобы не возобновить очередь на 250 позиций; Playwright 1.58 требовал `chromium-1208`, был только 1178 — доустановлен; DSH-песочница не могла выдать запись в папку проекта на Yandex.Disk (починено правами), а Playwright под песочницей не запускается из-за запрета piped stdio — проверки запускались с полным доступом.
+
+### Как воспроизвести проверки
+
+```powershell
+$env:PYTHONPATH='.'
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check --no-cache price_api tests
+.\.venv\Scripts\python.exe -m ruff format --check --no-cache price_api tests
+.\.venv\Scripts\python.exe tests\browser_smoke.py
+.\.venv\Scripts\python.exe tests\live_captcha_check.py 5 data\test-requests\local-captcha-verified.json
+```
+
+Реальный прогон через API: поднять сервис с отдельной БД и `HEADLESS=false`, отправить батч и наблюдать прогресс.
+
+```powershell
+$env:PYTHONPATH='.'; $env:DATABASE_PATH='data/local-200b/jobs.sqlite3'; $env:HEADLESS='false'
+.\.venv\Scripts\python.exe -m uvicorn price_api.app:create_app --factory --host 127.0.0.1 --port 8000
+# в другом окне:
+.\.venv\Scripts\python.exe data\local-200b\run_and_watch.py data\test-requests\local-200b.json data\local-200b
+.\.venv\Scripts\python.exe data\local-200b\analyze.py
+```
+
+### Цифры двух прогонов 200 позиций
+
+- Первый (до исправления дефекта, остановлен вручную): job `c769f1aa-61b7-4de0-bd1b-9bc9eb6a4b8f`, 139/200, 17 found, 13 not_found, 96 `SOURCE_HTTP_ERROR` (дефект п.2) и 13 `SOURCE_ERROR` (сбросы соединения). В зачёт не идёт.
+- Второй (после исправления): job `21592ee3-7268-4482-98ca-0130d1fd8af3`, 200/200 за 24 мин 21 с, 112 found, 75 not_found, 13 error (6 `SOURCE_CONNECTION_ERROR`, 5 `SOURCE_TIMEOUT`, 2 `CAPTCHA_TIMEOUT`); капча — 23 обнаружения, 13 отправок, 10 решений принято, 10 переиспользований сессии, 0 отказов источника и провайдера; картинка не появлялась; расход провайдера ~0.05 USD.
+
+### Что важно помнить следующему агенту
+
+- Не считать `:visible` единственным признаком капчи: форма и панель появляются раньше виджета Google.
+- Проверять коды ошибок по `results.json` и `diagnostics/*.json`, а не по обрезанному PowerShell-логу.
+- Перед длинным реальным прогоном проверять состояние источника малым набором (`local-captcha-verified.json`) и обязательно `HEADLESS=false`.
+- Не запускать сервис с боевой БД ради теста: он возобновит очередь; для тестов задавать отдельный `DATABASE_PATH`.
+- Провайдерские вызовы делать только POST, ключ не должен попадать в URL и в журнал.
+- Не заявлять «капча решена» по факту `captcha_solution_received`: подтверждение — `captcha_accepted` после появления результатов поиска.
 
 ## Правила сопровождения
 
