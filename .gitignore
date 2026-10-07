@@ -80,3 +80,6 @@ data/
 
 .test-temp/
 .browser-cache/
+
+# Local CodeGraph index
+.codegraph/

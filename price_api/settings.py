@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     max_active_jobs: int = Field(default=100, ge=1)
     cleanup_interval_seconds: float = Field(default=300, gt=0)
     captcha_api_key: SecretStr = SecretStr("")
+    # RuCaptcha is the documented provider; its /in.php and /res.php API is shared with 2captcha.
+    captcha_api_url: str = "https://rucaptcha.com"
+    captcha_max_attempts: int = Field(default=2, ge=1, le=5)
+    captcha_solve_timeout_seconds: float = Field(default=90, gt=0)
+    captcha_poll_interval_seconds: float = Field(default=5, gt=0)
+    captcha_wait_seconds: float = Field(default=30, gt=0)
     stparts_storage_state: Path | None = None
     headless: bool = True
     diagnostics_enabled: bool = True
