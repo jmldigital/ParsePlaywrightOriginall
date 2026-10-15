@@ -45,6 +45,54 @@ RECAPTCHA_LATE = (
     "document.getElementById('formSearchLimitCaptcha').prepend(frame);}, 300);</script>"
 )
 FAKE_KEY = "fake-provider-key" + "0" * 15
+# An OEM shared by several brands: the source answers the part-code search with this
+# chooser. The markup repeats the live page: a row is tr.startSearching with data-link,
+# the brand sits in td.caseBrand as a direct link, and analog brands are listed in a grey
+# <span> inside the same cell. The description of the first row names our brand too, so
+# matching a cell or a row instead of the main brand link would pick the wrong row.
+SELECTION = (
+    '<table><tbody><tr class="startSearching" data-link="/search/Sat/123%2F45">'
+    '<td class="caseInfo"><div title="Информация о товаре скрыта"></div></td>'
+    '<td class="caseBrand "><div>'
+    '<a href="#" data-href="/getBrandInfo?brandName=Sat&amp;locale=ru_RU" '
+    'class="brandInfoLink">Sat</a><br><span>'
+    '<a href="#" data-href="/getBrandInfo?brandName=Great%20Wall&amp;locale=ru_RU" '
+    'class="brandInfoLink" style="color: #999999;">Great Wall</a></span>&nbsp;'
+    "</div></td>"
+    '<td class="casePartCode ">123/45</td>'
+    '<td class=" caseDescription">Шильдик AIRBAG Great Wall haval</td>'
+    '<td class="caseUrl casePrices">'
+    '<a class="startSearching" href="/search/Sat/123%2F45">Цены и аналоги</a>'
+    "</td></tr>"
+    '<tr class="startSearching" data-link="/search/Great%20Wall/123%2F45">'
+    '<td class="caseInfo"><div title="Информация о товаре скрыта"></div></td>'
+    '<td class="caseBrand "><div>'
+    '<a href="#" data-href="/getBrandInfo?brandName=Great%20Wall&amp;locale=ru_RU" '
+    'class="brandInfoLink">Great Wall</a><br><span>'
+    '<a href="#" data-href="/getBrandInfo?brandName=HAVAL&amp;locale=ru_RU" '
+    'class="brandInfoLink" style="color: #999999;">haval</a></span>&nbsp;'
+    "</div></td>"
+    '<td class="casePartCode ">123/45</td>'
+    '<td class=" caseDescription">Шильдик AIRBAG</td>'
+    '<td class="caseUrl casePrices">'
+    '<a class="startSearching" href="/search/Great%20Wall/123%2F45">Цены и аналоги</a>'
+    "</td></tr>"
+    '<tr class="startSearching" data-link="/search/WHCQ/123%2F45">'
+    '<td class="caseInfo"><div title="Информация о товаре скрыта"></div></td>'
+    '<td class="caseBrand "><div>'
+    '<a href="#" data-href="/getBrandInfo?brandName=WHCQ&amp;locale=ru_RU" '
+    'class="brandInfoLink">WHCQ</a><br></div></td>'
+    '<td class="casePartCode ">123/45</td>'
+    '<td class=" caseDescription">Шильдик AIRBAG</td>'
+    '<td class="caseUrl casePrices">'
+    '<a class="startSearching" href="/search/WHCQ/123%2F45">Цены и аналоги</a>'
+    "</td></tr></tbody></table>"
+)
+SELECTION_OFFERS = TABLE.replace("Toyota", "Great Wall")
+SELECTION_OFFERS_URL = "https://stparts.ru/search/Great%20Wall/123%2F45"
+# The source labels one maker with a combined name (as Hyundai-KIA), while the client
+# asks for a part of that name.
+COMPOUND_TABLE = TABLE.replace("Toyota", "Hyundai-KIA")
 
 
 async def main():
@@ -93,6 +141,17 @@ async def main():
             elif mode == "pendingCaptcha":
                 status = 403
                 html = PENDING_CAPTCHA
+            elif mode == "selection":
+                # The brand path the client asked for has no offers, the OEM fallback
+                # shows the chooser, and its row link leads to the real offers table.
+                if "pcode=" in route.request.url:
+                    html = SELECTION
+                elif SELECTION_OFFERS_URL in route.request.url:
+                    html = SELECTION_OFFERS
+                else:
+                    html = EMPTY
+            elif mode == "compound":
+                html = COMPOUND_TABLE
             elif mode == "blocked":
                 status = 200
                 html = (
@@ -307,10 +366,44 @@ async def main():
         assert result.error.code == "SOURCE_BLOCKED", result
         assert len(browser.contexts) == 0
         print("access-restriction page OK")
+        # An OEM shared by several brands: the chooser row of the requested brand wins.
+        mode = "selection"
+        result = await scraper.search("Great Wall", "123/45", 2)
+        assert (result.status, result.price) == ("found", "250.00"), result
+        assert len(browser.contexts) == 0
+        print("brand chooser page OK")
+        # The analog listed in the chooser cell is a different brand: no price for it.
+        mode = "selection"
+        result = await scraper.search("haval", "123/45", 2)
+        assert result.status == "not_found", result
+        assert len(browser.contexts) == 0
+        print("analog brand is not matched OK")
+        # The chooser row belongs to another brand: honest not_found, no price.
+        mode = "selection"
+        result = await scraper.search("Tesla", "123/45", 2)
+        assert result.status == "not_found", result
+        assert len(browser.contexts) == 0
+        print("brand chooser without our brand OK")
+        # The source's combined brand label contains our brand as a whole word.
+        mode = "compound"
+        result = await scraper.search("KIA", "0PN1113H51", 2)
+        assert (result.status, result.price, result.delivery_days) == (
+            "found",
+            "250.00",
+            1,
+        ), result
+        assert len(browser.contexts) == 0
+        print("combined brand label OK")
+        # A maker that shares no whole word with the label is not our brand.
+        mode = "compound"
+        result = await scraper.search("Toyota", "0PN1113H51", 2)
+        assert result.status == "not_found", result
+        assert len(browser.contexts) == 0
+        print("unrelated brand against combined label OK")
     finally:
         await scraper.close()
         temporary.cleanup()
-    print("Browser smoke: 16 scenarios passed; no external source requests")
+    print("Browser smoke: 21 scenarios passed; no external source requests")
 
 
 asyncio.run(main())

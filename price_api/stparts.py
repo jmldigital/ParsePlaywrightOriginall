@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
@@ -47,6 +47,13 @@ BROWSER_CHECK = "Мы проверяем ваш браузер"
 # The source's defence service replaces the page with this interstitial for a flagged client.
 BLOCKED = "text=Access Restricted"
 BLOCKED_HOST = "nodacdn.net"
+# For an OEM that several brands share, the source answers with a chooser table
+# (Бренд | Код детали | Описание | Поиск) whose rows link to "Цены и аналоги".
+SELECTION_ROW = "tr.startSearching"
+SELECTION = f"{SELECTION_ROW}:visible"
+# The main brand of a chooser row: a direct link in td.caseBrand. Analog brands live in a
+# grey <span> inside the same cell and must not take part in the match.
+SELECTION_BRAND = "td.caseBrand > div > a.brandInfoLink"
 
 
 class SourceError(Exception):
@@ -55,12 +62,46 @@ class SourceError(Exception):
         super().__init__(message)
 
 
-def brand_matches(search, actual):
-    # Existing matching rule; discard empty tokens to avoid false positives.
-    def tokens(value):
-        return set(filter(None, re.split(r"[\s\-/_,]+", value.casefold().strip())))
+def normalize_brand(value):
+    """Casefold and treat separators as spaces, so only the brand itself is compared."""
+    return re.sub(r"[\s\-/_.,]+", " ", value.casefold()).strip()
 
-    return bool(tokens(search) & tokens(actual))
+
+def brand_tokens(value):
+    """Normalized whole words of a brand name, empty words dropped."""
+    normalized = normalize_brand(value)
+    return normalized.split() if normalized else []
+
+
+def brand_matches(search, actual):
+    """Containment match: one brand name must be a whole-phrase part of the other.
+
+    Case and separators are ignored ("Victor-Reinz" equals "VICTOR REINZ"). The source
+    labels one maker with combined names, so its label "Hyundai-KIA" matches both "KIA"
+    and "Hyundai" (and the reverse direction too). Alignment is by whole words, so a
+    fragment of a word ("kia" against "Kiabi") never matches, and a separately named
+    analog ("haval" next to "Great Wall") stays a different brand.
+    """
+    requested, found = brand_tokens(search), brand_tokens(actual)
+    if not requested or not found:
+        return False
+    if len(requested) > len(found):
+        requested, found = found, requested
+    width = len(requested)
+    return any(found[i : i + width] == requested for i in range(len(found) - width + 1))
+
+
+def search_urls(brand, oem):
+    """Search by the part code first, then by the brand path as a fallback.
+
+    The code search works for every brand spelling (the brand path needs the catalogue
+    spelling and answers "no results" otherwise), and we filter offers by brand ourselves.
+    The brand path is kept as the second attempt because it still answers for some brands.
+    """
+    return [
+        "https://stparts.ru/search?" + urlencode({"pcode": oem}),
+        f"https://stparts.ru/search/{quote(brand, safe='')}/{quote(oem, safe='')}",
+    ]
 
 
 def delivery_days(text):
@@ -273,6 +314,55 @@ class StpartsScraper:
 
     async def results_present(self, page):
         return await page.locator(RESULTS).count() > 0
+
+    async def selection_present(self, page):
+        """The source offers a brand chooser instead of offers for a shared OEM."""
+        return await page.locator(SELECTION).count() > 0
+
+    async def follow_selection(self, page, brand):
+        """Open the chooser row of the requested brand.
+
+        The row is matched by the main brand link only (td.caseBrand > div > a.brandInfoLink):
+        the same cell can list analog brands in a grey <span>, and the description may name
+        other brands, so neither the cell text nor the row text is used. The canonical name
+        comes from the link's data-href (brandName), the link text is the fallback. Returns
+        False when no row matches, so the position becomes an honest not_found.
+        """
+        rows = page.locator(SELECTION_ROW)
+        count = await rows.count()
+        for index in range(count):
+            row = rows.nth(index)
+            try:
+                link = row.locator(SELECTION_BRAND).first
+                if not await link.count():
+                    continue
+                link_text = (await link.inner_text()).strip()
+                data_href = (await link.get_attribute("data-href")) or ""
+                href = await row.get_attribute("data-link")
+                if not href:
+                    href = await row.locator("a.startSearching").first.get_attribute(
+                        "href"
+                    )
+            except PlaywrightError:
+                continue
+            canonical = parse_qs(urlparse(data_href).query).get("brandName", [None])[0]
+            row_brand = (canonical or link_text).strip()
+            if not href or not brand_matches(brand, row_brand):
+                continue
+            target = urljoin(page.url, href)
+            log.info(
+                "source_selection_brand brand=%r row_brand=%r target=%r",
+                brand,
+                row_brand,
+                target,
+            )
+            try:
+                await page.goto(target, wait_until="domcontentloaded", timeout=30000)
+            except PlaywrightError:
+                return False
+            return True
+        log.info("source_selection_without_brand_match brand=%r rows=%s", brand, count)
+        return False
 
     async def blocked(self, page):
         """The defence service answers a flagged client with an interstitial, not results."""
@@ -505,7 +595,7 @@ class StpartsScraper:
             for extension in (".html", ".png", ".json"):
                 (folder / (stem + extension)).unlink(missing_ok=True)
 
-    async def read_page(self, page, url, state_version=0):
+    async def read_page(self, page, url, brand, state_version=0):
         status = None
 
         def response_received(response):
@@ -519,7 +609,7 @@ class StpartsScraper:
 
         page.on("response", response_received)
         try:
-            return await self._read_page(page, url, state_version)
+            return await self._read_page(page, url, brand, state_version)
         except asyncio.CancelledError:
             await self.save_diagnostic(page, url, "CANCELLED_OR_ITEM_TIMEOUT", status)
             raise
@@ -531,7 +621,7 @@ class StpartsScraper:
         finally:
             page.remove_listener("response", response_received)
 
-    async def _read_page(self, page, url, state_version=0):
+    async def _read_page(self, page, url, brand, state_version=0):
         try:
             response = await page.goto(
                 url, wait_until="domcontentloaded", timeout=30000
@@ -559,10 +649,11 @@ class StpartsScraper:
             raise SourceError(
                 "SOURCE_BLOCKED", "Source answered with its access-restriction page"
             )
-        # One of four states: offers, no results, image CAPTCHA or the reCAPTCHA form.
+        # One of five states: offers, no results, image CAPTCHA, the reCAPTCHA form
+        # or the brand chooser the source shows for an OEM shared by several brands.
         try:
             await page.locator(
-                f"{RESULTS}, {CAPTCHA_STATE}, {RECAPTCHA}"
+                f"{RESULTS}, {CAPTCHA_STATE}, {RECAPTCHA}, {SELECTION}"
             ).first.wait_for(state="visible", timeout=15000)
         except PlaywrightTimeout:
             if await self.blocked(page):
@@ -574,8 +665,8 @@ class StpartsScraper:
                 raise
             # The limit form is there; solve_recaptcha waits for the widget itself.
         for _round in range(3):
-            # Both challenges are page states rather than separate events, and the page
-            # can move from the browser check to either one of them.
+            # Page states move into each other, and the source can show its browser
+            # check, a challenge or the brand chooser before any offers.
             if await self.results_present(page):
                 break
             if await self.image_captcha_present(page):
@@ -583,6 +674,10 @@ class StpartsScraper:
                 continue
             if await self.recaptcha_present(page):
                 await self.solve_recaptcha(page, state_version)
+                continue
+            if await self.selection_present(page):
+                if not await self.follow_selection(page, brand):
+                    return []
                 continue
             await asyncio.sleep(0.5)
         await page.locator(RESULTS).first.wait_for(state="visible", timeout=15000)
@@ -614,15 +709,10 @@ class StpartsScraper:
         try:
             page = await context.new_page()
             state_version = self.source_state_version
-            first = re.match(r"^[A-ZА-Я0-9]+", brand, re.IGNORECASE)
-            first_brand = first.group() if first else brand
-            urls = [
-                f"https://stparts.ru/search/{quote(first_brand, safe='')}/{quote(oem, safe='')}",
-                "https://stparts.ru/search?" + urlencode({"pcode": oem}),
-            ]
+            urls = search_urls(brand, oem)
             for index, url in enumerate(urls):
                 try:
-                    rows = await self.read_page(page, url, state_version)
+                    rows = await self.read_page(page, url, brand, state_version)
                 except PlaywrightTimeout:
                     if index == 0:
                         continue

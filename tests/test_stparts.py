@@ -7,6 +7,7 @@ from price_api.stparts import (
     brand_matches,
     delivery_days,
     price_value,
+    search_urls,
     select_offer,
 )
 
@@ -63,3 +64,48 @@ def test_delivery_range_uses_earliest_day():
         1,
     )
     assert select_offer(rows, "Toyota", 0).status == "not_found"
+
+
+def test_search_goes_by_part_code_first_and_keeps_the_brand_path():
+    primary, fallback = search_urls("Great Wall", "5402127XKQ00AF4")
+    assert primary == "https://stparts.ru/search?pcode=5402127XKQ00AF4"
+    assert fallback == "https://stparts.ru/search/Great%20Wall/5402127XKQ00AF4"
+    assert search_urls("Toyota", "123/45")[1].endswith("/search/Toyota/123%2F45")
+
+
+def test_brand_match_is_containment_of_whole_words():
+    assert brand_matches("Great Wall", "Great Wall")
+    assert brand_matches("great wall", "GREAT WALL")
+    assert brand_matches("Victor-Reinz", "VICTOR REINZ")
+    # The source labels one maker with a combined name; its parts must match too.
+    assert brand_matches("KIA", "Hyundai-KIA")
+    assert brand_matches("Hyundai", "Hyundai-KIA")
+    assert brand_matches("Hyundai-KIA", "KIA")
+    # Alignment is by whole words: a fragment of a word is not a brand.
+    assert not brand_matches("kia", "Kiabi")
+    # A separately named analog is a different brand, not a match.
+    assert not brand_matches("haval", "Great Wall")
+    assert not brand_matches("Great Wall", "WHCQ")
+    assert not brand_matches("", "Great Wall")
+    assert not brand_matches("Great Wall", "")
+
+
+def test_offer_of_combined_brand_label_is_selected_for_its_part():
+    rows = [
+        dict(brand="Hyundai-KIA", price="39,60", delivery="1 - 3 дня"),
+        dict(brand="Hyundai-KIA", price="46,64", delivery="4 - 6 дней"),
+        dict(brand="Sat", price="10,00", delivery="1"),
+    ]
+    result = select_offer(rows, "KIA", 2)
+    assert (result.status, result.price, result.delivery_days) == (
+        "found",
+        "39.60",
+        1,
+    )
+    # A cheaper brand we share no whole word with is still not our brand.
+    assert (
+        select_offer(
+            [dict(brand="TORK", price="148.40", delivery="1")], "Toyota", 2
+        ).status
+        == "not_found"
+    )
