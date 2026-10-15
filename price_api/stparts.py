@@ -54,6 +54,14 @@ SELECTION = f"{SELECTION_ROW}:visible"
 # The main brand of a chooser row: a direct link in td.caseBrand. Analog brands live in a
 # grey <span> inside the same cell and must not take part in the match.
 SELECTION_BRAND = "td.caseBrand > div > a.brandInfoLink"
+# A page that has settled: offers table, the no-results alert, or the chooser of an OEM
+# that several brands share. After its own browser check or a solved challenge the source
+# answers the part-code search with the chooser, and that is progress, not a failure.
+SETTLED = f"{RESULTS}, {SELECTION}"
+# Throttling shows up as a stalled navigation or a dropped connection, and the same
+# address answers a moment later. Parsing verdicts (format, blocked, captcha) are not
+# retried: another attempt would only repeat them.
+RETRYABLE = {"SOURCE_CONNECTION_ERROR", "SOURCE_TIMEOUT"}
 
 
 class SourceError(Exception):
@@ -373,10 +381,15 @@ class StpartsScraper:
         except PlaywrightTimeout:
             return False
 
-    async def wait_for_results(self, page, timeout=None):
-        """Wait until the page shows offers or the explicit no-results alert."""
+    async def wait_for_source_state(self, page, timeout=None):
+        """Wait until the page settles: offers, the no-results alert or the chooser.
+
+        Only the offers table used to count as progress, so a solved challenge whose page
+        moved on to the chooser was reported as a failed challenge although the source had
+        accepted the solution and answered the search.
+        """
         try:
-            await page.locator(RESULTS).first.wait_for(
+            await page.locator(SETTLED).first.wait_for(
                 state="visible",
                 timeout=timeout or self.settings.captcha_wait_seconds * 1000,
             )
@@ -420,7 +433,7 @@ class StpartsScraper:
             await page.reload(wait_until="domcontentloaded", timeout=30000)
         except PlaywrightError:
             return False
-        if await self.wait_for_results(page, timeout=10000):
+        if await self.wait_for_source_state(page, timeout=10000):
             log.info("captcha_session_reused")
             return True
         return False
@@ -449,7 +462,7 @@ class StpartsScraper:
                 log.info("captcha_solution_received type=image attempt=%s", attempt)
                 await page.locator(CAPTCHA_INPUT).fill(solution.upper().strip())
                 await page.locator(CAPTCHA_SUBMIT).click()
-                if await self.wait_for_results(page):
+                if await self.wait_for_source_state(page):
                     await self.store_source_state(page)
                     log.info("captcha_accepted type=image")
                     return
@@ -473,8 +486,9 @@ class StpartsScraper:
                 return
         sitekey = await self.recaptcha_sitekey(page)
         if not sitekey:
-            if await self.results_present(page):
-                # The form was in the DOM but the source rendered results instead.
+            if await self.results_present(page) or await self.selection_present(page):
+                # The form was in the DOM but the source moved on to offers or to the
+                # chooser instead: there is nothing to solve and nothing to pay for.
                 log.info("captcha_not_required type=recaptcha_v2")
                 return
             raise SourceError("CAPTCHA_FORMAT", "reCAPTCHA site key not found")
@@ -498,9 +512,27 @@ class StpartsScraper:
                 log.info(
                     "captcha_solution_received type=recaptcha_v2 attempt=%s", attempt
                 )
-                await self.submit_recaptcha_token(page, token)
-                if await self.wait_for_results(page):
+                try:
+                    await self.submit_recaptcha_token(page, token)
+                except SourceError as exc:
+                    if exc.code != "CAPTCHA_FORMAT":
+                        raise
+                    # The source can drop its form while the provider was solving. If the
+                    # page moved on to offers or to the chooser, the challenge is passed
+                    # and only the form disappeared, so this is progress, not a failure.
+                    if await self.wait_for_source_state(page):
+                        await self.store_source_state(page)
+                        log.info(
+                            "captcha_accepted type=recaptcha_v2 attempt=%s", attempt
+                        )
+                        return
+                    raise
+                if await self.wait_for_source_state(page):
                     await self.store_source_state(page)
+                    if await self.selection_present(page) and not (
+                        await self.results_present(page)
+                    ):
+                        log.info("source_selection_after_captcha")
                     log.info("captcha_accepted type=recaptcha_v2 attempt=%s", attempt)
                     return
                 if not await self.recaptcha_present(page) or not self.before(deadline):
@@ -708,21 +740,41 @@ class StpartsScraper:
         context = await browser.new_context(**options)
         try:
             page = await context.new_page()
-            state_version = self.source_state_version
             urls = search_urls(brand, oem)
-            for index, url in enumerate(urls):
+            started = asyncio.get_running_loop().time()
+            for attempt in range(1, self.settings.source_retry_attempts + 1):
+                if attempt > 1:
+                    # A stalled page or a dropped connection is the source throttling this
+                    # client. Retry on a fresh page instead of reporting the position as
+                    # failed: the same address usually answers at once.
+                    log.warning("source_retry attempt=%s", attempt)
+                    await asyncio.sleep(self.settings.source_retry_delay_seconds)
+                    await page.close()
+                    page = await context.new_page()
+                state_version = self.source_state_version
                 try:
-                    rows = await self.read_page(page, url, brand, state_version)
-                except PlaywrightTimeout:
-                    if index == 0:
-                        continue
-                    raise SourceError(
-                        "SOURCE_TIMEOUT", "Source results did not load"
-                    ) from None
-                result = select_offer(rows, brand, max_delivery_days)
-                if result.status == "found" or index == 1:
-                    return result
-            raise SourceError("SOURCE_TIMEOUT", "Source results did not load")
+                    for index, url in enumerate(urls):
+                        try:
+                            rows = await self.read_page(page, url, brand, state_version)
+                        except PlaywrightTimeout:
+                            if index == 0:
+                                continue
+                            raise SourceError(
+                                "SOURCE_TIMEOUT", "Source results did not load"
+                            ) from None
+                        result = select_offer(rows, brand, max_delivery_days)
+                        if result.status == "found" or index == 1:
+                            return result
+                    raise SourceError("SOURCE_TIMEOUT", "Source results did not load")
+                except SourceError as exc:
+                    spent = asyncio.get_running_loop().time() - started
+                    # The retry must not eat the item timeout of the worker.
+                    if (
+                        exc.code not in RETRYABLE
+                        or attempt == self.settings.source_retry_attempts
+                        or spent > self.settings.source_retry_deadline_seconds
+                    ):
+                        raise
         except httpx.HTTPError:
             # Provider request URLs contain the API key; never log those exceptions.
             return SearchResult(

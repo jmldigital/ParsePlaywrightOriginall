@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     captcha_solve_timeout_seconds: float = Field(default=90, gt=0)
     captcha_poll_interval_seconds: float = Field(default=5, gt=0)
     captcha_wait_seconds: float = Field(default=30, gt=0)
+    # The source stalls or drops a fraction of requests for one client and answers the
+    # same address a moment later, so a network-class failure is worth one more attempt.
+    source_retry_attempts: int = Field(default=2, ge=1, le=4)
+    source_retry_delay_seconds: float = Field(default=2, ge=0)
+    source_retry_deadline_seconds: float = Field(default=90, gt=0)
     stparts_storage_state: Path | None = None
     headless: bool = True
     diagnostics_enabled: bool = True

@@ -90,6 +90,14 @@ SELECTION = (
 )
 SELECTION_OFFERS = TABLE.replace("Toyota", "Great Wall")
 SELECTION_OFFERS_URL = "https://stparts.ru/search/Great%20Wall/123%2F45"
+# The limit form is served without a widget and the page then moves to the chooser: there
+# is no site key to solve, so the provider must not be called at all.
+RECAPTCHA_CHOOSER_PENDING = (
+    RECAPTCHA_FORM_ONLY
+    + "<script>setTimeout(() => {document.body.innerHTML = "
+    + json.dumps(SELECTION)
+    + ";}, 300);</script>"
+)
 # The source labels one maker with a combined name (as Hyundai-KIA), while the client
 # asks for a part of that name.
 COMPOUND_TABLE = TABLE.replace("Toyota", "Hyundai-KIA")
@@ -106,17 +114,28 @@ async def main():
             diagnostics_max_samples=2,
             captcha_poll_interval_seconds=0.05,
             captcha_wait_seconds=1,
+            source_retry_delay_seconds=0,
         )
     )
     browser = await scraper.get_browser()
     real_new_context = browser.new_context
     mode = "found"
     contexts = []
+    pages = []
     resubmits = [0]  # The retry scenario rejects the first form submission.
+    resets = [0]  # The reset scenario drops only the first request.
 
     async def new_context(**kwargs):
         context = await real_new_context(**kwargs)
         contexts.append(context)
+        real_new_page = context.new_page
+
+        async def new_page(**page_kwargs):
+            page = await real_new_page(**page_kwargs)
+            pages.append(page)
+            return page
+
+        context.new_page = new_page
 
         async def handler(route):
             if "google.com" in route.request.url:
@@ -182,9 +201,37 @@ async def main():
             elif mode == "recaptchaPending":
                 status = 403
                 html = RECAPTCHA_FORM_ONLY
+            elif mode == "recaptchaChooser":
+                # The challenge is passed, but the source answers with the chooser of a
+                # shared OEM instead of offers: that is progress, not a failure.
+                if route.request.method == "POST":
+                    post_data = route.request.post_data or ""
+                    assert "g-recaptcha-response=ABCD" in post_data
+                    html = SELECTION
+                elif SELECTION_OFFERS_URL in route.request.url:
+                    html = SELECTION_OFFERS
+                else:
+                    status = 403
+                    html = RECAPTCHA
+            elif mode == "recaptchaChooserPending":
+                # No site key ever appears and the page settles on the chooser.
+                if SELECTION_OFFERS_URL in route.request.url:
+                    html = SELECTION_OFFERS
+                else:
+                    status = 403
+                    html = RECAPTCHA_CHOOSER_PENDING
+            elif mode == "recaptchaFormLost":
+                status = 403
+                html = RECAPTCHA
             elif mode == "reset":
                 await route.abort("connectionreset")
                 return
+            elif mode == "resetOnce":
+                if resets[0] == 0:
+                    resets[0] = 1
+                    await route.abort("connectionreset")
+                    return
+                html = TABLE
             elif mode == "forbidden":
                 status = 403
                 html = "<h1>Forbidden</h1>"
@@ -222,11 +269,21 @@ async def main():
         submissions = []
         original_client = httpx.AsyncClient
 
-        def provider(request):
+        async def provider(request):
             calls.append(request.url.path)
             hosts.append(request.url.host)
             if request.content:
                 submissions.append(dict(httpx.QueryParams(request.content.decode())))
+            if mode == "recaptchaFormLost" and request.url.path == "/res.php":
+                # The source drops its form and moves on to the offers while the provider
+                # is still returning the solution.
+                await pages[-1].evaluate(
+                    """html => {
+                        document.getElementById('formSearchLimitCaptcha')?.remove();
+                        document.body.insertAdjacentHTML('beforeend', html);
+                    }""",
+                    TABLE,
+                )
             if mode == "rejected403":
                 return httpx.Response(
                     200, json={"status": 0, "request": "ERROR_ZERO_BALANCE"}
@@ -354,12 +411,53 @@ async def main():
         assert calls == [], calls
         assert len(browser.contexts) == 0
         print("pending reCAPTCHA widget rejected locally OK")
+        # A solved challenge whose page settles on the brand chooser is a success: the
+        # challenge was passed and the row of our brand still has to be opened.
+        mode = "recaptchaChooser"
+        calls.clear()
+        hosts.clear()
+        submissions.clear()
+        with patch(
+            "price_api.stparts.httpx.AsyncClient",
+            lambda **kwargs: original_client(
+                transport=httpx.MockTransport(provider), **kwargs
+            ),
+        ):
+            result = await scraper.search("Great Wall", "123/45", 2)
+        assert (result.status, result.price) == ("found", "250.00"), result
+        assert calls == ["/in.php", "/res.php"], calls
+        assert len(browser.contexts) == 0
+        print("captcha followed by the brand chooser OK")
+        # The same page without a site key must not be paid for and must not be reported
+        # as a captcha failure.
+        mode = "recaptchaChooserPending"
+        calls.clear()
+        with patch(
+            "price_api.stparts.httpx.AsyncClient",
+            lambda **kwargs: original_client(
+                transport=httpx.MockTransport(provider), **kwargs
+            ),
+        ):
+            result = await scraper.search("Great Wall", "123/45", 2)
+        assert (result.status, result.price) == ("found", "250.00"), result
+        assert calls == [], calls
+        assert len(browser.contexts) == 0
+        print("chooser instead of a site key OK")
         # A dropped connection is a source error, not an unclassified crash.
         mode = "reset"
         result = await scraper.search("Toyota", "123/45", 2)
         assert result.error.code == "SOURCE_CONNECTION_ERROR", result
         assert len(browser.contexts) == 0
         print("connection reset OK")
+        # A dropped connection is retried once before it is reported: the source throttles
+        # one client and answers the same address a moment later.
+        mode = "resetOnce"
+        resets[0] = 0
+        result = await scraper.search("Toyota", "123/45", 2)
+        assert (result.status, result.price) == ("found", "250.00"), result
+        assert resets[0] == 1, resets
+        assert len(browser.contexts) == 0
+        print("dropped connection retried OK")
         # A flagged client gets the source's access-restriction page, not a CAPTCHA.
         mode = "blocked"
         result = await scraper.search("Toyota", "123/45", 2)
@@ -400,10 +498,27 @@ async def main():
         assert result.status == "not_found", result
         assert len(browser.contexts) == 0
         print("unrelated brand against combined label OK")
+        # The solution can arrive after the source dropped its form and moved on to the
+        # offers: the challenge was passed, so this is not a format failure.
+        mode = "recaptchaFormLost"
+        calls.clear()
+        submissions.clear()
+        with patch(
+            "price_api.stparts.httpx.AsyncClient",
+            lambda **kwargs: original_client(
+                transport=httpx.MockTransport(provider), **kwargs
+            ),
+        ):
+            result = await scraper.search("Toyota", "123/45", 2)
+        assert (result.status, result.price) == ("found", "250.00"), result
+        assert calls == ["/in.php", "/res.php"], calls
+        assert submissions[0]["method"] == "userrecaptcha", submissions
+        assert len(browser.contexts) == 0
+        print("limit form dropped while solving OK")
     finally:
         await scraper.close()
         temporary.cleanup()
-    print("Browser smoke: 21 scenarios passed; no external source requests")
+    print("Browser smoke: 25 scenarios passed; no external source requests")
 
 
 asyncio.run(main())
