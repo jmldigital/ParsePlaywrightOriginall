@@ -51,6 +51,25 @@ def test_price_and_minimum_with_deadline():
         select_offer([dict(brand="Toyota", price="?", delivery="1")], "Toyota", 2)
 
 
+def test_unavailable_row_is_not_an_offer():
+    # The source marks a part it has no offer for with its own flag and empty cells.
+    empty = dict(brand="Toyota", price="", delivery="", unavailable=True)
+    assert select_offer([empty], "Toyota", 2).status == "not_found"
+    # A readable row next to it still gives its price.
+    readable = dict(brand="Toyota", price="500", delivery="1")
+    assert select_offer([empty, readable], "Toyota", 2).price == "500.00"
+    # A row that does carry text we cannot read must still refuse to pick a minimum.
+    with pytest.raises(SourceError):
+        select_offer(
+            [dict(brand="Toyota", price="?", delivery="", unavailable=True)],
+            "Toyota",
+            2,
+        )
+    # Without the source flag an empty row stays an unknown format, as before.
+    with pytest.raises(SourceError):
+        select_offer([dict(brand="Toyota", price="", delivery="")], "Toyota", 2)
+
+
 def test_delivery_range_uses_earliest_day():
     rows = [
         dict(brand="Toyota", price="17593.40", delivery="1 - 3 дня"),

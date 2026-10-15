@@ -145,6 +145,16 @@ def select_offer(rows, brand, max_days):
             continue
         days, price = delivery_days(row["delivery"]), price_value(row["price"])
         if days is None or price is None:
+            if (
+                row.get("unavailable")
+                and not row["price"].strip()
+                and not row["delivery"].strip()
+            ):
+                # The source marks a part it has no offer for with its own noavail flag
+                # and leaves the price and deadline empty. Such a row carries no numbers
+                # at all, so there is no offer to lose and no minimum to distrust: it is
+                # not an offer, and the honest outcome is not_found.
+                continue
             malformed = True
             continue
         if days <= max_days:
@@ -721,7 +731,9 @@ class StpartsScraper:
             brand: row.querySelector('td.resultBrand')?.textContent?.trim() ?? '',
             delivery: (row.querySelector('td.resultDeadline .resultDeadlineBlock .info')
                 ?? row.querySelector('td.resultDeadline'))?.textContent?.trim() ?? '',
-            price: row.querySelector('td.resultPrice')?.textContent?.trim() ?? ''
+            price: row.querySelector('td.resultPrice')?.textContent?.trim() ?? '',
+            unavailable: Boolean(row.querySelector(
+                'td.resultPrice.noavail, td.resultAvailability.noavail'))
         }))""")
         if not rows:
             raise SourceError(
